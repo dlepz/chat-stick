@@ -80,6 +80,8 @@ export default {
 				const headers = new Headers()
 				object.writeHttpMetadata(headers)
 				headers.set('etag', object.httpEtag)
+				headers.set('content-length', object.size.toString())
+				headers.set('content-type', headers.get('content-type') || 'application/octet-stream')
 				headers.set(
 					'content-disposition',
 					`attachment; filename="${env.FIRMWARE_OBJECT_KEY.split('/').pop() || 'firmware.bin'}"`

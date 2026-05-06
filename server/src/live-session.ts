@@ -1,4 +1,12 @@
 import { searchDocsKeyword, searchDocsVector } from './docs-search'
+import {
+	MAX_FILE_BYTES,
+	appendFile,
+	listFiles,
+	readFile,
+	searchFiles,
+	writeFile,
+} from './files'
 
 interface Env {
 	GEMINI_API_KEY: string
@@ -298,6 +306,8 @@ export class LiveSession {
 										'- search_docs: search the indexed knowledge base',
 										'- web_fetch: fetch a specific URL and read its text content',
 										'- google_search: search the web for current information (news, facts, recent events)',
+										'- list_files / read_file / write_file / append_to_file: save and recall the user\'s personal notes, lists, and journals (device-scoped, persists across conversations)',
+										'- search_files: find a phrase or idea across all saved files when you don\'t know which file it\'s in',
 										'- new_conversation: reset the chat (say goodbye first)',
 										'- new_chat: reset the chat (alias for new_conversation)',
 										'',
@@ -492,6 +502,88 @@ export class LiveSession {
 											required: ['url'],
 										},
 									},
+										{
+											name: 'list_files',
+											description:
+												'List all files this device has saved on the server. Returns each file\'s path, byte size, and last-updated time. Use this to show the user what they have stored, or before reading a file when you don\'t know the exact path.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {},
+												required: [],
+											},
+										},
+										{
+											name: 'read_file',
+											description:
+												'Read the full contents of a previously-saved file by path.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {
+													path: {
+														type: 'STRING',
+														description:
+															'The file path to read, e.g. "notes.txt" or "journal/2026-05.md".',
+													},
+												},
+												required: ['path'],
+											},
+										},
+										{
+											name: 'write_file',
+											description:
+												'Create or overwrite a file with the given content. Use this when the user asks to save, store, or remember something as a named file. Overwrites the entire file if it exists. Prefer append_to_file for adding to logs or journals.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {
+													path: {
+														type: 'STRING',
+														description:
+															'The file path. Short, descriptive paths like "shopping-list.txt" or "ideas/marketing.md" work well.',
+													},
+													content: {
+														type: 'STRING',
+														description: 'The full text content to write to the file.',
+													},
+												},
+												required: ['path', 'content'],
+											},
+										},
+										{
+											name: 'append_to_file',
+											description:
+												'Append content to the end of a file (creates it if missing). Use this for journals, logs, or running lists where you want to add to existing content without reading or rewriting it. Add your own newlines or separators in the content if needed.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {
+													path: {
+														type: 'STRING',
+														description: 'The file path to append to.',
+													},
+													content: {
+														type: 'STRING',
+														description:
+															'Text to append. Include leading newline if you want a line break before it.',
+													},
+												},
+												required: ['path', 'content'],
+											},
+										},
+										{
+											name: 'search_files',
+											description:
+												'Search across all of this device\'s saved files for a phrase or keyword. Returns matching file paths with a short snippet of context. Use this when the user asks about something they wrote down but you don\'t know which file it\'s in.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {
+													query: {
+														type: 'STRING',
+														description:
+															'Phrase or keyword to find (case-insensitive substring match).',
+													},
+												},
+												required: ['query'],
+											},
+										},
 										{
 											name: 'new_conversation',
 										description:
@@ -807,6 +899,30 @@ export class LiveSession {
 							handledBy: 'server',
 							durationMs: Date.now() - startMs,
 						})
+				} else if (
+						call.name === 'list_files' ||
+						call.name === 'read_file' ||
+						call.name === 'write_file' ||
+						call.name === 'append_to_file' ||
+						call.name === 'search_files'
+					) {
+						const response = await this.handleFileTool(call.name, call.args)
+						const payload = JSON.stringify({
+							toolResponse: {
+								functionResponses: [
+									{ name: call.name, id: call.id, response },
+								],
+							},
+						})
+						if (this.geminiWs) this.geminiWs.send(payload)
+						await this.logToolCall({
+							name: call.name,
+							args: call.args,
+							result: response,
+							handledBy: 'server',
+							status: 'error' in (response as Record<string, unknown>) ? 'error' : 'ok',
+							durationMs: Date.now() - startMs,
+						})
 				} else if (call.name === 'set_voice') {
 						const requested = (call.args as { name?: string }).name || ''
 						const match = findVoice(requested)
@@ -951,6 +1067,57 @@ export class LiveSession {
 			)
 		} catch (err) {
 			console.error('[ToolLog] Failed to insert:', err)
+		}
+	}
+
+	private async handleFileTool(
+		name: string,
+		args: Record<string, unknown>
+	): Promise<Record<string, unknown>> {
+		const path = typeof args.path === 'string' ? args.path.trim() : ''
+		const content = typeof args.content === 'string' ? args.content : ''
+		const query = typeof args.query === 'string' ? args.query : ''
+
+		switch (name) {
+			case 'list_files': {
+				const files = await listFiles(this.env.DB, this.deviceId)
+				return { files, count: files.length }
+			}
+			case 'read_file': {
+				if (!path) return { error: 'path is required' }
+				const file = await readFile(this.env.DB, this.deviceId, path)
+				if (!file) return { error: `file not found: ${path}` }
+				return { path, content: file.content, updated_at: file.updated_at }
+			}
+			case 'write_file': {
+				if (!path) return { error: 'path is required' }
+				if (content.length > MAX_FILE_BYTES) {
+					return {
+						error: `content too large: ${content.length} bytes (max ${MAX_FILE_BYTES})`,
+					}
+				}
+				await writeFile(this.env.DB, this.deviceId, path, content)
+				return { ok: true, path, size: content.length }
+			}
+			case 'append_to_file': {
+				if (!path) return { error: 'path is required' }
+				const existing = await readFile(this.env.DB, this.deviceId, path)
+				const projectedSize = (existing?.content.length ?? 0) + content.length
+				if (projectedSize > MAX_FILE_BYTES) {
+					return {
+						error: `would exceed file size limit (${projectedSize} > ${MAX_FILE_BYTES} bytes)`,
+					}
+				}
+				await appendFile(this.env.DB, this.deviceId, path, content)
+				return { ok: true, path, size: projectedSize }
+			}
+			case 'search_files': {
+				if (!query.trim()) return { error: 'query is required' }
+				const hits = await searchFiles(this.env.DB, this.deviceId, query)
+				return { hits, count: hits.length }
+			}
+			default:
+				return { error: `unknown file tool: ${name}` }
 		}
 	}
 

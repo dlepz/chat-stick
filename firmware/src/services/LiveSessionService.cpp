@@ -3,10 +3,138 @@
 #include "../credentials.h"
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <Update.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 
 using namespace websockets;
+
+namespace {
+bool urlUsesHttps(const String &url) { return url.startsWith("https://"); }
+
+String stripEndpointScheme(const char *rawHost) {
+  String host = rawHost ? String(rawHost) : String("");
+  if (host.startsWith("http://")) {
+    host = host.substring(7);
+  } else if (host.startsWith("https://")) {
+    host = host.substring(8);
+  } else if (host.startsWith("ws://")) {
+    host = host.substring(5);
+  } else if (host.startsWith("wss://")) {
+    host = host.substring(6);
+  }
+
+  const int pathIndex = host.indexOf('/');
+  if (pathIndex >= 0) {
+    host = host.substring(0, pathIndex);
+  }
+  return host;
+}
+
+String endpointHostForConnection(const ServerEndpoint &endpoint) {
+  String host = stripEndpointScheme(endpoint.host);
+  const int colonIndex = host.lastIndexOf(':');
+  if (colonIndex > 0 && host.indexOf(':') == colonIndex) {
+    bool portIsNumeric = true;
+    for (int i = colonIndex + 1; i < host.length(); i++) {
+      if (!isDigit(host.charAt(i))) {
+        portIsNumeric = false;
+        break;
+      }
+    }
+    if (portIsNumeric) {
+      host = host.substring(0, colonIndex);
+    }
+  }
+  return host;
+}
+
+const char *httpSchemeForEndpoint(const ServerEndpoint &endpoint) {
+  const String rawHost = endpoint.host ? String(endpoint.host) : String("");
+  if (rawHost.startsWith("https://")) {
+    return "https";
+  }
+  if (rawHost.startsWith("http://")) {
+    return "http";
+  }
+  return endpoint.port == 443 ? "https" : "http";
+}
+
+const char *wsSchemeForEndpoint(const ServerEndpoint &endpoint) {
+  return strcmp(httpSchemeForEndpoint(endpoint), "https") == 0 ? "wss" : "ws";
+}
+
+const char *caCertForUrl(const String &url) {
+  for (int i = 0; i < SERVER_ENDPOINT_COUNT; i++) {
+    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[i];
+    const String httpsPrefix =
+        String("https://") + endpointHostForConnection(endpoint);
+    if (url == httpsPrefix || url.startsWith(httpsPrefix + "/") ||
+        url.startsWith(httpsPrefix + ":")) {
+      return endpoint.ca_cert;
+    }
+  }
+  return nullptr;
+}
+
+String updateError() {
+  const char *error = Update.errorString();
+  return error && error[0] ? String(error) : String("unknown update error");
+}
+
+bool runFirmwareUpdateDownload(HTTPClient &http, String &outError) {
+  const int statusCode = http.GET();
+  if (statusCode != HTTP_CODE_OK) {
+    outError = "Download failed: HTTP " + String(statusCode);
+    Serial.printf("[OTA] Download failed: status=%d\n", statusCode);
+    return false;
+  }
+
+  const int contentLength = http.getSize();
+  if (contentLength <= 0) {
+    outError = "Missing firmware size";
+    Serial.printf("[OTA] Missing content length: %d\n", contentLength);
+    return false;
+  }
+
+  Serial.printf("[OTA] Downloading firmware: %d bytes\n", contentLength);
+  if (!Update.begin(contentLength, U_FLASH)) {
+    outError = "Update begin failed: " + updateError();
+    Serial.printf("[OTA] Update.begin failed: %s\n", outError.c_str());
+    return false;
+  }
+
+  Stream *stream = http.getStreamPtr();
+  const size_t written = Update.writeStream(*stream);
+  if (written != static_cast<size_t>(contentLength)) {
+    outError = "Write failed: " + String(written) + "/" + String(contentLength);
+    const String error = updateError();
+    if (error.length()) {
+      outError += " " + error;
+    }
+    Serial.printf("[OTA] Update.writeStream failed: wrote=%u expected=%d err=%s\n",
+                  static_cast<unsigned>(written), contentLength,
+                  updateError().c_str());
+    Update.abort();
+    return false;
+  }
+
+  if (!Update.end()) {
+    outError = "Update end failed: " + updateError();
+    Serial.printf("[OTA] Update.end failed: %s\n", outError.c_str());
+    return false;
+  }
+
+  if (!Update.isFinished()) {
+    outError = "Update incomplete";
+    Serial.println("[OTA] Update incomplete");
+    return false;
+  }
+
+  Serial.println("[OTA] Firmware update installed");
+  return true;
+}
+} // namespace
 
 void LiveSessionService::init(const LiveSessionCallbacks &callbacks) {
   _callbacks = callbacks;
@@ -24,13 +152,14 @@ void LiveSessionService::connect() {
   const String chatQuery = _chatId.isEmpty() ? "" : "&chat_id=" + _chatId;
   const String voiceQuery = _voice.isEmpty() ? "" : "&voice=" + _voice;
   const String fullPath = path + chatQuery + voiceQuery;
-  const char *scheme = endpoint.port == 443 ? "wss" : "ws";
+  const String host = endpointHostForConnection(endpoint);
+  const char *scheme = wsSchemeForEndpoint(endpoint);
 
   if (_callbacks.onStatus) {
     _callbacks.onStatus("Connecting...");
   }
 
-  Serial.printf("[WS] Connecting to %s://%s:%d%s\n", scheme, endpoint.host,
+  Serial.printf("[WS] Connecting to %s://%s:%d%s\n", scheme, host.c_str(),
                 endpoint.port, fullPath.c_str());
 
   if (endpoint.ca_cert) {
@@ -41,14 +170,14 @@ void LiveSessionService::connect() {
 
   if (endpoint.port == 443) {
     _connected =
-        _ws.connectSecure(endpoint.host, endpoint.port, fullPath.c_str());
+        _ws.connectSecure(host.c_str(), endpoint.port, fullPath.c_str());
   } else {
-    _connected = _ws.connect(endpoint.host, endpoint.port, fullPath.c_str());
+    _connected = _ws.connect(host.c_str(), endpoint.port, fullPath.c_str());
   }
 
   if (!_connected) {
     Serial.printf("[WS] Connect failed: %s://%s:%d — will retry\n", scheme,
-                  endpoint.host, endpoint.port);
+                  host.c_str(), endpoint.port);
   }
 }
 
@@ -317,6 +446,53 @@ bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
   return false;
 }
 
+bool LiveSessionService::downloadAndApplyFirmwareUpdate(
+    const String &downloadUrl, String &outError) {
+  outError = "";
+
+  if (downloadUrl.isEmpty()) {
+    outError = "No download URL";
+    return false;
+  }
+
+  Serial.printf("[OTA] Downloading update from %s\n", downloadUrl.c_str());
+  disconnect();
+  delay(100);
+
+  HTTPClient http;
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(60000);
+
+  if (urlUsesHttps(downloadUrl)) {
+    WiFiClientSecure client;
+    const char *caCert = caCertForUrl(downloadUrl);
+    if (caCert) {
+      client.setCACert(caCert);
+    } else {
+      client.setInsecure();
+    }
+
+    if (!http.begin(client, downloadUrl)) {
+      outError = "Could not start download";
+      return false;
+    }
+
+    const bool ok = runFirmwareUpdateDownload(http, outError);
+    http.end();
+    return ok;
+  }
+
+  WiFiClient client;
+  if (!http.begin(client, downloadUrl)) {
+    outError = "Could not start download";
+    return false;
+  }
+
+  const bool ok = runFirmwareUpdateDownload(http, outError);
+  http.end();
+  return ok;
+}
+
 void LiveSessionService::handleEvent(WebsocketsEvent event, String data) {
   switch (event) {
   case WebsocketsEvent::ConnectionOpened:
@@ -557,8 +733,8 @@ void LiveSessionService::sendToolResponse(const char *name, const char *id,
 }
 
 String LiveSessionService::endpointBaseUrl(const ServerEndpoint &endpoint) const {
-  const char *scheme = endpoint.port == 443 ? "https" : "http";
-  String url = String(scheme) + "://" + endpoint.host;
+  const char *scheme = httpSchemeForEndpoint(endpoint);
+  String url = String(scheme) + "://" + endpointHostForConnection(endpoint);
   if (endpoint.port != 80 && endpoint.port != 443) {
     url += ":" + String(endpoint.port);
   }

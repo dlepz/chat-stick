@@ -207,7 +207,6 @@ void PowerManager::enterLightSleep() {
       const unsigned long idle = getIdleTime();
       Serial.printf("[Power] Light sleep timer wake, idle=%lu ms\n", idle);
       if (idle >= _timeouts.powerOffMs) {
-        _state = PowerState::PowerOff;
         transitionTo(PowerState::PowerOff);
         return;
       }

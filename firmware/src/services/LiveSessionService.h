@@ -67,6 +67,8 @@ public:
   bool fetchConversationHistory(ConversationSummary outEntries[], int maxEntries,
                                 int &outCount);
   bool checkFirmwareUpdate(FirmwareUpdateInfo &outInfo);
+  bool downloadAndApplyFirmwareUpdate(const String &downloadUrl,
+                                      String &outError);
 
 private:
   websockets::WebsocketsClient _ws;

@@ -32,7 +32,7 @@ migrations_dir = "migrations"
 # wrangler secret put GEMINI_API_KEY
 # wrangler secret put HISTORY_API_TOKEN
 # Optional OTA firmware support:
-# [r2_buckets]
+# [[r2_buckets]]
 # binding = "OTA_BUCKET"
 # bucket_name = "chat-stick-firmware"
 # wrangler secret put FIRMWARE_LATEST_VERSION

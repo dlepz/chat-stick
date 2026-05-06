@@ -721,8 +721,29 @@ void AppController::checkForUpdates() {
     _toolText = "Offline\nCannot check updates";
   } else if (_live.checkFirmwareUpdate(info)) {
     if (info.available) {
-      _toolText =
-          "Update available\nv" + String(info.latestVersion) + "\n" + info.notes;
+      if (info.downloadUrl.isEmpty()) {
+        _toolText = "Update unavailable\nNo download URL";
+      } else {
+        setAppState(AppState::Connecting, "Updating...");
+        _toolText =
+            "Downloading update\nv" + String(info.latestVersion) + "\nPlease wait";
+        resetBodyPage();
+        _screenDirty = true;
+        renderIfNeeded();
+
+        String error;
+        if (_live.downloadAndApplyFirmwareUpdate(info.downloadUrl, error)) {
+          _toolText = "Update installed\nRestarting...";
+          resetBodyPage();
+          _screenDirty = true;
+          renderIfNeeded();
+          delay(500);
+          ESP.restart();
+        }
+
+        _toolText = "Update failed\n" + error;
+        setAppState(AppState::Ready, "Ready");
+      }
     } else {
       _toolText = "Up to date\nv" + String(FIRMWARE_VERSION);
     }
