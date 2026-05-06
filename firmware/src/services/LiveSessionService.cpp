@@ -10,6 +10,43 @@
 using namespace websockets;
 
 namespace {
+// Decode a standard base64 string into `out`. Returns the decoded byte count,
+// or -1 if the input is malformed. Tolerates whitespace in the input.
+int decodeBase64(const char *in, size_t inLen, uint8_t *out, size_t outCap) {
+  static const int8_t T[256] = {
+      // build table at runtime once below
+      -1};
+  static bool tableReady = false;
+  static int8_t table[256];
+  if (!tableReady) {
+    for (int i = 0; i < 256; i++) table[i] = -1;
+    const char *abc =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for (int i = 0; i < 64; i++) table[(uint8_t)abc[i]] = i;
+    tableReady = true;
+  }
+  (void)T;
+
+  uint32_t buf = 0;
+  int bits = 0;
+  size_t outLen = 0;
+  for (size_t i = 0; i < inLen; i++) {
+    const char c = in[i];
+    if (c == '=' || c == '\0') break;
+    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') continue;
+    const int8_t v = table[(uint8_t)c];
+    if (v < 0) return -1;
+    buf = (buf << 6) | (uint32_t)v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      if (outLen >= outCap) return -1;
+      out[outLen++] = (uint8_t)((buf >> bits) & 0xFF);
+    }
+  }
+  return (int)outLen;
+}
+
 bool urlUsesHttps(const String &url) { return url.startsWith("https://"); }
 
 String stripEndpointScheme(const char *rawHost) {
@@ -546,6 +583,9 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     if (id && _callbacks.onChatId) {
       _callbacks.onChatId(id);
     }
+    if ((doc["reset"] | false) && _callbacks.onConversationReset) {
+      _callbacks.onConversationReset();
+    }
     return;
   }
 
@@ -619,6 +659,54 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     if (_callbacks.onIgnoredAudio) {
       _callbacks.onIgnoredAudio(reason ? reason : "ignored");
     }
+    return;
+  }
+
+  if (strcmp(type, "show_image_pending") == 0) {
+    if (_callbacks.onShowImagePending) {
+      _callbacks.onShowImagePending();
+    }
+    return;
+  }
+
+  if (strcmp(type, "show_image_failed") == 0) {
+    Serial.println("[Server] Image generation failed");
+    if (_callbacks.onShowImageFailed) {
+      _callbacks.onShowImageFailed();
+    }
+    return;
+  }
+
+  if (strcmp(type, "show_image") == 0) {
+    const char *data = doc["data"];
+    const int width = doc["width"] | 0;
+    const int height = doc["height"] | 0;
+    if (!data || width <= 0 || height <= 0) {
+      Serial.println("[Server] show_image missing data or dimensions");
+      return;
+    }
+    const size_t encodedLen = strlen(data);
+    const size_t expectedBytes = (size_t)((width * height + 7) / 8);
+    uint8_t *packed = (uint8_t *)malloc(expectedBytes);
+    if (!packed) {
+      Serial.println("[Server] show_image: failed to allocate decode buffer");
+      if (_callbacks.onShowImageFailed) _callbacks.onShowImageFailed();
+      return;
+    }
+    const int decoded = decodeBase64(data, encodedLen, packed, expectedBytes);
+    if (decoded < 0 || (size_t)decoded < expectedBytes) {
+      Serial.printf("[Server] show_image: decode failed (got %d, expected %u)\n",
+                    decoded, (unsigned)expectedBytes);
+      free(packed);
+      if (_callbacks.onShowImageFailed) _callbacks.onShowImageFailed();
+      return;
+    }
+    Serial.printf("[Server] show_image: %dx%d, %u bytes\n", width, height,
+                  (unsigned)expectedBytes);
+    if (_callbacks.onShowImage) {
+      _callbacks.onShowImage(packed, expectedBytes, width, height);
+    }
+    free(packed);
     return;
   }
 

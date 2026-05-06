@@ -10,10 +10,26 @@ export interface Env {
 	VECTORIZE: VectorizeIndex
 	DB: D1Database
 	HISTORY_API_TOKEN: string
-	OTA_BUCKET?: R2Bucket
-	FIRMWARE_LATEST_VERSION?: string
-	FIRMWARE_NOTES?: string
-	FIRMWARE_OBJECT_KEY?: string
+	STORAGE?: R2Bucket
+}
+
+const FIRMWARE_PREFIX = 'chat-stick/firmware/'
+
+async function findLatestFirmware(
+	env: Env
+): Promise<{ version: number; key: string } | null> {
+	if (!env.STORAGE) return null
+	const list = await env.STORAGE.list({ prefix: FIRMWARE_PREFIX })
+	let latest: { version: number; key: string } | null = null
+	for (const obj of list.objects) {
+		const match = obj.key.match(/firmware-v(\d+)\.bin$/)
+		if (!match) continue
+		const version = Number(match[1])
+		if (!latest || version > latest.version) {
+			latest = { version, key: obj.key }
+		}
+	}
+	return latest
 }
 
 export default {
@@ -54,25 +70,23 @@ export default {
 
 			case '/firmware/check': {
 				const currentVersion = Number(url.searchParams.get('version') || '0')
-				const latestVersion = Number(env.FIRMWARE_LATEST_VERSION || currentVersion || 0)
-				const hasDownload = !!env.OTA_BUCKET && !!env.FIRMWARE_OBJECT_KEY
+				const latest = await findLatestFirmware(env)
+				const updateAvailable = !!latest && latest.version > currentVersion
 				return json({
-					available: hasDownload && latestVersion > currentVersion,
-					latest_version: latestVersion,
-					notes: env.FIRMWARE_NOTES || '',
-					download_url:
-						hasDownload && latestVersion > currentVersion
-							? `${url.origin}/firmware/download`
-							: '',
+					available: updateAvailable,
+					latest_version: latest?.version ?? currentVersion,
+					notes: '',
+					download_url: updateAvailable ? `${url.origin}/firmware/download` : '',
 				})
 			}
 
 			case '/firmware/download': {
-				if (!env.OTA_BUCKET || !env.FIRMWARE_OBJECT_KEY) {
+				const latest = await findLatestFirmware(env)
+				if (!env.STORAGE || !latest) {
 					return new Response('Firmware download unavailable', { status: 404 })
 				}
 
-				const object = await env.OTA_BUCKET.get(env.FIRMWARE_OBJECT_KEY)
+				const object = await env.STORAGE.get(latest.key)
 				if (!object) {
 					return new Response('Firmware not found', { status: 404 })
 				}
@@ -84,7 +98,7 @@ export default {
 				headers.set('content-type', headers.get('content-type') || 'application/octet-stream')
 				headers.set(
 					'content-disposition',
-					`attachment; filename="${env.FIRMWARE_OBJECT_KEY.split('/').pop() || 'firmware.bin'}"`
+					`attachment; filename="${latest.key.split('/').pop()}"`
 				)
 				return new Response(object.body, { headers })
 			}

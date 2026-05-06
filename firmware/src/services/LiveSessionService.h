@@ -14,7 +14,11 @@ struct LiveSessionCallbacks {
   std::function<void()> onTurnComplete;
   std::function<void()> onDropAudio;
   std::function<void(const String &)> onChatId;
+  std::function<void()> onConversationReset;
   std::function<void(const String &)> onShowText;
+  std::function<void(const uint8_t *, size_t, int, int)> onShowImage;
+  std::function<void()> onShowImagePending;
+  std::function<void()> onShowImageFailed;
   std::function<void(const String &, const String &)> onTranscript;
   std::function<void(const String &)> onIgnoredAudio;
   std::function<void(const uint8_t *, size_t)> onAudio;

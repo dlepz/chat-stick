@@ -1,6 +1,7 @@
 # Credentials / secrets
 .env
 server/.dev.vars
+server/wrangler.toml
 firmware/src/credentials.h
 
 # PlatformIO

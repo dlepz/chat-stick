@@ -41,9 +41,13 @@ npm install
 cp .dev.vars.example .dev.vars
 # Edit .dev.vars with your GEMINI_API_KEY
 
+# Copy the wrangler config template (wrangler.toml is gitignored —
+# it holds your Cloudflare account-specific bindings)
+cp wrangler.toml.example wrangler.toml
+
 # Create the D1 database
 wrangler d1 create m5-live-conversations
-# Update the database_id in wrangler.toml with the ID from the output above
+# Paste the returned database_id into wrangler.toml
 
 # Apply migrations
 wrangler d1 migrations apply --local
@@ -90,6 +94,31 @@ wrangler deploy
 # Set PRODUCTION_SERVER_ADDRESS in firmware/src/credentials.h to your worker's hostname
 ```
 
+## Optional: Email Notifications
+
+The model can be given an `email_me` tool that sends a short plain-text email through Cloudflare Email Routing. The tool is hidden from the model entirely unless you configure it, so this section is fully optional.
+
+Requires a domain on Cloudflare with [Email Routing](https://developers.cloudflare.com/email-routing/) enabled. Cloudflare only allows sending **to verified destination addresses**, so this is suited to self-notifications, not emailing arbitrary users.
+
+```bash
+cd server
+
+# 1. In the Cloudflare dashboard, enable Email Routing on your domain and verify
+#    a destination address (e.g. you@your-domain.com).
+
+# 2. Uncomment the [[send_email]] block in wrangler.toml and set
+#    destination_address to your verified address.
+
+# 3. Set the sender + recipient secrets. Sender must be on your Cloudflare
+#    domain; recipient must equal destination_address from wrangler.toml.
+wrangler secret put EMAIL_SENDER       # e.g. chat-stick@your-domain.com
+wrangler secret put EMAIL_RECIPIENT    # the verified destination address
+
+wrangler deploy
+```
+
+For local `wrangler dev`, also add `EMAIL_SENDER` and `EMAIL_RECIPIENT` to `server/.dev.vars`. Outbound email is not delivered in `wrangler dev` (the binding is a no-op locally), so test by deploying.
+
 ## History and Session APIs
 
 - `GET /history/:deviceId` — recent conversations for a device. Requires `X-History-Token` or `?token=...`.
@@ -99,10 +128,11 @@ wrangler deploy
 
 All secrets are gitignored. You need to create these files locally:
 
-| File                         | Purpose                          | Template                             |
-| ---------------------------- | -------------------------------- | ------------------------------------ |
-| `server/.dev.vars`           | Gemini API key, history token    | `server/.dev.vars.example`           |
-| `firmware/src/credentials.h` | Server addresses + WiFi SSIDs/passwords | `firmware/src/credentials.h.example` |
+| File                         | Purpose                                    | Template                             |
+| ---------------------------- | ------------------------------------------ | ------------------------------------ |
+| `server/.dev.vars`           | Gemini API key, history token              | `server/.dev.vars.example`           |
+| `server/wrangler.toml`       | Cloudflare bindings (your D1 ID, optional email) | `server/wrangler.toml.example`       |
+| `firmware/src/credentials.h` | Server addresses + WiFi SSIDs/passwords    | `firmware/src/credentials.h.example` |
 
 Never commit credentials. The `.gitignore` is configured to exclude these files.
 
@@ -189,6 +219,31 @@ curl "http://localhost:8799/search?q=your+query"
 ## Test Data
 
 `test-data/` contains sample `.m4a` audio files for development and testing.
+
+## Releases and OTA
+
+The repository is public and source-only. **Do not publish pre-built `.bin` files anywhere public.** `credentials.h` is compiled into the firmware, so any binary built locally embeds your WiFi SSIDs, passwords, and worker URL as plaintext — `strings firmware.bin` will surface them.
+
+OTA distribution is per-deployment: each user's binary lives in their own R2 bucket and is served by their own worker.
+
+### Convenience scripts (repo root)
+
+| Script                       | What it does                                                |
+| ---------------------------- | ----------------------------------------------------------- |
+| `./flash.sh [--monitor]`     | Build firmware and upload over USB to a connected device.   |
+| `./deploy.sh`                | Deploy the Cloudflare Worker.                               |
+| `./publish-ota-release.sh`   | Build firmware and upload it to R2 for OTA pickup.          |
+| `./publish.sh`               | Run `publish-ota-release.sh` then `deploy.sh`.              |
+
+### Cutting a new firmware release
+
+1. Bump `FIRMWARE_VERSION` in `firmware/src/Config.h`.
+2. `./publish-ota-release.sh` — builds and uploads `firmware-v<N>.bin` to your R2 bucket under `chat-stick/firmware/`.
+3. Devices on older versions will install it on next boot.
+
+The worker auto-detects the latest available version by listing the R2 prefix and picking the highest `firmware-v<N>.bin` — no version tracking secrets required.
+
+If you want a public source tag for changelog purposes, `gh release create v<N> --title "Firmware v<N>" --notes "..."` with **no binary asset**. This is purely informational; the OTA path doesn't read GitHub.
 
 ## License
 

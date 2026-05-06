@@ -97,20 +97,65 @@ void AppController::setup() {
     _live.setChatId(chatId);
     _screenDirty = true;
   };
+  callbacks.onConversationReset = [this]() {
+    _audio.stopPlayback();
+    _toolText = "";
+    if (_imagePresent) {
+      _display.clearImage();
+      _imagePresent = false;
+    }
+    _turnComplete = false;
+    _turnHasAudio = false;
+    _pendingTurnReset = false;
+    resetBodyPage();
+    setAppState(AppState::Ready, "Ready");
+    _screenDirty = true;
+  };
   callbacks.onShowText = [this](const String &text) {
     _pendingTurnReset = false;
     _toolText = text;
     resetBodyPage();
     _screenDirty = true;
   };
-  callbacks.onTranscript = [this](const String &source, const String &text) {
+  auto applyPendingTurnReset = [this]() {
+    if (!_pendingTurnReset) {
+      return;
+    }
+    _toolText = "";
+    if (_imagePresent) {
+      _display.clearImage();
+      _imagePresent = false;
+    }
+    _pendingTurnReset = false;
+  };
+  callbacks.onShowImagePending = [this, applyPendingTurnReset]() {
+    applyPendingTurnReset();
+    _screenDirty = true;
+  };
+  callbacks.onShowImage = [this, applyPendingTurnReset](
+                              const uint8_t *packed, size_t packedLen,
+                              int width, int height) {
+    applyPendingTurnReset();
+    if (_display.setImage(packed, packedLen, width, height)) {
+      _imagePresent = true;
+      resetBodyPage();
+      _screenDirty = true;
+    }
+  };
+  callbacks.onShowImageFailed = [this]() {
+    if (_imagePresent) {
+      _display.clearImage();
+      _imagePresent = false;
+      resetBodyPage();
+      _screenDirty = true;
+    }
+  };
+  callbacks.onTranscript = [this, applyPendingTurnReset](
+                               const String &source, const String &text) {
     if (source != "model") {
       return;
     }
-    if (_pendingTurnReset) {
-      _toolText = "";
-      _pendingTurnReset = false;
-    }
+    applyPendingTurnReset();
     _toolText += text;
     resetBodyPage();
     _screenDirty = true;
@@ -177,12 +222,7 @@ void AppController::setup() {
     _powerManager.registerActivity();
     return _audio.playMelody(notes);
   };
-  callbacks.onPowerOff = [this]() {
-    _live.disconnect();
-    _wifi.disconnect();
-    delay(100);
-    M5.Power.powerOff();
-  };
+  callbacks.onPowerOff = [this]() { performPowerOff(); };
   callbacks.onPowerTimeouts =
       [this](unsigned long dimMs, unsigned long screenOffMs,
              unsigned long lightSleepMs, unsigned long powerOffMs) {
@@ -278,13 +318,7 @@ void AppController::configureCallbacks() {
   _powerManager.onWiFiStateChange(
       [this](bool enabled) { setNetworkEnabled(enabled); });
 
-  _powerManager.onPowerOff([this]() {
-    Serial.println("[Power] Powering off");
-    _live.disconnect();
-    _wifi.disconnect();
-    delay(100);
-    M5.Power.powerOff();
-  });
+  _powerManager.onPowerOff([this]() { performPowerOff(); });
 }
 
 void AppController::connectNetworkStack() {
@@ -352,8 +386,25 @@ void AppController::retryAfterError() {
   }
 }
 
+void AppController::performPowerOff() {
+  Serial.println("[Power] Powering off");
+  _live.disconnect();
+  _wifi.disconnect();
+  delay(100);
+  if (_pm1Ready) {
+    const m5pm1_err_t rc = _pm1.shutdown();
+    Serial.printf("[Power] PM1 shutdown rc=%d\n", static_cast<int>(rc));
+    delay(200);
+  }
+  M5.Power.powerOff();
+}
+
 void AppController::clearToolText() {
   _toolText = "";
+  if (_imagePresent) {
+    _display.clearImage();
+    _imagePresent = false;
+  }
   resetBodyPage();
 }
 
@@ -454,7 +505,7 @@ void AppController::handleChatButtons() {
     const int pageCount = currentBodyPageCount();
     if (pageCount > 1) {
       _bodyPageIndex = (_bodyPageIndex + 1) % pageCount;
-    } else if (!_toolText.isEmpty()) {
+    } else if (!_toolText.isEmpty() || _imagePresent) {
       clearToolText();
     }
     _screenDirty = true;
@@ -567,10 +618,7 @@ void AppController::selectCurrentMenuItem() {
       return;
     }
     case 4:
-      _live.disconnect();
-      _wifi.disconnect();
-      delay(100);
-      M5.Power.powerOff();
+      performPowerOff();
       return;
     default:
       return;
@@ -684,6 +732,10 @@ void AppController::resumeConversation(int index) {
   _settings.setChatId(_chatId);
   _live.setChatId(_chatId);
   _toolText = entry.lastMessage;
+  if (_imagePresent) {
+    _display.clearImage();
+    _imagePresent = false;
+  }
   resetBodyPage();
   closeMenu();
   _live.disconnect();
@@ -894,6 +946,7 @@ DisplayState AppController::buildDisplayState() const {
   state.bodyText = buildBodyText();
   state.bodyDim = _appState == AppState::Recording ||
                   _appState == AppState::Thinking;
+  state.imagePresent = _imagePresent;
   state.pageIndex = _bodyPageIndex;
   state.pageCount = currentBodyPageCount();
   state.showMenu = _appRegion == AppRegion::Menu;
@@ -918,6 +971,12 @@ DisplayState AppController::buildDisplayState() const {
 String AppController::buildBodyText() const {
   if (!_toolText.isEmpty()) {
     return _toolText;
+  }
+
+  // When the model has shown an image but no text, suppress the default
+  // greeting/status copy so the image stands alone as a single page.
+  if (_imagePresent) {
+    return "";
   }
 
   if (_wifi.isCaptivePortalActive()) {
@@ -967,7 +1026,10 @@ String AppController::buildBodyText() const {
 }
 
 int AppController::currentBodyPageCount() const {
-  return _display.pageCountForText(buildBodyText());
+  const String body = buildBodyText();
+  const int textPages = body.isEmpty() ? 0 : _display.pageCountForText(body);
+  const int total = (_imagePresent ? 1 : 0) + textPages;
+  return max(1, total);
 }
 
 String AppController::currentTimeString() const {
@@ -991,6 +1053,7 @@ String AppController::currentTimeString() const {
 
 String AppController::deviceStatusJson() const {
   JsonDocument status;
+  status["firmware_version"] = FIRMWARE_VERSION;
   status["battery_percent"] = M5.Power.getBatteryLevel();
   status["volume"] = _audio.volume();
   status["brightness"] = M5.Display.getBrightness();

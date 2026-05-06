@@ -30,4 +30,7 @@ struct DisplayState {
   bool menuHasMoreBelow = false;
   int pageIndex = 0;
   int pageCount = 1;
+  // When true, page 0 of the body is the stored image and bodyText pages
+  // start at page 1. The image bytes themselves live in TextDisplay.
+  bool imagePresent = false;
 };

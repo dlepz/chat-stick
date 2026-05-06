@@ -46,6 +46,7 @@ private:
   bool _turnComplete = false;
   bool _turnHasAudio = false;
   bool _pendingTurnReset = false;
+  bool _imagePresent = false;
   bool _screenDirty = true;
   unsigned long _thinkingStartMs = 0;
   unsigned long _recordingStartMs = 0;
@@ -84,6 +85,7 @@ private:
   void setErrorState(ErrorCategory category, const String &status,
                      const String &error);
   void retryAfterError();
+  void performPowerOff();
   void clearToolText();
   void resetBodyPage();
   void restoreSessionPreview();

@@ -53,10 +53,14 @@ Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Up
 ### Server
 
 - **Entry point**: `server/src/index.ts` — HTTP router handling `/ws`, `/health`, `/history/:deviceId`, `/session/:chatId`, `/firmware/check`, `/firmware/download`, and admin endpoints
-- **`LiveSession` Durable Object** (`server/src/live-session.ts`) — one instance per device. Manages dual WebSocket connections (device ↔ Gemini), routes tool calls, tracks transcriptions, persists conversation history to D1
-- **Tool call routing**: Tools like `search_docs`, `web_fetch`, `new_conversation` are handled server-side; device-control tools (`set_brightness`, `set_volume`, `show_text`, `play_sound`, `play_melody`, `power_off`, `get_device_status`) are forwarded to the device via WebSocket and the response is relayed back to Gemini
+- **`LiveSession` Durable Object** (`server/src/live-session.ts`) — one instance per device. Manages dual WebSocket connections (device ↔ Gemini), routes tool calls, tracks transcriptions, persists conversation history to D1. The full tool schema sent to Gemini lives here — when adding/renaming a tool, update both the declaration array and the `case` dispatch
+- **Tool call routing**:
+  - Server-side tools (handled in `live-session.ts`): `search_docs`, `web_fetch`, `new_conversation`, `new_chat`, the file-CRUD tools `list_files`, `read_file`, `write_file`, `append_to_file`, `search_files`, and `email_me` when email is configured
+  - Device-side tools (forwarded as JSON over the device WebSocket; response relayed back to Gemini): `set_brightness`, `set_volume`, `set_speaker`, `set_external_speaker_gain`, `set_voice`, `show_text`, `play_sound`, `play_melody`, `power_off`, `get_device_status`
+- **Optional email** (`server/src/email.ts`) — `email_me` tool is only declared to Gemini when the `[[send_email]]` binding plus `EMAIL_SENDER`/`EMAIL_RECIPIENT` secrets are all present. Cloudflare Email Routing requires the recipient to be pre-verified, so this is for self-notifications only. See README "Optional: Email Notifications"
 - **Docs search** (`server/src/docs-search.ts`) — keyword search (in-memory JSON index) with vector search fallback (Cloudflare Vectorize + Workers AI embeddings)
-- **D1 schema** (`server/schema.sql`) — `conversations`, `message_log`, `tool_log` tables
+- **Device files** (`server/src/files.ts`) — device-scoped notes/files in D1, every query filtered by `device_id`. `MAX_FILE_BYTES = 100_000`. Append uses SQL concat for atomicity (no read-then-write)
+- **D1 schema** — authoritative source is `server/migrations/` (currently `0001_initial.sql` for `conversations`/`message_log`/`tool_log`, `0002_files.sql` for `files`). `server/schema.sql` is a snapshot reference. Apply with `wrangler d1 migrations apply --local` (or `--remote`)
 
 ### Firmware
 
@@ -80,8 +84,9 @@ Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Up
 
 ## Credentials
 
-All secrets are gitignored. Templates exist at:
-- `server/.dev.vars.example` → `server/.dev.vars` (GEMINI_API_KEY, HISTORY_API_TOKEN)
+All deployment-specific config is gitignored. Templates exist at:
+- `server/.dev.vars.example` → `server/.dev.vars` (GEMINI_API_KEY, HISTORY_API_TOKEN, optional EMAIL_SENDER/EMAIL_RECIPIENT)
+- `server/wrangler.toml.example` → `server/wrangler.toml` (Cloudflare bindings — D1 database_id, optional `[[send_email]]` and `[[r2_buckets]]` blocks). The committed `wrangler.toml.example` is the canonical structure; do not edit `wrangler.toml` expecting forks to inherit it
 - `firmware/src/credentials.h.example` → `firmware/src/credentials.h` (WiFi networks)
 
 ## Audio Format

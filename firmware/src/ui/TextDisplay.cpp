@@ -48,17 +48,26 @@ void TextDisplay::render(const DisplayState &state) {
     const int bodyStart = hasHeader ? 1 : 0;
     const int bodyEnd = kLines - 1;
     const int bodyRows = bodyEnd - bodyStart;
+    const bool imagePage = state.imagePresent && hasImage();
     String wrapped[32];
     const int wrappedCount = wrapBodyText(state.bodyText, wrapped, 32);
-    const int pageCount = max(1, (wrappedCount + bodyRows - 1) / bodyRows);
+    const int textPageCount = max(1, (wrappedCount + bodyRows - 1) / bodyRows);
+    const int totalPages =
+        (imagePage ? 1 : 0) + (state.bodyText.isEmpty() ? 0 : textPageCount);
+    const int pageCount = max(1, totalPages);
     const int safePageIndex =
         constrain(state.pageIndex, 0, max(0, pageCount - 1));
     const uint16_t bodyColor = state.bodyDim ? COLOR_GRAY : COLOR_WHITE;
 
-    for (int i = 0; i < bodyRows; i++) {
-      const int lineIndex = safePageIndex * bodyRows + i;
-      drawLine(bodyStart + i,
-               lineIndex < wrappedCount ? wrapped[lineIndex] : "", bodyColor);
+    if (imagePage && safePageIndex == 0) {
+      drawStoredImage();
+    } else {
+      const int textPageIndex = imagePage ? safePageIndex - 1 : safePageIndex;
+      for (int i = 0; i < bodyRows; i++) {
+        const int lineIndex = textPageIndex * bodyRows + i;
+        drawLine(bodyStart + i,
+                 lineIndex < wrappedCount ? wrapped[lineIndex] : "", bodyColor);
+      }
     }
     if (pageCount > 1) {
       drawPageIndicator(safePageIndex, pageCount);
@@ -72,6 +81,67 @@ void TextDisplay::render(const DisplayState &state) {
 
   if (_canvasReady) {
     _canvas.pushSprite(&M5.Display, 0, 0);
+  }
+}
+
+bool TextDisplay::setImage(const uint8_t *packed, size_t packedLen, int width,
+                           int height) {
+  if (!packed || width != kImageW || height != kImageH) {
+    Serial.printf("[Display] Image rejected: %dx%d (expected %dx%d)\n", width,
+                  height, kImageW, kImageH);
+    return false;
+  }
+  const size_t expectedBytes = static_cast<size_t>((width * height + 7) / 8);
+  if (packedLen < expectedBytes) {
+    Serial.printf("[Display] Image too short: %u bytes (expected %u)\n",
+                  static_cast<unsigned>(packedLen),
+                  static_cast<unsigned>(expectedBytes));
+    return false;
+  }
+
+  if (_imageBufferSize < expectedBytes) {
+    if (_imageBuffer) free(_imageBuffer);
+    _imageBuffer = static_cast<uint8_t *>(malloc(expectedBytes));
+    if (!_imageBuffer) {
+      _imageBufferSize = 0;
+      Serial.println("[Display] Failed to allocate image buffer");
+      return false;
+    }
+    _imageBufferSize = expectedBytes;
+  }
+  memcpy(_imageBuffer, packed, expectedBytes);
+  _imageWidth = width;
+  _imageHeight = height;
+  return true;
+}
+
+void TextDisplay::clearImage() {
+  if (_imageBuffer) {
+    free(_imageBuffer);
+    _imageBuffer = nullptr;
+  }
+  _imageBufferSize = 0;
+  _imageWidth = 0;
+  _imageHeight = 0;
+}
+
+void TextDisplay::drawStoredImage() const {
+  if (!_imageBuffer) return;
+  const int w = _imageWidth;
+  const int h = _imageHeight;
+  for (int y = 0; y < h; y++) {
+    const int rowStart = y * w;
+    for (int x = 0; x < w; x++) {
+      const int bit = rowStart + x;
+      const uint8_t byte = _imageBuffer[bit >> 3];
+      const bool on = (byte >> (7 - (bit & 7))) & 1;
+      if (!on) continue; // background already black
+      if (_canvasReady) {
+        _canvas.drawPixel(kImageX + x, kImageY + y, COLOR_WHITE);
+      } else {
+        M5.Display.drawPixel(kImageX + x, kImageY + y, COLOR_WHITE);
+      }
+    }
   }
 }
 

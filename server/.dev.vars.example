@@ -1,2 +1,8 @@
 GEMINI_API_KEY=your-gemini-api-key-here
 HISTORY_API_TOKEN=your-history-api-token-here
+
+# Optional: outbound email via Cloudflare Email Routing.
+# Required only if you uncommented the [[send_email]] block in wrangler.toml.
+# Note: wrangler dev does not actually deliver mail; deploy to test.
+# EMAIL_SENDER=chat-stick@your-domain.com
+# EMAIL_RECIPIENT=you@your-domain.com
