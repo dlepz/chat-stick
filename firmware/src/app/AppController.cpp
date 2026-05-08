@@ -7,18 +7,13 @@
 #include <time.h>
 
 void AppController::setup() {
-  const unsigned long bootStartMs = millis();
   Serial.begin(115200);
-  delay(1500);
   Serial.println("\n\n=== M5 Live Voice Assistant ===");
   Serial.flush();
 
   auto cfg = M5.config();
   cfg.serial_baudrate = 115200;
   M5.begin(cfg);
-
-  setCpuFrequencyMhz(80);
-  Serial.printf("[Setup] CPU clock set to %lu MHz\n", getCpuFrequencyMhz());
 
   setenv("TZ", LOCAL_TZ, 1);
   tzset();
@@ -244,13 +239,12 @@ void AppController::setup() {
                 MAX_PLAYBACK_SEC);
 
   renderIfNeeded();
-  const unsigned long bootElapsedMs = millis() - bootStartMs;
-  if (bootElapsedMs < kMinBootDisplayMs) {
-    delay(kMinBootDisplayMs - bootElapsedMs);
-  }
 
   connectNetworkStack();
   renderIfNeeded();
+
+  setCpuFrequencyMhz(80);
+  Serial.printf("[Setup] CPU clock set to %lu MHz\n", getCpuFrequencyMhz());
 }
 
 void AppController::loop() {

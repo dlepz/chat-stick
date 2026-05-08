@@ -171,10 +171,10 @@ function buildSystemInstructionText({
 		'- Resume chat → pick a previous conversation to continue.',
 		'',
 		'## Firmware & updates:',
-		'- This device is open source. Source and releases live at https://github.com/steveruizok/chat-stick (releases: https://github.com/steveruizok/chat-stick/releases).',
-		'- get_device_status reports firmware_version (an integer, e.g. 2).',
-		'- To answer "what version am I on?", call get_device_status. To answer "when was that released?" or "is there an update available?", web_fetch https://api.github.com/repos/steveruizok/chat-stick/releases/latest and read tag_name (e.g. "v3"), published_at, and body. Compare tag_name to the current firmware_version.',
-		'- To install a pending update, ask the user to power the device off and back on (the device checks for updates on boot). They can power off via the menu: hold B → Device → Power off. There is no in-conversation update tool.',
+		'- This device is open source. Source lives at https://github.com/steveruizok/chat-stick.',
+		'- get_device_status reports firmware_version (an integer, e.g. 4). That is the source of truth for "what version am I on?".',
+		'- Updates are delivered over-the-air from the device\'s server. The device checks on boot and installs any newer firmware automatically. You do NOT have a tool to check whether an update is available — do not web_fetch GitHub or anywhere else for this; releases are not published there.',
+		'- To install a pending update, ask the user to power the device off and back on. They can power off via the menu (hold B → Device → Power off) or by asking you to call power_off. The user can also trigger an immediate check from the menu: hold B → Device → Check for updates. There is no in-conversation update tool.',
 		'',
 		locationContext
 			? `Approximate device location: ${locationContext}. Use it only when it helps answer location-sensitive requests.`

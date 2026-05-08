@@ -12,10 +12,6 @@ void WiFiService::init() {
   } else {
     Serial.println("[WiFi] Preferences init failed; saved networks disabled");
   }
-
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-  delay(100);
 }
 
 void WiFiService::poll() {

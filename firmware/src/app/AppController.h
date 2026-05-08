@@ -33,7 +33,6 @@ private:
   static constexpr unsigned long kThinkingTimeoutMs = 15000;
   static constexpr unsigned long kMaxRecordingMs = 30000;
   static constexpr unsigned long kResetHoldMs = 1500;
-  static constexpr unsigned long kMinBootDisplayMs = 800;
   static constexpr int kMaxConversationHistory = 10;
 
   AppRegion _appRegion = AppRegion::Initializing;
