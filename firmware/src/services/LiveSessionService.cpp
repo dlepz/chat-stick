@@ -659,6 +659,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
 
   if (strcmp(type, "ignore_audio") == 0) {
     const char *reason = doc["reason"];
+    Log::server("Gemini", "ignored audio: %s", reason ? reason : "ignored");
     if (_callbacks.onIgnoredAudio) {
       _callbacks.onIgnoredAudio(reason ? reason : "ignored");
     }

@@ -715,7 +715,6 @@ export class LiveSession {
 
 	private audioChunkCount = 0
 	private static readonly MIN_TURN_BYTES = 6400
-	private static readonly SILENCE_AVG_ABS_THRESHOLD = 150
 
 	private onDeviceMessage(data: string | ArrayBuffer) {
 		this.lastActivityMs = Date.now()
@@ -1432,7 +1431,7 @@ export class LiveSession {
 		await this.commitExchange()
 	}
 
-	private getIgnoredTurnReason(): 'too_short' | 'silent' | null {
+	private getIgnoredTurnReason(): 'too_short' | null {
 		if (this.currentTurnAudioBytes < LiveSession.MIN_TURN_BYTES) {
 			return 'too_short'
 		}
@@ -1441,8 +1440,12 @@ export class LiveSession {
 			return 'too_short'
 		}
 
-		const averageAbs = this.currentTurnAbsSum / this.currentTurnSamples
-		return averageAbs < LiveSession.SILENCE_AVG_ABS_THRESHOLD ? 'silent' : null
+		return null
+	}
+
+	private currentTurnAverageAbs() {
+		if (this.currentTurnSamples === 0) return 0
+		return Math.round(this.currentTurnAbsSum / this.currentTurnSamples)
 	}
 
 	private noteAudioChunk(data: ArrayBuffer) {
@@ -1528,7 +1531,9 @@ export class LiveSession {
 
 		const ignoreReason = this.getIgnoredTurnReason()
 		if (ignoreReason) {
-			console.log(`[Bridge] Ignoring accidental clip (${ignoreReason})`)
+			console.log(
+				`[Bridge] Ignoring accidental clip (${ignoreReason}, bytes=${this.currentTurnAudioBytes}, avg_abs=${this.currentTurnAverageAbs()})`
+			)
 			this.currentUserText = ''
 			this.currentAssistantText = ''
 			this.clearPendingAudio()
@@ -1540,7 +1545,10 @@ export class LiveSession {
 		}
 
 		this.audioChunkCount = 0
-		this.sendTrailingSilence()
+		console.log(
+			`[Bridge] Ending audio stream bytes=${this.currentTurnAudioBytes} avg_abs=${this.currentTurnAverageAbs()}`
+		)
+		this.sendAudioStreamEnd()
 	}
 
 	private resetCurrentTurnMetrics() {
@@ -1565,19 +1573,16 @@ export class LiveSession {
 		await this.connectGemini()
 	}
 
-	private sendTrailingSilence() {
+	private sendAudioStreamEnd() {
 		if (!this.geminiWs) return
-		// 1s of silence at 16kHz 16-bit mono = 32000 bytes
-		const silence = new ArrayBuffer(32000)
-		const base64 = arrayBufferToBase64(silence)
 		this.geminiWs.send(
 			JSON.stringify({
 				realtimeInput: {
-					audio: { data: base64, mimeType: 'audio/pcm;rate=16000' },
+					audioStreamEnd: true,
 				},
 			})
 		)
-		console.log('[Bridge] Sent 1s trailing silence')
+		console.log('[Bridge] Sent audio stream end')
 		this.resetCurrentTurnMetrics()
 		this.clearPendingAudio()
 	}
