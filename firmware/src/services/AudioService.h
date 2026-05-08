@@ -12,11 +12,6 @@ public:
   void setVolume(int level);
   int volume() const { return _volume; }
 
-  void setUseExternalSpeaker(bool enabled);
-  bool useExternalSpeaker() const { return _useExternalSpeaker; }
-  void setExternalSpeakerGain(int gain);
-  int externalSpeakerGain() const { return _externalSpeakerGain; }
-
   bool startRecording();
   void stopRecording();
   bool captureChunk();
@@ -42,19 +37,21 @@ private:
   static constexpr int kFallbackPlayBytes = PLAY_SAMPLE_RATE * 2 * 4;
 
   int16_t *_captureChunk = nullptr;
+  int16_t *_captureStereoChunk = nullptr;
   size_t _chunkBytes = MIC_SAMPLE_RATE * MIC_CHUNK_MS / 1000 * sizeof(int16_t);
+  size_t _stereoChunkBytes =
+      MIC_SAMPLE_RATE * MIC_CHUNK_MS / 1000 * 2 * sizeof(int16_t);
 
   uint8_t *_playBuffer = nullptr;
+  int16_t *_stereoPlaybackChunk = nullptr;
   int _playCapacity = kMaxPlayBytes;
   int _playWritePos = 0;
   int _playReadPos = 0;
   bool _playbackStarted = false;
   bool _chunkInFlight = false;
-  bool _useExternalSpeaker = false;
-  int _externalSpeakerGain = 24;
   int _volume = DEFAULT_VOLUME;
 
-  void beginSpeaker();
+  bool configureAudio(int sampleRate);
   void compactPlaybackBuffer();
   bool playAvailableChunk();
   bool playToneSequence(const String &sequence);

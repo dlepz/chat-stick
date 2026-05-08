@@ -1,6 +1,7 @@
 #include "LiveSessionService.h"
 
 #include "../credentials.h"
+#include "../diag/Log.h"
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <Update.h>
@@ -123,21 +124,21 @@ bool runFirmwareUpdateDownload(HTTPClient &http, String &outError) {
   const int statusCode = http.GET();
   if (statusCode != HTTP_CODE_OK) {
     outError = "Download failed: HTTP " + String(statusCode);
-    Serial.printf("[OTA] Download failed: status=%d\n", statusCode);
+    Log::client("OTA", "download failed status=%d", statusCode);
     return false;
   }
 
   const int contentLength = http.getSize();
   if (contentLength <= 0) {
     outError = "Missing firmware size";
-    Serial.printf("[OTA] Missing content length: %d\n", contentLength);
+    Log::client("OTA", "missing content length=%d", contentLength);
     return false;
   }
 
-  Serial.printf("[OTA] Downloading firmware: %d bytes\n", contentLength);
+  Log::client("OTA", "downloading firmware bytes=%d", contentLength);
   if (!Update.begin(contentLength, U_FLASH)) {
     outError = "Update begin failed: " + updateError();
-    Serial.printf("[OTA] Update.begin failed: %s\n", outError.c_str());
+    Log::client("OTA", "Update.begin failed: %s", outError.c_str());
     return false;
   }
 
@@ -149,26 +150,26 @@ bool runFirmwareUpdateDownload(HTTPClient &http, String &outError) {
     if (error.length()) {
       outError += " " + error;
     }
-    Serial.printf("[OTA] Update.writeStream failed: wrote=%u expected=%d err=%s\n",
-                  static_cast<unsigned>(written), contentLength,
-                  updateError().c_str());
+    Log::client("OTA", "Update.writeStream failed wrote=%u expected=%d err=%s",
+                static_cast<unsigned>(written), contentLength,
+                updateError().c_str());
     Update.abort();
     return false;
   }
 
   if (!Update.end()) {
     outError = "Update end failed: " + updateError();
-    Serial.printf("[OTA] Update.end failed: %s\n", outError.c_str());
+    Log::client("OTA", "Update.end failed: %s", outError.c_str());
     return false;
   }
 
   if (!Update.isFinished()) {
     outError = "Update incomplete";
-    Serial.println("[OTA] Update incomplete");
+    Log::client("OTA", "update incomplete");
     return false;
   }
 
-  Serial.println("[OTA] Firmware update installed");
+  Log::client("OTA", "firmware update installed");
   return true;
 }
 } // namespace
@@ -196,8 +197,8 @@ void LiveSessionService::connect() {
     _callbacks.onStatus("Connecting...");
   }
 
-  Serial.printf("[WS] Connecting to %s://%s:%d%s\n", scheme, host.c_str(),
-                endpoint.port, fullPath.c_str());
+  Log::client("WS", "connecting %s://%s:%d%s", scheme, host.c_str(),
+              endpoint.port, fullPath.c_str());
 
   if (endpoint.ca_cert) {
     _ws.setCACert(endpoint.ca_cert);
@@ -213,8 +214,8 @@ void LiveSessionService::connect() {
   }
 
   if (!_connected) {
-    Serial.printf("[WS] Connect failed: %s://%s:%d — will retry\n", scheme,
-                  host.c_str(), endpoint.port);
+    Log::client("WS", "connect failed %s://%s:%d; will retry", scheme,
+                host.c_str(), endpoint.port);
   }
 }
 
@@ -273,7 +274,7 @@ bool LiveSessionService::fetchLastAssistantMessage(String &outMessage) {
     const String url = endpointBaseUrl(endpoint) + "/session/" + _chatId +
                        "?device_id=" + DEVICE_ID;
 
-    Serial.printf("[HTTP] Restoring session from %s\n", url.c_str());
+    Log::client("HTTP", "restoring session from %s", url.c_str());
 
     int statusCode = -1;
     String body;
@@ -312,13 +313,13 @@ bool LiveSessionService::fetchLastAssistantMessage(String &outMessage) {
     }
 
     if (statusCode != 200 || body.isEmpty()) {
-      Serial.printf("[HTTP] Session restore failed: status=%d\n", statusCode);
+      Log::client("HTTP", "session restore failed status=%d", statusCode);
       continue;
     }
 
     JsonDocument doc;
     if (deserializeJson(doc, body)) {
-      Serial.println("[HTTP] Session restore returned invalid JSON");
+      Log::client("HTTP", "session restore returned invalid JSON");
       continue;
     }
 
@@ -348,7 +349,7 @@ bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries
     const String url = endpointBaseUrl(endpoint) + "/history/" + DEVICE_ID +
                        "?device_id=" + DEVICE_ID;
 
-    Serial.printf("[HTTP] Fetching history from %s\n", url.c_str());
+    Log::client("HTTP", "fetching history from %s", url.c_str());
 
     int statusCode = -1;
     String body;
@@ -383,13 +384,13 @@ bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries
     }
 
     if (statusCode != 200 || body.isEmpty()) {
-      Serial.printf("[HTTP] History fetch failed: status=%d\n", statusCode);
+      Log::client("HTTP", "history fetch failed status=%d", statusCode);
       continue;
     }
 
     JsonDocument doc;
     if (deserializeJson(doc, body) || !doc.is<JsonArray>()) {
-      Serial.println("[HTTP] History response invalid");
+      Log::client("HTTP", "history response invalid");
       continue;
     }
 
@@ -424,7 +425,7 @@ bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
     const String url = endpointBaseUrl(endpoint) + "/firmware/check?version=" +
                        String(FIRMWARE_VERSION);
 
-    Serial.printf("[HTTP] Checking firmware at %s\n", url.c_str());
+    Log::client("HTTP", "checking firmware at %s", url.c_str());
 
     int statusCode = -1;
     String body;
@@ -463,13 +464,13 @@ bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
     }
 
     if (statusCode != 200 || body.isEmpty()) {
-      Serial.printf("[HTTP] Firmware check failed: status=%d\n", statusCode);
+      Log::client("HTTP", "firmware check failed status=%d", statusCode);
       continue;
     }
 
     JsonDocument doc;
     if (deserializeJson(doc, body)) {
-      Serial.println("[HTTP] Firmware check invalid JSON");
+      Log::client("HTTP", "firmware check invalid JSON");
       continue;
     }
 
@@ -492,7 +493,7 @@ bool LiveSessionService::downloadAndApplyFirmwareUpdate(
     return false;
   }
 
-  Serial.printf("[OTA] Downloading update from %s\n", downloadUrl.c_str());
+  Log::client("OTA", "downloading update from %s", downloadUrl.c_str());
   disconnect();
   delay(100);
 
@@ -533,7 +534,7 @@ bool LiveSessionService::downloadAndApplyFirmwareUpdate(
 void LiveSessionService::handleEvent(WebsocketsEvent event, String data) {
   switch (event) {
   case WebsocketsEvent::ConnectionOpened:
-    Serial.println("[WS] Opened");
+    Log::client("WS", "opened");
     _connected = true;
     if (_callbacks.onStatus) {
       _callbacks.onStatus("Waiting for AI...");
@@ -541,7 +542,7 @@ void LiveSessionService::handleEvent(WebsocketsEvent event, String data) {
     break;
 
   case WebsocketsEvent::ConnectionClosed:
-    Serial.printf("[WS] Closed: %s\n", data.c_str());
+    Log::client("WS", "closed: %s", data.c_str());
     _connected = false;
     if (_callbacks.onStatus) {
       _callbacks.onStatus("Reconnecting...");
@@ -590,7 +591,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 
   if (strcmp(type, "ready") == 0) {
-    Serial.println("[Server] Gemini session ready");
+    Log::server("Gemini", "session ready");
     if (_callbacks.onReady) {
       _callbacks.onReady();
     }
@@ -598,7 +599,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 
   if (strcmp(type, "turn_complete") == 0) {
-    Serial.println("[Server] Turn complete");
+    Log::server("Gemini", "turn complete");
     if (_callbacks.onTurnComplete) {
       _callbacks.onTurnComplete();
     }
@@ -606,7 +607,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 
   if (strcmp(type, "drop_audio") == 0) {
-    Serial.println("[Server] Drop audio (interrupted)");
+    Log::server("Gemini", "drop audio interrupted");
     if (_callbacks.onDropAudio) {
       _callbacks.onDropAudio();
     }
@@ -634,8 +635,10 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   if (strcmp(type, "transcript") == 0) {
     const char *source = doc["source"];
     const char *text = doc["text"];
-    Serial.printf("[Transcript] %s: %s\n", source ? source : "?",
+    if (!source || strcmp(source, "model") != 0) {
+      Log::server("Transcript", "%s: %s", source ? source : "?",
                   text ? text : "");
+    }
     if (_callbacks.onTranscript && source && text) {
       _callbacks.onTranscript(String(source), String(text));
     }
@@ -645,8 +648,8 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   if (strcmp(type, "error") == 0) {
     const char *category = doc["category"];
     const char *message = doc["message"];
-    Serial.printf("[Server] Error: [%s] %s\n", category ? category : "server",
-                  message ? message : "unknown");
+    Log::server("Error", "[%s] %s", category ? category : "server",
+                message ? message : "unknown");
     if (_callbacks.onError) {
       _callbacks.onError(category ? category : "server",
                          message ? message : "Server error");
@@ -670,7 +673,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 
   if (strcmp(type, "show_image_failed") == 0) {
-    Serial.println("[Server] Image generation failed");
+    Log::server("Image", "generation failed");
     if (_callbacks.onShowImageFailed) {
       _callbacks.onShowImageFailed();
     }
@@ -682,27 +685,27 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     const int width = doc["width"] | 0;
     const int height = doc["height"] | 0;
     if (!data || width <= 0 || height <= 0) {
-      Serial.println("[Server] show_image missing data or dimensions");
+      Log::server("Image", "show_image missing data or dimensions");
       return;
     }
     const size_t encodedLen = strlen(data);
     const size_t expectedBytes = (size_t)((width * height + 7) / 8);
     uint8_t *packed = (uint8_t *)malloc(expectedBytes);
     if (!packed) {
-      Serial.println("[Server] show_image: failed to allocate decode buffer");
+      Log::server("Image", "failed to allocate decode buffer");
       if (_callbacks.onShowImageFailed) _callbacks.onShowImageFailed();
       return;
     }
     const int decoded = decodeBase64(data, encodedLen, packed, expectedBytes);
     if (decoded < 0 || (size_t)decoded < expectedBytes) {
-      Serial.printf("[Server] show_image: decode failed (got %d, expected %u)\n",
-                    decoded, (unsigned)expectedBytes);
+      Log::server("Image", "decode failed got=%d expected=%u", decoded,
+                  (unsigned)expectedBytes);
       free(packed);
       if (_callbacks.onShowImageFailed) _callbacks.onShowImageFailed();
       return;
     }
-    Serial.printf("[Server] show_image: %dx%d, %u bytes\n", width, height,
-                  (unsigned)expectedBytes);
+    Log::server("Image", "show_image %dx%d bytes=%u", width, height,
+                (unsigned)expectedBytes);
     if (_callbacks.onShowImage) {
       _callbacks.onShowImage(packed, expectedBytes, width, height);
     }
@@ -714,7 +717,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     const char *voice = doc["voice"];
     if (voice && *voice) {
       _voice = voice;
-      Serial.printf("[Server] Voice changed to %s\n", voice);
+      Log::server("Voice", "changed to %s", voice);
       if (_callbacks.onVoiceChanged) {
         _callbacks.onVoiceChanged(String(voice));
       }
@@ -747,30 +750,6 @@ void LiveSessionService::handleToolCall(const JsonDocument &doc) {
       _callbacks.onVolume(level);
     }
     result = String("Volume set to ") + level;
-  } else if (strcmp(name, "set_speaker") == 0) {
-    const char *mode = doc["args"]["mode"];
-    if (!mode) {
-      result = "Missing mode (use 'internal' or 'external')";
-    } else if (!_callbacks.onSetSpeaker) {
-      result = "Speaker control unavailable";
-    } else if (_callbacks.onSetSpeaker(mode)) {
-      result = String("Speaker set to ") + mode;
-    } else {
-      result = "Invalid mode (use 'internal' or 'external')";
-    }
-  } else if (strcmp(name, "set_external_speaker_gain") == 0) {
-    if (!doc["args"]["gain"].is<int>()) {
-      result = "Missing gain (integer 1..64)";
-    } else if (!_callbacks.onSetExternalGain) {
-      result = "Gain control unavailable";
-    } else {
-      const int gain = doc["args"]["gain"].as<int>();
-      if (_callbacks.onSetExternalGain(gain)) {
-        result = String("External speaker gain set to ") + constrain(gain, 1, 64);
-      } else {
-        result = "Gain out of range (use 1..64)";
-      }
-    }
   } else if (strcmp(name, "get_device_status") == 0) {
     result = _callbacks.getDeviceStatusJson ? _callbacks.getDeviceStatusJson()
                                             : "{}";
@@ -817,7 +796,7 @@ void LiveSessionService::sendToolResponse(const char *name, const char *id,
   String encoded;
   serializeJson(response, encoded);
   _ws.send(encoded.c_str());
-  Serial.printf("[Tool] %s -> %s\n", name, result.c_str());
+  Log::server("Tool", "%s -> %s", name, result.c_str());
 }
 
 String LiveSessionService::endpointBaseUrl(const ServerEndpoint &endpoint) const {

@@ -1,11 +1,23 @@
 #include "AudioService.h"
 
 #include "../Config.h"
-#include <M5Unified.h>
+#include "../diag/Log.h"
+#include "../drivers/es8311/es8311.h"
+#include <ESP_I2S.h>
 #include <math.h>
 
 namespace {
 constexpr int kChunkSamples = MIC_SAMPLE_RATE * MIC_CHUNK_MS / 1000;
+constexpr int kPlaybackChunkMs = 20;
+constexpr int kPlaybackChunkSamples = PLAY_SAMPLE_RATE * kPlaybackChunkMs / 1000;
+constexpr int kCodecI2cPort = 0;
+constexpr es8311_mic_gain_t kMicGain = ES8311_MIC_GAIN_18DB;
+
+I2SClass i2s;
+es8311_handle_t codec = nullptr;
+int currentSampleRate = 0;
+int codecVolume = -1;
+bool i2sReady = false;
 
 int noteIndex(char note) {
   switch (toupper(note)) {
@@ -59,28 +71,54 @@ float noteFrequency(const String &noteToken) {
   const int midi = (octave + 1) * 12 + semitone;
   return 440.0f * powf(2.0f, (midi - 69) / 12.0f);
 }
+
+int codecVolumeFromLevel(int level) {
+  return map(constrain(level, 0, 255), 0, 255, 0, 100);
 }
+} // namespace
 
 AudioService::~AudioService() {
   if (_captureChunk) {
     free(_captureChunk);
     _captureChunk = nullptr;
   }
+  if (_captureStereoChunk) {
+    free(_captureStereoChunk);
+    _captureStereoChunk = nullptr;
+  }
   if (_playBuffer) {
     free(_playBuffer);
     _playBuffer = nullptr;
+  }
+  if (_stereoPlaybackChunk) {
+    free(_stereoPlaybackChunk);
+    _stereoPlaybackChunk = nullptr;
+  }
+  if (codec) {
+    es8311_delete(codec);
+    codec = nullptr;
   }
 }
 
 bool AudioService::init() {
   _captureChunk = static_cast<int16_t *>(ps_malloc(_chunkBytes));
+  _captureStereoChunk = static_cast<int16_t *>(ps_malloc(_stereoChunkBytes));
   _playBuffer = static_cast<uint8_t *>(ps_malloc(kMaxPlayBytes));
+  _stereoPlaybackChunk =
+      static_cast<int16_t *>(ps_malloc(kPlaybackChunkSamples * 2 * sizeof(int16_t)));
   _playCapacity = kMaxPlayBytes;
 
   if (!_captureChunk) {
     _captureChunk = static_cast<int16_t *>(malloc(_chunkBytes));
     if (_captureChunk) {
-      Serial.println("[Audio] Using heap capture buffer fallback");
+      Log::client("Audio", "using heap capture buffer fallback");
+    }
+  }
+
+  if (!_captureStereoChunk) {
+    _captureStereoChunk = static_cast<int16_t *>(malloc(_stereoChunkBytes));
+    if (_captureStereoChunk) {
+      Log::client("Audio", "using heap stereo capture buffer fallback");
     }
   }
 
@@ -88,50 +126,85 @@ bool AudioService::init() {
     _playBuffer = static_cast<uint8_t *>(malloc(kFallbackPlayBytes));
     if (_playBuffer) {
       _playCapacity = kFallbackPlayBytes;
-      Serial.printf("[Audio] Using heap playback buffer fallback (%d bytes)\n",
-                    _playCapacity);
+      Log::client("Audio", "using heap playback buffer fallback bytes=%d",
+                  _playCapacity);
     }
   }
 
-  if (!_captureChunk || !_playBuffer) {
-    Serial.println("[Audio] Audio buffer allocation failed");
+  if (!_stereoPlaybackChunk) {
+    _stereoPlaybackChunk = static_cast<int16_t *>(
+        malloc(kPlaybackChunkSamples * 2 * sizeof(int16_t)));
+  }
+
+  if (!_captureChunk || !_captureStereoChunk || !_playBuffer ||
+      !_stereoPlaybackChunk) {
+    Log::client("Audio", "audio buffer allocation failed");
     return false;
   }
 
-  beginSpeaker();
+  pinMode(AUDIO_PA_ENABLE_PIN, OUTPUT);
+  digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
+
+  if (!configureAudio(PLAY_SAMPLE_RATE)) {
+    Log::client("Audio", "ES8311/I2S init failed");
+    return false;
+  }
   setVolume(_volume);
-  Serial.printf("[Audio] Capture chunk: %d samples (%u bytes)\n", kChunkSamples,
-                static_cast<unsigned>(_chunkBytes));
-  Serial.printf("[Audio] Playback buffer: %d bytes\n", _playCapacity);
+  Log::client("Audio", "capture chunk samples=%d bytes=%u", kChunkSamples,
+              static_cast<unsigned>(_chunkBytes));
+  Log::client("Audio", "playback buffer bytes=%d", _playCapacity);
   return true;
 }
 
 void AudioService::setVolume(int level) {
   _volume = constrain(level, 0, 255);
-  M5.Speaker.setVolume(_volume);
-  M5.Speaker.setAllChannelVolume(_volume);
+  const int nextVolume = codecVolumeFromLevel(_volume);
+  if (codec && codecVolume != nextVolume) {
+    es8311_voice_volume_set(codec, nextVolume, nullptr);
+    codecVolume = nextVolume;
+  }
 }
 
 bool AudioService::startRecording() {
-  M5.Speaker.stop();
-  M5.Speaker.end();
-  delay(20);
-
   resetPlayback();
-  M5.Mic.begin();
-  delay(20);
-  return true;
+  digitalWrite(AUDIO_PA_ENABLE_PIN, LOW);
+  if (!configureAudio(MIC_SAMPLE_RATE)) {
+    return false;
+  }
+  return i2s.configureRX(MIC_SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT,
+                         I2S_SLOT_MODE_STEREO, I2S_RX_TRANSFORM_NONE);
 }
 
 void AudioService::stopRecording() {
-  M5.Mic.end();
-  delay(20);
-  beginSpeaker();
+  configureAudio(PLAY_SAMPLE_RATE);
+  digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
   setVolume(_volume);
 }
 
 bool AudioService::captureChunk() {
-  return M5.Mic.record(_captureChunk, kChunkSamples, MIC_SAMPLE_RATE);
+  if (!i2sReady) {
+    return false;
+  }
+  const size_t read =
+      i2s.readBytes(reinterpret_cast<char *>(_captureStereoChunk),
+                    _stereoChunkBytes);
+  if (read != _stereoChunkBytes) {
+    return false;
+  }
+
+  const int samples = _chunkBytes / sizeof(int16_t);
+  int64_t leftEnergy = 0;
+  int64_t rightEnergy = 0;
+  for (int i = 0; i < samples; i++) {
+    leftEnergy += abs(static_cast<int>(_captureStereoChunk[i * 2]));
+    rightEnergy += abs(static_cast<int>(_captureStereoChunk[i * 2 + 1]));
+  }
+
+  const int channel = rightEnergy > leftEnergy ? 1 : 0;
+  for (int i = 0; i < samples; i++) {
+    _captureChunk[i] = _captureStereoChunk[i * 2 + channel];
+  }
+  return true;
 }
 
 bool AudioService::playNamedSound(const String &name) {
@@ -164,7 +237,6 @@ void AudioService::resetPlayback() {
   _playReadPos = 0;
   _playbackStarted = false;
   _chunkInFlight = false;
-  M5.Speaker.stop();
 }
 
 bool AudioService::queuePlayback(const uint8_t *data, size_t len) {
@@ -172,13 +244,13 @@ bool AudioService::queuePlayback(const uint8_t *data, size_t len) {
     return true;
   }
 
-  if (!_chunkInFlight && !M5.Speaker.isPlaying()) {
+  if (!_chunkInFlight) {
     compactPlaybackBuffer();
   }
 
   if (_playWritePos + static_cast<int>(len) > _playCapacity) {
-    Serial.printf("[Audio] Playback overflow, dropping %u bytes\n",
-                  static_cast<unsigned>(len));
+    Log::client("Audio", "playback overflow dropping bytes=%u",
+                static_cast<unsigned>(len));
     return false;
   }
 
@@ -191,91 +263,63 @@ int AudioService::bufferedPlaybackBytes() const {
   return _playWritePos - _playReadPos;
 }
 
-bool AudioService::advancePlayback() {
-  if (_chunkInFlight && M5.Speaker.isPlaying()) {
-    return false;
-  }
+bool AudioService::advancePlayback() { return playAvailableChunk(); }
 
-  if (_chunkInFlight && !M5.Speaker.isPlaying()) {
-    _chunkInFlight = false;
-    compactPlaybackBuffer();
-  }
+bool AudioService::speakerBusy() const { return false; }
 
-  return playAvailableChunk();
-}
-
-bool AudioService::speakerBusy() const {
-  return _chunkInFlight || M5.Speaker.isPlaying();
-}
-
-bool AudioService::playbackIdle() const {
-  return !_chunkInFlight && !M5.Speaker.isPlaying() &&
-         bufferedPlaybackBytes() == 0;
-}
+bool AudioService::playbackIdle() const { return bufferedPlaybackBytes() == 0; }
 
 void AudioService::stopPlayback() {
-  M5.Speaker.stop();
   _chunkInFlight = false;
   _playbackStarted = false;
   _playReadPos = 0;
   _playWritePos = 0;
 }
 
-void AudioService::beginSpeaker() {
-  M5.Speaker.end();
-  auto cfg = M5.Speaker.config();
-  if (_useExternalSpeaker) {
-    // HAT SPK2 (MAX98357 I2S) on the StickS3 HAT header.
-    // Header positions map StickC+2's G26/G25/G0 → StickS3's G0/G1/G8.
-    cfg.pin_data_out = GPIO_NUM_1;
-    cfg.pin_bck = GPIO_NUM_0;
-    cfg.pin_ws = GPIO_NUM_8;
-    cfg.pin_mck = I2S_PIN_NO_CHANGE;
-    cfg.i2s_port = I2S_NUM_1;
-    cfg.stereo = false;
-    cfg.use_dac = false;
-    cfg.buzzer = false;
-    cfg.magnification = _externalSpeakerGain;
-  } else {
-    // StickS3 internal speaker defaults.
-    cfg.pin_data_out = GPIO_NUM_14;
-    cfg.pin_bck = GPIO_NUM_17;
-    cfg.pin_ws = GPIO_NUM_15;
-    cfg.pin_mck = GPIO_NUM_18;
-    cfg.i2s_port = I2S_NUM_0;
-    cfg.stereo = true;
-    cfg.use_dac = false;
-    cfg.buzzer = false;
+bool AudioService::configureAudio(int sampleRate) {
+  if (i2sReady && currentSampleRate == sampleRate) {
+    return true;
   }
-  M5.Speaker.config(cfg);
-  M5.Speaker.begin();
-}
 
-void AudioService::setUseExternalSpeaker(bool enabled) {
-  if (_useExternalSpeaker == enabled) {
-    return;
+  i2s.end();
+  i2s.setPins(AUDIO_I2S_BCLK_PIN, AUDIO_I2S_WS_PIN, AUDIO_I2S_DOUT_PIN,
+              AUDIO_I2S_DIN_PIN, AUDIO_I2S_MCLK_PIN);
+  if (!i2s.begin(I2S_MODE_STD, sampleRate, I2S_DATA_BIT_WIDTH_16BIT,
+                 I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH)) {
+    i2sReady = false;
+    Log::client("Audio", "I2S begin failed");
+    return false;
   }
-  _useExternalSpeaker = enabled;
-  Serial.printf("[Audio] External speaker %s\n", enabled ? "enabled" : "disabled");
-  if (_playBuffer != nullptr) {
-    stopPlayback();
-    beginSpeaker();
-    setVolume(_volume);
-  }
-}
 
-void AudioService::setExternalSpeakerGain(int gain) {
-  const int clamped = constrain(gain, 1, 64);
-  if (_externalSpeakerGain == clamped) {
-    return;
+  if (!codec) {
+    codec = es8311_create(kCodecI2cPort, ES8311_ADDRESS_0);
   }
-  _externalSpeakerGain = clamped;
-  Serial.printf("[Audio] External speaker gain set to %d\n", _externalSpeakerGain);
-  if (_useExternalSpeaker && _playBuffer != nullptr) {
-    stopPlayback();
-    beginSpeaker();
-    setVolume(_volume);
+  if (!codec) {
+    Log::client("Audio", "ES8311 create failed");
+    return false;
   }
+
+  const es8311_clock_config_t clockConfig = {
+      .mclk_inverted = false,
+      .sclk_inverted = false,
+      .mclk_from_mclk_pin = true,
+      .mclk_frequency = sampleRate * 256,
+      .sample_frequency = sampleRate,
+  };
+
+  if (es8311_init(codec, &clockConfig, ES8311_RESOLUTION_16,
+                  ES8311_RESOLUTION_16) != ESP_OK ||
+      es8311_microphone_config(codec, false) != ESP_OK ||
+      es8311_microphone_gain_set(codec, kMicGain) != ESP_OK) {
+    Log::client("Audio", "ES8311 config failed");
+    return false;
+  }
+
+  currentSampleRate = sampleRate;
+  codecVolume = -1;
+  i2sReady = true;
+  setVolume(_volume);
+  return true;
 }
 
 void AudioService::compactPlaybackBuffer() {
@@ -293,17 +337,36 @@ void AudioService::compactPlaybackBuffer() {
 }
 
 bool AudioService::playAvailableChunk() {
-  const int available = bufferedPlaybackBytes();
-  if (available <= 0) {
+  int available = bufferedPlaybackBytes();
+  if (available <= 1) {
     return false;
   }
 
-  auto *start = reinterpret_cast<int16_t *>(_playBuffer + _playReadPos);
-  const int samples = available / static_cast<int>(sizeof(int16_t));
-  M5.Speaker.playRaw(start, samples, PLAY_SAMPLE_RATE, false, 1, 0);
-  _playReadPos = _playWritePos;
-  _chunkInFlight = true;
-  return true;
+  if (!configureAudio(PLAY_SAMPLE_RATE)) {
+    return false;
+  }
+  digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
+
+  const int maxMonoBytes = kPlaybackChunkSamples * static_cast<int>(sizeof(int16_t));
+  int monoBytes = min(available, maxMonoBytes);
+  monoBytes -= monoBytes % static_cast<int>(sizeof(int16_t));
+  const int monoSamples = monoBytes / static_cast<int>(sizeof(int16_t));
+  const int16_t *mono =
+      reinterpret_cast<const int16_t *>(_playBuffer + _playReadPos);
+  for (int i = 0; i < monoSamples; i++) {
+    _stereoPlaybackChunk[i * 2] = mono[i];
+    _stereoPlaybackChunk[i * 2 + 1] = mono[i];
+  }
+
+  const size_t stereoBytes = monoSamples * 2 * sizeof(int16_t);
+  const bool ok =
+      i2s.write(reinterpret_cast<const uint8_t *>(_stereoPlaybackChunk),
+                stereoBytes) == stereoBytes;
+  if (ok) {
+    _playReadPos += monoBytes;
+    compactPlaybackBuffer();
+  }
+  return ok;
 }
 
 bool AudioService::playToneSequence(const String &sequence) {
@@ -312,8 +375,10 @@ bool AudioService::playToneSequence(const String &sequence) {
   }
 
   stopPlayback();
-  beginSpeaker();
-  setVolume(_volume);
+  if (!configureAudio(PLAY_SAMPLE_RATE)) {
+    return false;
+  }
+  digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
 
   int start = 0;
   bool played = false;
@@ -337,7 +402,6 @@ bool AudioService::playToneSequence(const String &sequence) {
     const String noteToken = divider >= 0 ? token.substring(0, divider) : token;
     const int durationMs =
         divider >= 0 ? max(10, static_cast<int>(token.substring(divider + 1).toInt())) : 200;
-    const uint32_t duration = static_cast<uint32_t>(durationMs);
     const float frequency = noteFrequency(noteToken);
 
     if (frequency < 0.0f) {
@@ -345,15 +409,27 @@ bool AudioService::playToneSequence(const String &sequence) {
       continue;
     }
 
-    if (frequency == 0.0f) {
-      delay(duration);
-      played = true;
-      start = end + 1;
-      continue;
+    int remainingSamples = PLAY_SAMPLE_RATE * durationMs / 1000;
+    float phase = 0.0f;
+    const float phaseStep = 2.0f * PI * frequency / PLAY_SAMPLE_RATE;
+    const float amplitude = 16000.0f * (_volume / 255.0f);
+    while (remainingSamples > 0) {
+      const int samples = min(remainingSamples, kPlaybackChunkSamples);
+      for (int i = 0; i < samples; i++) {
+        const int16_t sample =
+            frequency == 0.0f ? 0 : static_cast<int16_t>(sinf(phase) * amplitude);
+        _stereoPlaybackChunk[i * 2] = sample;
+        _stereoPlaybackChunk[i * 2 + 1] = sample;
+        phase += phaseStep;
+        if (phase > 2.0f * PI) {
+          phase -= 2.0f * PI;
+        }
+      }
+      i2s.write(reinterpret_cast<const uint8_t *>(_stereoPlaybackChunk),
+                samples * 2 * sizeof(int16_t));
+      remainingSamples -= samples;
     }
 
-    M5.Speaker.tone(frequency, duration);
-    delay(duration);
     played = true;
     start = end + 1;
   }

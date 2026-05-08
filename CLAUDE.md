@@ -4,18 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A handheld voice assistant built on an M5StickS3 (ESP32-S3). Hold a button, talk, release to hear the AI respond. Audio streams over WiFi/WebSocket to a Cloudflare Worker, which relays it to Google's Gemini 3.1 Live API for speech-to-speech AI.
+A handheld voice assistant built on a Waveshare ESP32-S3-Touch-AMOLED-1.8. Hold a button, talk, release to hear the AI respond. Audio streams over WiFi/WebSocket to a Cloudflare Worker, which relays it to Google's Gemini 3.1 Live API for speech-to-speech AI.
 
 ```
-M5StickS3 ──WebSocket──▶ Cloudflare Worker (Durable Object) ──WebSocket──▶ Gemini Live API
-  mic/speaker               relay + tool handling                           speech-to-speech AI
+ESP32-S3 Touch AMOLED ──WebSocket──▶ Cloudflare Worker (Durable Object) ──WebSocket──▶ Gemini Live API
+  mic/speaker                  relay + tool handling                           speech-to-speech AI
 ```
 
 ## Repository Structure
 
 Two independent codebases in one repo:
 
-- **`firmware/`** — PlatformIO/Arduino C++ project targeting M5StickS3 (ESP32-S3)
+- **`firmware/`** — PlatformIO/Arduino C++ project targeting Waveshare ESP32-S3-Touch-AMOLED-1.8
 - **`server/`** — Cloudflare Worker (TypeScript) with Durable Objects, D1, Vectorize, Workers AI
 
 ## Build & Run Commands
@@ -56,7 +56,7 @@ Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Up
 - **`LiveSession` Durable Object** (`server/src/live-session.ts`) — one instance per device. Manages dual WebSocket connections (device ↔ Gemini), routes tool calls, tracks transcriptions, persists conversation history to D1. The full tool schema sent to Gemini lives here — when adding/renaming a tool, update both the declaration array and the `case` dispatch
 - **Tool call routing**:
   - Server-side tools (handled in `live-session.ts`): `search_docs`, `web_fetch`, `new_conversation`, `new_chat`, the file-CRUD tools `list_files`, `read_file`, `write_file`, `append_to_file`, `search_files`, and `email_me` when email is configured
-  - Device-side tools (forwarded as JSON over the device WebSocket; response relayed back to Gemini): `set_brightness`, `set_volume`, `set_speaker`, `set_external_speaker_gain`, `set_voice`, `show_text`, `play_sound`, `play_melody`, `power_off`, `get_device_status`
+  - Device-side tools (forwarded as JSON over the device WebSocket; response relayed back to Gemini): `set_brightness`, `set_volume`, `set_voice`, `show_text`, `play_sound`, `play_melody`, `power_off`, `get_device_status`
 - **Optional email** (`server/src/email.ts`) — `email_me` tool is only declared to Gemini when the `[[send_email]]` binding plus `EMAIL_SENDER`/`EMAIL_RECIPIENT` secrets are all present. Cloudflare Email Routing requires the recipient to be pre-verified, so this is for self-notifications only. See README "Optional: Email Notifications"
 - **Docs search** (`server/src/docs-search.ts`) — keyword search (in-memory JSON index) with vector search fallback (Cloudflare Vectorize + Workers AI embeddings)
 - **Device files** (`server/src/files.ts`) — device-scoped notes/files in D1, every query filtered by `device_id`. `MAX_FILE_BYTES = 100_000`. Append uses SQL concat for atomicity (no read-then-write)
@@ -73,7 +73,7 @@ Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Up
   - `SettingsStore` — NVS persistence for brightness, volume, chat_id, WiFi credentials
 - **`ButtonStateMachine`** (`input/`) — debounced press/long-press/release detection for A (push-to-talk) and B (menu) buttons
 - **`PowerManager`** (`power/`) — idle timeout cascade: dim → screen off → light sleep → power off
-- **`TextDisplay`** (`ui/`) — 135×240 LCD rendering with header/body/footer layout, menus, and state-based coloring
+- **`TextDisplay`** (`ui/`) — 368x448 AMOLED rendering with header/body/footer layout, menus, and state-based coloring
 - **`Config.h`** — all hardware constants, server endpoints, audio rates, pin assignments, power timeouts
 
 ### Key Data Flows

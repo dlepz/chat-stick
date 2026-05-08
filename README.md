@@ -1,21 +1,21 @@
 # chat-stick
 
-A handheld chat interface for large language models, built on an [M5StickS3](https://docs.m5stack.com/en/core/M5StickS3) (ESP32-S3). Hold a button, talk, release to hear the AI respond. Powered by [Google's Gemini 3.1 Live API](https://ai.google.dev/gemini-api/docs/live) via a Cloudflare Worker relay.
+A handheld chat interface for large language models, built on a [Waveshare ESP32-S3-Touch-AMOLED-1.8](https://docs.waveshare.com/ESP32-S3-Touch-AMOLED-1.8) board. Hold a button, talk, release to hear the AI respond. Powered by [Google's Gemini 3.1 Live API](https://ai.google.dev/gemini-api/docs/live) via a Cloudflare Worker relay.
 
 ## Introduction
 
-This application uses a M5StickS3 as a user interface to chat with a large language model. The project is designed for Google's Gemini 3.1 Live API, which allows for low-latency conversational experience. The user communicates with the system by holding down the device's A button to record their voice; the recordings are sent via WiFi to a CloudFlare worker, which holds the conversation history for the device, passes the audio to the Gemini Live API, and then sends back the responses.
+This application uses a Waveshare ESP32-S3-Touch-AMOLED-1.8 board as a user interface to chat with a large language model. The project is designed for Google's Gemini 3.1 Live API, which allows for low-latency conversational experience. The user communicates with the system by holding down the device's BOOT button to record their voice; the recordings are sent via WiFi to a CloudFlare worker, which holds the conversation history for the device, passes the audio to the Gemini Live API, and then sends back the responses.
 
 In addition to being able to respond in natural language, the model is also given various tool calls for accessing information or performing actions. It can access the internet via web fetch and web search, from a vector database of known information, as well as accessing information about the device, such as its settings and battery level. The model can perform actions on the device such as adjusting brightness, volume, or power, or displaying text and images, or playing sounds.
 
 ## Architecture
 
 ```
-M5StickS3 ──WebSocket──▶ Cloudflare Worker (Durable Object) ──WebSocket──▶ Gemini Live API
-  mic/speaker               relay + tool handling                           speech-to-speech AI
+ESP32-S3 Touch AMOLED ──WebSocket──▶ Cloudflare Worker (Durable Object) ──WebSocket──▶ Gemini Live API
+  mic/speaker                  relay + tool handling                           speech-to-speech AI
 ```
 
-**Firmware** (`firmware/`) — PlatformIO/Arduino project for the M5StickS3. Captures audio via push-to-talk (A button), streams it over WiFi/WebSocket to the server, and plays back AI audio responses through the speaker.
+**Firmware** (`firmware/`) — PlatformIO/Arduino project for the Waveshare ESP32-S3-Touch-AMOLED-1.8. Captures audio via push-to-talk (BOOT button), streams it over WiFi/WebSocket to the server, and plays back AI audio responses through the speaker.
 
 **Server** (`server/`) — Cloudflare Worker with a Durable Object (`LiveSession`) that bridges the device to Gemini's Live API. Holds conversation history in D1, routes tool calls (web fetch, web search, vector database lookups, device info and control), and manages session lifecycle.
 
@@ -138,9 +138,9 @@ Never commit credentials. The `.gitignore` is configured to exclude these files.
 
 ## Hardware
 
-- **Device**: M5StickS3 (ESP32-S3, 135x240 LCD, MEMS mic, 1W speaker)
-- **Buttons**: A (GPIO 11) = push-to-talk, B (GPIO 12) = menu/control
-- **Audio**: 16kHz input / 24kHz output PCM
+- **Device**: Waveshare ESP32-S3-Touch-AMOLED-1.8 (ESP32-S3R8, 368x448 AMOLED, ES8311 audio codec)
+- **Buttons**: BOOT (GPIO 0) = push-to-talk, PWR key = menu/control
+- **Audio**: 16kHz input / 24kHz output PCM via ES8311/I2S
 
 ## Adding Docs to the Knowledge Base
 

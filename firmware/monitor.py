@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serial monitor for M5StickS3 — works without a terminal (no curses/termios)."""
+"""Serial monitor for the Waveshare ESP32-S3-Touch-AMOLED-1.8."""
 import serial
 import sys
 import signal

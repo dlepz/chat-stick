@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and flash firmware to a USB-connected M5StickS3.
+# Build and flash firmware to a USB-connected Waveshare ESP32-S3-Touch-AMOLED-1.8.
 # Configure upload_port/monitor_port in firmware/platformio.ini first.
 #
 # Pass --monitor to also open the serial monitor after flashing.

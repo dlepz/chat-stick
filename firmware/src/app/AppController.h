@@ -9,7 +9,6 @@
 #include "../services/WiFiService.h"
 #include "../state/StateTypes.h"
 #include "../ui/TextDisplay.h"
-#include <M5PM1.h>
 
 class AppController {
 public:
@@ -29,10 +28,12 @@ private:
 
   enum class MenuState { Home, Device, ResumeChat };
 
-  static constexpr int kMinPlaybackBytes = PLAY_SAMPLE_RATE * 2 / 4;
+  static constexpr int kMinPlaybackBytes =
+      PLAY_SAMPLE_RATE * sizeof(int16_t) * 3 / 4;
   static constexpr unsigned long kThinkingTimeoutMs = 15000;
   static constexpr unsigned long kMaxRecordingMs = 30000;
   static constexpr unsigned long kResetHoldMs = 1500;
+  static constexpr unsigned long kAudioRenderMinIntervalMs = 160;
   static constexpr int kMaxConversationHistory = 10;
 
   AppRegion _appRegion = AppRegion::Initializing;
@@ -52,6 +53,7 @@ private:
   unsigned long _resetHoldStartMs = 0;
   unsigned long _lastHeartbeatMs = 0;
   unsigned long _lastHeaderRefreshMs = 0;
+  unsigned long _lastRenderMs = 0;
   int _audioChunksSent = 0;
   int _bodyPageIndex = 0;
   int _menuSelection = 0;
@@ -72,9 +74,7 @@ private:
   AudioService _audio;
   LiveSessionService _live;
   SettingsStore _settings;
-  M5PM1 _pm1;
-  bool _pm1Ready = false;
-  unsigned long _lastPm1PollMs = 0;
+  unsigned long _lastPowerPollMs = 0;
 
   void configureCallbacks();
   void connectNetworkStack();
@@ -110,6 +110,7 @@ private:
   void cycleMenuSelection();
   void selectCurrentMenuItem();
   int menuItemCount() const;
+  String menuTitle() const;
   String menuItemLabel(int index) const;
   void loadConversationHistory();
   void resumeConversation(int index);

@@ -1,7 +1,8 @@
 #include "PowerManager.h"
 
 #include "../Config.h"
-#include <M5Unified.h>
+#include "../diag/Log.h"
+#include "../hal/Board.h"
 #include <driver/gpio.h>
 #include <esp_sleep.h>
 
@@ -68,9 +69,9 @@ void PowerManager::setTimeouts(const PowerTimeouts &timeouts) {
       max(_timeouts.screenOffMs + 1000UL, timeouts.lightSleepMs);
   _timeouts.powerOffMs =
       max(_timeouts.lightSleepMs + 1000UL, timeouts.powerOffMs);
-  Serial.printf("[Power] Updated timeouts dim=%lu screen=%lu sleep=%lu off=%lu\n",
-                _timeouts.dimMs, _timeouts.screenOffMs, _timeouts.lightSleepMs,
-                _timeouts.powerOffMs);
+  Log::server("Power", "updated timeouts dim=%lu screen=%lu sleep=%lu off=%lu",
+              _timeouts.dimMs, _timeouts.screenOffMs, _timeouts.lightSleepMs,
+              _timeouts.powerOffMs);
 }
 
 void PowerManager::beginWaking() {
@@ -82,7 +83,7 @@ void PowerManager::beginWaking() {
   _state = PowerState::Waking;
   _lastActivityMs = millis();
 
-  Serial.printf("[Power] %s -> Waking\n", powerStateName(previous));
+  Log::client("Power", "%s -> Waking", powerStateName(previous));
 
   if (_brightnessCallback) {
     _brightnessCallback(_savedBrightness);
@@ -96,7 +97,7 @@ void PowerManager::finishWaking() {
 
   _state = PowerState::Active;
   _lastActivityMs = millis();
-  Serial.println("[Power] Waking -> Active");
+  Log::client("Power", "Waking -> Active");
 }
 
 void PowerManager::restoreActive() {
@@ -104,7 +105,7 @@ void PowerManager::restoreActive() {
     return;
   }
 
-  Serial.printf("[Power] %s -> Active\n", powerStateName(_state));
+  Log::client("Power", "%s -> Active", powerStateName(_state));
   _state = PowerState::Active;
 
   if (_brightnessCallback) {
@@ -124,8 +125,8 @@ void PowerManager::transitionTo(PowerState newState) {
   const PowerState oldState = _state;
   _state = newState;
 
-  Serial.printf("[Power] %s -> %s\n", powerStateName(oldState),
-                powerStateName(newState));
+  Log::client("Power", "%s -> %s", powerStateName(oldState),
+              powerStateName(newState));
 
   switch (newState) {
   case PowerState::Active:
@@ -168,13 +169,11 @@ void PowerManager::transitionTo(PowerState newState) {
 }
 
 void PowerManager::enterLightSleep() {
-  Serial.println("[Power] Entering light sleep...");
+  Log::client("Power", "entering light sleep");
 
   if (_brightnessCallback) {
     _brightnessCallback(BRIGHTNESS_OFF);
   }
-  M5.Display.sleep();
-
   if (_wifiCallback) {
     _wifiCallback(false);
   }
@@ -182,7 +181,9 @@ void PowerManager::enterLightSleep() {
   while (true) {
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     gpio_wakeup_enable(BUTTON_A_PIN, GPIO_INTR_LOW_LEVEL);
-    gpio_wakeup_enable(BUTTON_B_PIN, GPIO_INTR_LOW_LEVEL);
+    if (BUTTON_B_PIN != GPIO_NUM_NC) {
+      gpio_wakeup_enable(BUTTON_B_PIN, GPIO_INTR_LOW_LEVEL);
+    }
     esp_sleep_enable_gpio_wakeup();
     esp_sleep_enable_timer_wakeup(LIGHT_SLEEP_WAKE_INTERVAL_MS * 1000ULL);
 
@@ -190,8 +191,8 @@ void PowerManager::enterLightSleep() {
 
     const esp_sleep_wakeup_cause_t reason = esp_sleep_get_wakeup_cause();
     if (reason == ESP_SLEEP_WAKEUP_GPIO) {
-      Serial.println("[Power] Light sleep wake: button");
-      M5.Display.wakeup();
+      Board::update();
+      Log::client("Power", "light sleep wake: button");
       if (_wifiCallback) {
         _wifiCallback(true);
       }
@@ -204,8 +205,21 @@ void PowerManager::enterLightSleep() {
     }
 
     if (reason == ESP_SLEEP_WAKEUP_TIMER) {
+      Board::update();
+      if (Board::buttonAIsPressed() || Board::buttonBIsPressed()) {
+        Log::client("Power", "light sleep wake: polled button");
+        if (_wifiCallback) {
+          _wifiCallback(true);
+        }
+        _state = PowerState::Waking;
+        _lastActivityMs = millis();
+        if (_brightnessCallback) {
+          _brightnessCallback(_savedBrightness);
+        }
+        return;
+      }
+
       const unsigned long idle = getIdleTime();
-      Serial.printf("[Power] Light sleep timer wake, idle=%lu ms\n", idle);
       if (idle >= _timeouts.powerOffMs) {
         transitionTo(PowerState::PowerOff);
         return;

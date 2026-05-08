@@ -45,8 +45,8 @@ struct WiFiNetwork {
 constexpr int WIFI_CONNECT_TIMEOUT_SEC = 10;
 
 // ============= Device =============
-constexpr const char *DEVICE_ID = "m5s3-live";
-constexpr int FIRMWARE_VERSION = 4;
+constexpr const char *DEVICE_ID = "waveshare-amoled18-live";
+constexpr int FIRMWARE_VERSION = 8;
 
 // ============= Audio =============
 constexpr int MIC_SAMPLE_RATE = 16000;  // 16 kHz input (Gemini Live API)
@@ -55,15 +55,33 @@ constexpr int PLAY_SAMPLE_RATE = 24000; // 24 kHz output (Gemini Live API)
 constexpr int MAX_PLAYBACK_SEC = 30;    // Max response buffer
 
 // ============= Display =============
-constexpr int SCREEN_WIDTH_PX = 240;
-constexpr int SCREEN_HEIGHT_PX = 135;
+constexpr int SCREEN_WIDTH_PX = 368;
+constexpr int SCREEN_HEIGHT_PX = 448;
 constexpr int DEFAULT_BRIGHTNESS = 80;  // lower = longer battery; plenty readable indoors
-constexpr int DEFAULT_VOLUME = 255;
+constexpr int DEFAULT_VOLUME = 200;
 
-// ============= Hardware (M5StickS3) =============
-// StickS3 button pin map from M5Stack docs: KEY1=G11, KEY2=G12.
-constexpr gpio_num_t BUTTON_A_PIN = GPIO_NUM_11;
-constexpr gpio_num_t BUTTON_B_PIN = GPIO_NUM_12;
+// ============= Hardware (Waveshare ESP32-S3-Touch-AMOLED-1.8) =============
+constexpr int LCD_SDIO0_PIN = 4;
+constexpr int LCD_SDIO1_PIN = 5;
+constexpr int LCD_SDIO2_PIN = 6;
+constexpr int LCD_SDIO3_PIN = 7;
+constexpr int LCD_SCLK_PIN = 11;
+constexpr int LCD_CS_PIN = 12;
+
+constexpr int BOARD_I2C_SDA_PIN = 15;
+constexpr int BOARD_I2C_SCL_PIN = 14;
+
+constexpr gpio_num_t BUTTON_A_PIN = GPIO_NUM_0;   // BOOT, active low
+// PWR is read through AXP2101 IRQs. On this board AXP_IRQ is wired to the
+// TCA9554 expander (EXIO5), not a wake-capable ESP32 GPIO.
+constexpr gpio_num_t BUTTON_B_PIN = GPIO_NUM_NC;
+
+constexpr int AUDIO_I2S_MCLK_PIN = 16;
+constexpr int AUDIO_I2S_BCLK_PIN = 9;
+constexpr int AUDIO_I2S_DIN_PIN = 10;  // ES8311 ADC -> ESP32
+constexpr int AUDIO_I2S_WS_PIN = 45;
+constexpr int AUDIO_I2S_DOUT_PIN = 8;  // ESP32 -> ES8311 DAC
+constexpr int AUDIO_PA_ENABLE_PIN = 46;
 
 // ============= Clock =============
 constexpr const char *NTP_SERVER = "pool.ntp.org";
@@ -74,6 +92,6 @@ constexpr unsigned long IDLE_DIM_MS = 60 * 1000;
 constexpr unsigned long IDLE_SCREEN_OFF_MS = 2 * 60 * 1000;
 constexpr unsigned long IDLE_LIGHT_SLEEP_MS = 5 * 60 * 1000;
 constexpr unsigned long IDLE_POWER_OFF_MS = 10 * 60 * 1000;
-constexpr unsigned long LIGHT_SLEEP_WAKE_INTERVAL_MS = 60 * 1000;
+constexpr unsigned long LIGHT_SLEEP_WAKE_INTERVAL_MS = 250;
 constexpr int BRIGHTNESS_DIM = 48;
 constexpr int BRIGHTNESS_OFF = 0;

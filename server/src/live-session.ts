@@ -123,7 +123,7 @@ function buildSystemInstructionText({
 	const trimmedUserInstructions = userInstructions.trim()
 
 	return [
-		'You are a voice assistant running on an M5StickS3 — a tiny handheld ESP32-S3 device.',
+		'You are a voice assistant running on a Waveshare ESP32-S3-Touch-AMOLED-1.8 handheld device.',
 		'',
 		'The user holds a button to talk and releases to hear your response.',
 		'This is a voice interface: optimize for short spoken replies.',
@@ -153,21 +153,19 @@ function buildSystemInstructionText({
 		`- Do not update ${USER_INSTRUCTIONS_PATH} for one-off requests, factual notes, lists, or journal entries; use other files for those.`,
 		'',
 		'## Device specs:',
-		'- Display: 135×240 pixel color LCD (ST7789)',
-		'- Speaker: 8Ω 1W cavity speaker with AW8737 amplifier',
-		'- Microphone: MEMS mic (SPM1423)',
-		'- Battery: 250mAh rechargeable',
+		'- Display: 368x448 AMOLED (SH8601 over QSPI)',
+		'- Speaker and microphone: ES8311 audio codec over I2S',
+		'- Power management: AXP2101 PMIC with battery and USB telemetry',
 		'- Connectivity: WiFi 2.4GHz',
-		'- Size: 48×24×15mm — fits in a palm',
 		'',
 		'## Buttons:',
-		'- Button A (front, large): push-to-talk — hold while speaking, release to send. In a menu: selects the highlighted item. On an error screen: retry.',
-		'- Button B (side, small): hold to open the menu. Click during chat to flip pages of long replies on screen, or to clear an on-screen tool result. In a menu: click cycles to the next item; hold goes back (or closes the menu from Home).',
+		'- BOOT button (GPIO 0): push-to-talk — hold while speaking, release to send. In a menu: selects the highlighted item. On an error screen: retry.',
+		'- PWR key: hold to open the menu. Click during chat to flip pages of long replies on screen, or to clear an on-screen tool result. In a menu: click cycles to the next item; hold goes back (or closes the menu from Home).',
 		'- Holding A and B together for several seconds triggers a factory reset confirmation. Mention this only if the user explicitly asks.',
 		'',
 		'## Menu (hold Button B to open):',
 		'- Home → New conversation, Resume chat, Device, Go back.',
-		'- Device → Set up WiFi, Check for updates, toggle internal/external speaker, Power off, Go back.',
+		'- Device → Set up WiFi, Check for updates, Power off, Go back.',
 		'- Resume chat → pick a previous conversation to continue.',
 		'',
 		'## Firmware & updates:',
@@ -187,8 +185,6 @@ function buildSystemInstructionText({
 		'You can control the device using the available tools:',
 		'- set_brightness: adjust display backlight',
 		'- set_volume: adjust speaker volume',
-		'- set_speaker: switch between the built-in speaker and an attached external SPK2 HAT',
-		'- set_external_speaker_gain: tune loudness of the external SPK2 HAT (1–64, default 24)',
 		'- set_voice: change the voice used for speech output',
 		'- show_text: display a message on the screen',
 		'- show_image: generate and display an image on the screen (1-bit dithered, ~10s to generate). Use only when the user explicitly asks for a picture, drawing, or image. After calling, give a brief one-line acknowledgement like "Sure, here it comes" or "Coming right up" — do NOT explain how image generation works, what the prompt was, or that it takes a moment. The device shows a pulse animation; the user does not need narration.',
@@ -226,10 +222,12 @@ function buildSystemInstructionText({
 export class LiveSession {
 	private static readonly MIN_RECONNECT_MS = 1500
 	private static readonly IDLE_CLOSE_MS = 120_000
+	private static readonly MAX_PENDING_AUDIO_BYTES = 1_100_000
 	private state: DurableObjectState
 	private env: Env
 	private deviceWs: WebSocket | null = null
 	private geminiWs: WebSocket | null = null
+	private geminiConnecting = false
 	private geminiReady = false
 	private deviceId = 'unknown'
 	private chatId = ''
@@ -243,6 +241,9 @@ export class LiveSession {
 	private currentTurnAudioBytes = 0
 	private currentTurnAbsSum = 0
 	private currentTurnSamples = 0
+	private pendingAudioChunks: ArrayBuffer[] = []
+	private pendingAudioBytes = 0
+	private pendingStop = false
 	// Pending device-side tool calls keyed by call id → { name, args, startMs }
 	private pendingDeviceCalls = new Map<string, { name: string; args: unknown; startMs: number }>()
 
@@ -306,23 +307,20 @@ export class LiveSession {
 	}
 
 	private async connectGemini(sessionGeneration = this.sessionGeneration) {
+		if (this.geminiConnecting) {
+			return
+		}
 		if (this.geminiWs) {
-			console.log('[Gemini] Closing prior session before opening new one')
-			try {
-				this.geminiWs.close()
-			} catch {
-				// ignore
-			}
-			this.geminiWs = null
-			this.geminiReady = false
+			return
 		}
 
-		const url =
-			'https://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent' +
-			`?key=${this.env.GEMINI_API_KEY}`
-		const userInstructions = await this.getUserInstructionsForPrompt()
-
+		this.geminiConnecting = true
 		try {
+			const url =
+				'https://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent' +
+				`?key=${this.env.GEMINI_API_KEY}`
+			const userInstructions = await this.getUserInstructionsForPrompt()
+
 			const resp = await fetch(url, {
 				headers: { Upgrade: 'websocket' },
 			})
@@ -439,38 +437,6 @@ export class LiveSession {
 										},
 									},
 									{
-										name: 'set_speaker',
-										description:
-											'Switch audio output between the StickS3 built-in speaker and an attached M5Stack HAT SPK2 external speaker. The user must physically attach the HAT before selecting "external" for audio to be audible. Check get_device_status to see which mode is currently active.',
-										parameters: {
-											type: 'OBJECT',
-											properties: {
-												mode: {
-													type: 'STRING',
-													description:
-														'"internal" for the built-in stick speaker, or "external" for the attached SPK2 HAT.',
-												},
-											},
-											required: ['mode'],
-										},
-									},
-									{
-										name: 'set_external_speaker_gain',
-										description:
-											'Adjust the software gain applied to audio sent to the external SPK2 HAT. Only effective when the speaker mode is "external". Raise to increase loudness; lower if you hear clipping or distortion. Typical usable range is 8 to 40.',
-										parameters: {
-											type: 'OBJECT',
-											properties: {
-												gain: {
-													type: 'INTEGER',
-													description:
-														'Gain multiplier, integer 1..64. Default is 24.',
-												},
-											},
-											required: ['gain'],
-										},
-									},
-									{
 										name: 'set_voice',
 										description:
 											'Change the voice used for speech output. Persists across sessions. Causes a brief reconnect, so say a short acknowledgement before calling. The new voice will speak the next response.',
@@ -488,7 +454,7 @@ export class LiveSession {
 										{
 											name: 'show_text',
 										description:
-											'Display a short text message on the device screen. Max ~20 characters per line, 7 lines.',
+											'Display a short text message on the device screen. Max ~30 characters per line and about 26 visible lines with header/footer.',
 										parameters: {
 											type: 'OBJECT',
 											properties: {
@@ -559,7 +525,7 @@ export class LiveSession {
 										{
 											name: 'get_device_status',
 										description:
-											'Get current device status including firmware_version, battery level, volume, brightness, speaker mode, voice, WiFi network, and uptime.',
+											'Get current device status including firmware_version, battery level, power source, volume, brightness, voice, WiFi network, and uptime.',
 										parameters: {
 											type: 'OBJECT',
 											properties: {},
@@ -735,13 +701,15 @@ export class LiveSession {
 			)
 
 			console.log('[Gemini] Setup message sent')
-			} catch (err) {
+		} catch (err) {
 			console.error('[Gemini] Connection error:', err)
 			this.sendToDevice({
 				type: 'error',
 				category: 'gemini_unavailable',
 				message: `AI connection failed: ${err}`,
 			})
+		} finally {
+			this.geminiConnecting = false
 		}
 	}
 
@@ -753,40 +721,27 @@ export class LiveSession {
 		this.lastActivityMs = Date.now()
 		if (data instanceof ArrayBuffer) {
 			// Binary frame = raw PCM audio from device mic
-			if (!this.geminiWs) {
-				console.warn('[Bridge] Audio dropped — Gemini WS is null, reconnecting...')
-				this.connectGemini()
-				return
-			}
-			if (!this.geminiReady) {
-				console.warn('[Bridge] Audio dropped — Gemini not ready yet')
-				return
-			}
-
-			this.audioChunkCount++
-			this.currentTurnAudioBytes += data.byteLength
-			const view = new Int16Array(data)
-			for (const sample of view) {
-				this.currentTurnAbsSum += Math.abs(sample)
-			}
-			this.currentTurnSamples += view.length
+			const chunk = data.slice(0)
+			this.noteAudioChunk(chunk)
 			if (this.audioChunkCount <= 3 || this.audioChunkCount % 10 === 0) {
-				// Log first few samples as int16 for debugging
-				const firstSamples = Array.from(view.slice(0, 4))
-				console.log(`[Bridge] Audio chunk #${this.audioChunkCount}: ${data.byteLength} bytes → Gemini (samples: ${firstSamples})`)
+				const firstSamples = Array.from(new Int16Array(chunk).slice(0, 4))
+				const destination = this.geminiWs && this.geminiReady ? 'Gemini' : 'buffer'
+				console.log(
+					`[Bridge] Audio chunk #${this.audioChunkCount}: ${chunk.byteLength} bytes → ${destination} (samples: ${firstSamples})`
+				)
 			}
 
-			const base64 = arrayBufferToBase64(data)
-			this.geminiWs.send(
-				JSON.stringify({
-					realtimeInput: {
-						audio: {
-							data: base64,
-							mimeType: 'audio/pcm;rate=16000',
-						},
-					},
-				})
-			)
+			if (!this.geminiWs || !this.geminiReady) {
+				this.bufferAudioChunk(chunk)
+				if (!this.geminiWs) {
+					console.warn('[Bridge] Audio buffered — Gemini WS is null, reconnecting...')
+					this.connectGemini()
+				}
+				return
+			}
+
+			this.flushPendingAudioIfReady()
+			this.forwardAudioChunk(chunk)
 		} else {
 			// Text frame = control message
 			try {
@@ -795,6 +750,7 @@ export class LiveSession {
 
 				if (msg.type === 'start') {
 					this.resetCurrentTurnMetrics()
+					this.clearPendingAudio()
 					if (!this.geminiWs) {
 						console.log('[Bridge] Start received while Gemini closed — reconnecting')
 						this.connectGemini()
@@ -840,21 +796,8 @@ export class LiveSession {
 				}
 
 				// Send trailing silence so Gemini's VAD detects end-of-speech
-				if (msg.type === 'stop' && this.geminiWs && this.geminiReady) {
-					const ignoreReason = this.getIgnoredTurnReason()
-					if (ignoreReason) {
-						console.log(`[Bridge] Ignoring accidental clip (${ignoreReason})`)
-						this.currentUserText = ''
-						this.currentAssistantText = ''
-						this.sendToDevice({ type: 'ignore_audio', reason: ignoreReason })
-						this.reconnectGeminiSession().catch((err) => {
-							console.error('[Gemini] Failed to reset ignored turn:', err)
-						})
-						return
-					}
-
-					this.audioChunkCount = 0
-					this.sendTrailingSilence()
+				if (msg.type === 'stop') {
+					this.handleStopMessage()
 				}
 			} catch {
 				console.warn('[Device] Unparseable message:', data)
@@ -890,6 +833,7 @@ export class LiveSession {
 				type: 'settings',
 				power: DEFAULT_POWER_TIMEOUTS,
 			})
+			this.flushPendingAudioIfReady()
 			return
 		}
 
@@ -1501,6 +1445,104 @@ export class LiveSession {
 		return averageAbs < LiveSession.SILENCE_AVG_ABS_THRESHOLD ? 'silent' : null
 	}
 
+	private noteAudioChunk(data: ArrayBuffer) {
+		this.audioChunkCount++
+		this.currentTurnAudioBytes += data.byteLength
+		const view = new Int16Array(data)
+		for (const sample of view) {
+			this.currentTurnAbsSum += Math.abs(sample)
+		}
+		this.currentTurnSamples += view.length
+	}
+
+	private bufferAudioChunk(data: ArrayBuffer) {
+		this.pendingAudioChunks.push(data)
+		this.pendingAudioBytes += data.byteLength
+
+		while (
+			this.pendingAudioBytes > LiveSession.MAX_PENDING_AUDIO_BYTES &&
+			this.pendingAudioChunks.length > 0
+		) {
+			const dropped = this.pendingAudioChunks.shift()
+			this.pendingAudioBytes -= dropped?.byteLength ?? 0
+			console.warn('[Bridge] Pending audio buffer full; dropped oldest chunk')
+		}
+	}
+
+	private clearPendingAudio() {
+		this.pendingAudioChunks = []
+		this.pendingAudioBytes = 0
+		this.pendingStop = false
+	}
+
+	private forwardAudioChunk(data: ArrayBuffer) {
+		if (!this.geminiWs || !this.geminiReady) return
+		const base64 = arrayBufferToBase64(data)
+		this.geminiWs.send(
+			JSON.stringify({
+				realtimeInput: {
+					audio: {
+						data: base64,
+						mimeType: 'audio/pcm;rate=16000',
+					},
+				},
+			})
+		)
+	}
+
+	private flushPendingAudioIfReady() {
+		if (!this.geminiWs || !this.geminiReady || this.pendingAudioChunks.length === 0) {
+			return
+		}
+
+		const count = this.pendingAudioChunks.length
+		const bytes = this.pendingAudioBytes
+		for (const chunk of this.pendingAudioChunks) {
+			this.forwardAudioChunk(chunk)
+		}
+		this.pendingAudioChunks = []
+		this.pendingAudioBytes = 0
+		console.log(`[Bridge] Flushed ${count} buffered audio chunk(s), ${bytes} bytes`)
+
+		if (this.pendingStop) {
+			this.pendingStop = false
+			this.handleStopMessage()
+		}
+	}
+
+	private handleStopMessage() {
+		if (!this.geminiWs || !this.geminiReady) {
+			this.pendingStop = true
+			if (!this.geminiWs) {
+				this.connectGemini()
+			}
+			console.log('[Bridge] Stop buffered until Gemini is ready')
+			return
+		}
+
+		if (this.pendingAudioChunks.length > 0) {
+			this.pendingStop = true
+			this.flushPendingAudioIfReady()
+			return
+		}
+
+		const ignoreReason = this.getIgnoredTurnReason()
+		if (ignoreReason) {
+			console.log(`[Bridge] Ignoring accidental clip (${ignoreReason})`)
+			this.currentUserText = ''
+			this.currentAssistantText = ''
+			this.clearPendingAudio()
+			this.sendToDevice({ type: 'ignore_audio', reason: ignoreReason })
+			this.reconnectGeminiSession().catch((err) => {
+				console.error('[Gemini] Failed to reset ignored turn:', err)
+			})
+			return
+		}
+
+		this.audioChunkCount = 0
+		this.sendTrailingSilence()
+	}
+
 	private resetCurrentTurnMetrics() {
 		this.audioChunkCount = 0
 		this.currentTurnAudioBytes = 0
@@ -1519,6 +1561,7 @@ export class LiveSession {
 		}
 		this.geminiWs = null
 		this.geminiReady = false
+		this.clearPendingAudio()
 		await this.connectGemini()
 	}
 
@@ -1536,6 +1579,7 @@ export class LiveSession {
 		)
 		console.log('[Bridge] Sent 1s trailing silence')
 		this.resetCurrentTurnMetrics()
+		this.clearPendingAudio()
 	}
 
 	async alarm() {
@@ -1591,6 +1635,7 @@ export class LiveSession {
 			this.deviceWs = null
 		}
 		this.resetCurrentTurnMetrics()
+		this.clearPendingAudio()
 	}
 }
 

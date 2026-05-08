@@ -1,57 +1,75 @@
 #include "TextDisplay.h"
 
+#include "SmartBrickFont.h"
 #include "../Config.h"
-#include <M5Unified.h>
+#include "../diag/Log.h"
+#include "../hal/Board.h"
+#include <esp_heap_caps.h>
 
 namespace {
 constexpr uint16_t COLOR_BLACK = 0x0000;
 constexpr uint16_t COLOR_WHITE = 0xFFFF;
 constexpr uint16_t COLOR_GRAY = 0x7BEF;
-constexpr int LINE_HEIGHT = 16;
+
+constexpr size_t kFramebufferBytes =
+    static_cast<size_t>(SCREEN_WIDTH_PX) * SCREEN_HEIGHT_PX * sizeof(uint16_t);
 } // namespace
 
 void TextDisplay::init() {
-  M5.Display.setRotation(1);
-  M5.Display.setFont(&fonts::AsciiFont8x16);
-  M5.Display.setTextSize(1);
-  M5.Display.fillScreen(COLOR_BLACK);
-  _canvas.setColorDepth(16);
-  _canvas.createSprite(SCREEN_WIDTH_PX, SCREEN_HEIGHT_PX);
-  _canvasReady = true;
+  auto &display = Board::display();
+  if (!display.begin()) {
+    Log::client("Display", "display.begin failed");
+  }
+
+  _framebuffer = static_cast<uint16_t *>(
+      heap_caps_malloc(kFramebufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!_framebuffer) {
+    _framebuffer = static_cast<uint16_t *>(
+        heap_caps_malloc(kFramebufferBytes, MALLOC_CAP_8BIT));
+  }
+  if (_framebuffer) {
+    Log::client("Display", "framebuffer bytes=%u",
+                static_cast<unsigned>(kFramebufferBytes));
+    _previousFramebuffer = static_cast<uint16_t *>(heap_caps_malloc(
+        kFramebufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!_previousFramebuffer) {
+      _previousFramebuffer = static_cast<uint16_t *>(
+          heap_caps_malloc(kFramebufferBytes, MALLOC_CAP_8BIT));
+    }
+    if (!_previousFramebuffer) {
+      Log::client("Display", "dirty-rect buffer unavailable; full flush");
+    }
+  } else {
+    Log::client("Display", "framebuffer allocation failed; drawing directly");
+  }
+
+  clearFrame(COLOR_BLACK);
+  flushFrame(true);
 }
 
 void TextDisplay::setBrightness(uint8_t brightness) {
-  M5.Display.setBrightness(brightness);
+  Board::setDisplayBrightness(brightness);
 }
 
 void TextDisplay::render(const DisplayState &state) {
-  if (_canvasReady) {
-    _canvas.fillScreen(COLOR_BLACK);
-    _canvas.setFont(&fonts::AsciiFont8x16);
-    _canvas.setTextSize(1);
-  } else {
-    M5.Display.fillScreen(COLOR_BLACK);
-    M5.Display.setFont(&fonts::AsciiFont8x16);
-    M5.Display.setTextSize(1);
-  }
+  clearFrame(COLOR_BLACK);
 
-  const bool hasHeader = !state.headerLeft.isEmpty() || !state.headerRight.isEmpty();
+  const bool hasHeader =
+      !state.headerLeft.isEmpty() || !state.headerRight.isEmpty();
   const bool hasFooterText =
       !state.footerLeft.isEmpty() || !state.footerRight.isEmpty();
-  if (hasHeader) {
-    drawLine(0, mergeEdgeText(state.headerLeft, state.headerRight), COLOR_GRAY);
-  }
 
   if (state.showMenu) {
+    if (hasHeader) {
+      drawEdgeLine(0, state.headerLeft, state.headerRight, COLOR_GRAY);
+    }
     drawMenu(state);
   } else {
-    const int bodyStart = hasHeader ? 1 : 0;
-    const int bodyEnd = kLines - 1;
-    const int bodyRows = bodyEnd - bodyStart;
     const bool imagePage = state.imagePresent && hasImage();
-    String wrapped[32];
-    const int wrappedCount = wrapBodyText(state.bodyText, wrapped, 32);
-    const int textPageCount = max(1, (wrappedCount + bodyRows - 1) / bodyRows);
+    String wrapped[128];
+    const int wrappedCount = wrapBodyText(state.bodyText, wrapped, 128);
+    const int textPageCount =
+        max(1, (wrappedCount + kChatRows - 1) / kChatRows);
     const int totalPages =
         (imagePage ? 1 : 0) + (state.bodyText.isEmpty() ? 0 : textPageCount);
     const int pageCount = max(1, totalPages);
@@ -63,39 +81,38 @@ void TextDisplay::render(const DisplayState &state) {
       drawStoredImage();
     } else {
       const int textPageIndex = imagePage ? safePageIndex - 1 : safePageIndex;
-      for (int i = 0; i < bodyRows; i++) {
-        const int lineIndex = textPageIndex * bodyRows + i;
-        drawLine(bodyStart + i,
-                 lineIndex < wrappedCount ? wrapped[lineIndex] : "", bodyColor);
+      for (int i = 0; i < kChatRows; i++) {
+        const int lineIndex = textPageIndex * kChatRows + i;
+        drawLine(i, lineIndex < wrappedCount ? wrapped[lineIndex] : "",
+                 bodyColor);
       }
     }
+
     if (pageCount > 1) {
       drawPageIndicator(safePageIndex, pageCount);
     }
   }
 
   if (hasFooterText) {
-    drawLine(kFooterRow, mergeEdgeText(state.footerLeft, state.footerRight),
-             COLOR_GRAY);
+    drawText(kInsetX, kFooterY,
+             mergeEdgeText(state.footerLeft, state.footerRight), COLOR_GRAY);
   }
 
-  if (_canvasReady) {
-    _canvas.pushSprite(&M5.Display, 0, 0);
-  }
+  flushFrame();
 }
 
 bool TextDisplay::setImage(const uint8_t *packed, size_t packedLen, int width,
                            int height) {
   if (!packed || width != kImageW || height != kImageH) {
-    Serial.printf("[Display] Image rejected: %dx%d (expected %dx%d)\n", width,
-                  height, kImageW, kImageH);
+    Log::client("Display", "image rejected %dx%d expected=%dx%d", width,
+                height, kImageW, kImageH);
     return false;
   }
   const size_t expectedBytes = static_cast<size_t>((width * height + 7) / 8);
   if (packedLen < expectedBytes) {
-    Serial.printf("[Display] Image too short: %u bytes (expected %u)\n",
-                  static_cast<unsigned>(packedLen),
-                  static_cast<unsigned>(expectedBytes));
+    Log::client("Display", "image too short bytes=%u expected=%u",
+                static_cast<unsigned>(packedLen),
+                static_cast<unsigned>(expectedBytes));
     return false;
   }
 
@@ -104,7 +121,7 @@ bool TextDisplay::setImage(const uint8_t *packed, size_t packedLen, int width,
     _imageBuffer = static_cast<uint8_t *>(malloc(expectedBytes));
     if (!_imageBuffer) {
       _imageBufferSize = 0;
-      Serial.println("[Display] Failed to allocate image buffer");
+      Log::client("Display", "failed to allocate image buffer");
       return false;
     }
     _imageBufferSize = expectedBytes;
@@ -125,6 +142,170 @@ void TextDisplay::clearImage() {
   _imageHeight = 0;
 }
 
+void TextDisplay::clearFrame(uint16_t color) const {
+  if (!_framebuffer) {
+    Board::display().fillScreen(color);
+    return;
+  }
+
+  const size_t pixels =
+      static_cast<size_t>(SCREEN_WIDTH_PX) * SCREEN_HEIGHT_PX;
+  for (size_t i = 0; i < pixels; i++) {
+    _framebuffer[i] = color;
+  }
+}
+
+void TextDisplay::flushFrame(bool forceFull) const {
+  if (!_framebuffer) {
+    return;
+  }
+
+  auto &display = Board::display();
+  if (forceFull || !_previousFramebuffer || !_hasPreviousFrame) {
+    display.draw16bitRGBBitmap(0, 0, _framebuffer, SCREEN_WIDTH_PX,
+                               SCREEN_HEIGHT_PX);
+    if (_previousFramebuffer) {
+      memcpy(_previousFramebuffer, _framebuffer, kFramebufferBytes);
+      _hasPreviousFrame = true;
+    }
+    return;
+  }
+
+  int minX = SCREEN_WIDTH_PX;
+  int minY = SCREEN_HEIGHT_PX;
+  int maxX = -1;
+  int maxY = -1;
+
+  for (int y = 0; y < SCREEN_HEIGHT_PX; y++) {
+    const uint16_t *row =
+        _framebuffer + static_cast<size_t>(y) * SCREEN_WIDTH_PX;
+    const uint16_t *prev =
+        _previousFramebuffer + static_cast<size_t>(y) * SCREEN_WIDTH_PX;
+    for (int x = 0; x < SCREEN_WIDTH_PX; x++) {
+      if (row[x] == prev[x]) {
+        continue;
+      }
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  if (maxX < minX || maxY < minY) {
+    return;
+  }
+
+  const int dirtyW = maxX - minX + 1;
+  const int dirtyH = maxY - minY + 1;
+  const int dirtyPixels = dirtyW * dirtyH;
+  const int screenPixels = SCREEN_WIDTH_PX * SCREEN_HEIGHT_PX;
+
+  if (dirtyPixels > screenPixels / 3) {
+    display.draw16bitRGBBitmap(0, 0, _framebuffer, SCREEN_WIDTH_PX,
+                               SCREEN_HEIGHT_PX);
+    memcpy(_previousFramebuffer, _framebuffer, kFramebufferBytes);
+    _hasPreviousFrame = true;
+    return;
+  }
+
+  for (int y = minY; y <= maxY; y++) {
+    uint16_t *row =
+        _framebuffer + static_cast<size_t>(y) * SCREEN_WIDTH_PX + minX;
+    display.draw16bitRGBBitmap(minX, y, row, dirtyW, 1);
+  }
+
+  for (int y = minY; y <= maxY; y++) {
+    const size_t offset = static_cast<size_t>(y) * SCREEN_WIDTH_PX + minX;
+    memcpy(_previousFramebuffer + offset, _framebuffer + offset,
+           dirtyW * sizeof(uint16_t));
+  }
+}
+
+void TextDisplay::putPixel(int x, int y, uint16_t color) const {
+  if (x < 0 || y < 0 || x >= SCREEN_WIDTH_PX || y >= SCREEN_HEIGHT_PX) {
+    return;
+  }
+
+  if (_framebuffer) {
+    _framebuffer[static_cast<size_t>(y) * SCREEN_WIDTH_PX + x] = color;
+  } else {
+    Board::display().drawPixel(x, y, color);
+  }
+}
+
+void TextDisplay::fillRect(int x, int y, int w, int h, uint16_t color) const {
+  if (w <= 0 || h <= 0 || x >= SCREEN_WIDTH_PX || y >= SCREEN_HEIGHT_PX ||
+      x + w <= 0 || y + h <= 0) {
+    return;
+  }
+
+  const int x0 = max(0, x);
+  const int y0 = max(0, y);
+  const int x1 = min(SCREEN_WIDTH_PX, x + w);
+  const int y1 = min(SCREEN_HEIGHT_PX, y + h);
+
+  if (!_framebuffer) {
+    Board::display().fillRect(x0, y0, x1 - x0, y1 - y0, color);
+    return;
+  }
+
+  for (int yy = y0; yy < y1; yy++) {
+    uint16_t *row = _framebuffer + static_cast<size_t>(yy) * SCREEN_WIDTH_PX;
+    for (int xx = x0; xx < x1; xx++) {
+      row[xx] = color;
+    }
+  }
+}
+
+void TextDisplay::drawRect(int x, int y, int w, int h, uint16_t color) const {
+  fillRect(x, y, w, 1, color);
+  fillRect(x, y + h - 1, w, 1, color);
+  fillRect(x, y, 1, h, color);
+  fillRect(x + w - 1, y, 1, h, color);
+}
+
+void TextDisplay::fillCircle(int cx, int cy, int radius, uint16_t color) const {
+  const int r2 = radius * radius;
+  for (int y = -radius; y <= radius; y++) {
+    for (int x = -radius; x <= radius; x++) {
+      if (x * x + y * y <= r2) {
+        putPixel(cx + x, cy + y, color);
+      }
+    }
+  }
+}
+
+void TextDisplay::drawText(int x, int y, const String &text, uint16_t color,
+                           int maxChars) const {
+  const int count =
+      maxChars < 0 ? static_cast<int>(text.length())
+                   : min(static_cast<int>(text.length()), maxChars);
+
+  for (int i = 0; i < count; i++) {
+    const char c = text[i] >= 32 && text[i] <= 126 ? text[i] : ' ';
+    SmartBrickFont::Glyph glyph;
+    memcpy_P(&glyph, SmartBrickFont::glyphFor(c), sizeof(glyph));
+
+    const int glyphLeft = x + i * SmartBrickFont::kCellW + glyph.ofsX;
+    const int glyphTop = y + (SmartBrickFont::kLineHeight -
+                              SmartBrickFont::kBaseline) -
+                         glyph.boxH - glyph.ofsY;
+
+    for (int gy = 0; gy < glyph.boxH; gy++) {
+      for (int gx = 0; gx < glyph.boxW; gx++) {
+        if (SmartBrickFont::glyphPixelOn(glyph, gx, gy)) {
+          putPixel(glyphLeft + gx, glyphTop + gy, color);
+        }
+      }
+    }
+  }
+}
+
+int TextDisplay::textPixelWidth(const String &text) const {
+  return fitLine(text).length() * kCellW;
+}
+
 void TextDisplay::drawStoredImage() const {
   if (!_imageBuffer) return;
   const int w = _imageWidth;
@@ -135,27 +316,25 @@ void TextDisplay::drawStoredImage() const {
       const int bit = rowStart + x;
       const uint8_t byte = _imageBuffer[bit >> 3];
       const bool on = (byte >> (7 - (bit & 7))) & 1;
-      if (!on) continue; // background already black
-      if (_canvasReady) {
-        _canvas.drawPixel(kImageX + x, kImageY + y, COLOR_WHITE);
-      } else {
-        M5.Display.drawPixel(kImageX + x, kImageY + y, COLOR_WHITE);
+      if (on) {
+        putPixel(kImageX + x, kImageY + y, COLOR_WHITE);
       }
     }
   }
 }
 
 int TextDisplay::pageCountForText(const String &text) const {
-  String wrapped[32];
-  const int wrappedCount = wrapBodyText(text, wrapped, 32);
-  return max(1, (wrappedCount + kBodyRows - 1) / kBodyRows);
+  String wrapped[128];
+  const int wrappedCount = wrapBodyText(text, wrapped, 128);
+  return max(1, (wrappedCount + kChatRows - 1) / kChatRows);
 }
 
 String TextDisplay::fitLine(const String &text) const {
   String out;
   out.reserve(kCharsPerLine);
 
-  for (int i = 0; i < static_cast<int>(text.length()) && out.length() < kCharsPerLine;
+  for (int i = 0;
+       i < static_cast<int>(text.length()) && out.length() < kCharsPerLine;
        i++) {
     const char c = text[i];
     out += (c >= 32 && c <= 126) ? c : ' ';
@@ -282,54 +461,63 @@ int TextDisplay::wrapBodyText(const String &text, String out[], int maxRows) con
 }
 
 void TextDisplay::drawLine(int row, const String &text, uint16_t color) const {
-  if (_canvasReady) {
-    _canvas.setTextColor(color);
-    _canvas.setCursor(4, row * LINE_HEIGHT);
-    _canvas.print(fitLine(text));
-    return;
-  }
-
-  M5.Display.setTextColor(color);
-  M5.Display.setCursor(4, row * LINE_HEIGHT);
-  M5.Display.print(fitLine(text));
+  drawText(kInsetX, kInsetY + row * kCellH, fitLine(text), color);
 }
 
-void TextDisplay::drawGlyphAtRight(int row, char glyph, uint16_t color) const {
-  const int x = 4 + (kCharsPerLine - 1) * 8;
-  const int y = row * LINE_HEIGHT;
-  if (_canvasReady) {
-    _canvas.setTextColor(color);
-    _canvas.setCursor(x, y);
-    _canvas.print(glyph);
-    return;
+void TextDisplay::drawEdgeLine(int row, const String &left, const String &right,
+                               uint16_t color) const {
+  const int y = kInsetY + row * kCellH;
+  const String safeLeft = fitLine(left);
+  const String safeRight = fitLine(right);
+  if (!safeLeft.isEmpty()) {
+    drawText(kInsetX, y, safeLeft, color);
   }
-  M5.Display.setTextColor(color);
-  M5.Display.setCursor(x, y);
-  M5.Display.print(glyph);
+  if (!safeRight.isEmpty()) {
+    drawText(SCREEN_WIDTH_PX - kInsetX - textPixelWidth(safeRight), y,
+             safeRight, color);
+  }
 }
 
 void TextDisplay::drawPageIndicator(int pageIndex, int pageCount) const {
   if (pageCount <= 1) {
     return;
   }
-  const bool lastPage = pageIndex >= pageCount - 1;
-  drawGlyphAtRight(kFooterRow, lastPage ? 'o' : 'v', COLOR_GRAY);
+
+  const int visible = min(pageCount, kDotCountMax);
+  const int active = constrain(pageIndex, 0, visible - 1);
+  const int totalW = (visible - 1) * kDotSpacing + 6;
+  const int startX = (SCREEN_WIDTH_PX - totalW) / 2;
+
+  for (int i = 0; i < visible; i++) {
+    const bool isActive = i == active;
+    const int size = isActive ? 6 : 4;
+    const int left = startX + i * kDotSpacing;
+    const int radius = size / 2;
+    fillCircle(left + radius, kDotY + radius, radius,
+               isActive ? COLOR_WHITE : COLOR_GRAY);
+  }
 }
 
 void TextDisplay::drawMenu(const DisplayState &state) const {
-  const int startRow = kLines - state.menuItemCount;
   for (int i = 0; i < state.menuItemCount; i++) {
-    const int row = startRow + i;
     const bool selected = i == state.menuSelectedIndex;
-    const String prefix = selected ? "> " : "  ";
-    drawLine(row, prefix + state.menuItems[i],
-             selected ? COLOR_WHITE : COLOR_GRAY);
+    const int textY = kMenuBodyY + i * kMenuRowH + kMenuRowTextYOffset;
+    const int touchY = textY - ((kMenuRowH - kCellH) / 2);
+    const uint16_t color = selected ? COLOR_WHITE : COLOR_GRAY;
+
+    if (selected) {
+      drawRect(0, touchY, SCREEN_WIDTH_PX, kMenuRowH, COLOR_GRAY);
+      drawText(SCREEN_WIDTH_PX - kInsetX - kCellW, textY, ">", COLOR_WHITE, 1);
+    }
+    drawText(kInsetX, textY, fitLine(state.menuItems[i]), color);
   }
 
+  const int glyphX = SCREEN_WIDTH_PX - kInsetX - kCellW;
   if (state.menuHasMoreAbove) {
-    drawGlyphAtRight(startRow - 1 >= 1 ? startRow - 1 : 1, 'v', COLOR_GRAY);
+    drawText(glyphX, kMenuBodyY - kCellH, "^", COLOR_GRAY, 1);
   }
   if (state.menuHasMoreBelow) {
-    drawGlyphAtRight(kLines - 1, 'v', COLOR_GRAY);
+    drawText(glyphX, kMenuBodyY + MAX_MENU_VISIBLE_ITEMS * kMenuRowH, "v",
+             COLOR_GRAY, 1);
   }
 }

@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 CONFIG_H="firmware/src/Config.h"
-FIRMWARE_BIN="firmware/.pio/build/m5stick-s3/firmware.bin"
+FIRMWARE_BIN="firmware/.pio/build/waveshare-esp32-s3-touch-amoled-1_8/firmware.bin"
 BUCKET="m5-stick-assets"
 KEY_PREFIX="chat-stick/firmware"
 

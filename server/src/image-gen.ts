@@ -1,9 +1,9 @@
 /**
- * Image generation and processing for the M5StickS3 display.
+ * Image generation and processing for the device display.
  *
  * Generates images via Google's Imagen API, then processes them to a 1-bit
  * dithered bitmap matching the on-device image bounding box defined in
- * `designs.md` (232x112 — rows 1–7 of the 240x135 LCD).
+ * `TextDisplay` (232x112, centered on the 368x448 AMOLED).
  */
 
 import UPNG from 'upng-js'

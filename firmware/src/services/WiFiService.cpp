@@ -2,6 +2,7 @@
 
 #include "../Config.h"
 #include "../credentials.h"
+#include "../diag/Log.h"
 #include <WiFi.h>
 #include <time.h>
 
@@ -10,7 +11,7 @@ void WiFiService::init() {
   if (_prefsReady) {
     loadSavedNetworks();
   } else {
-    Serial.println("[WiFi] Preferences init failed; saved networks disabled");
+    Log::client("WiFi", "preferences init failed; saved networks disabled");
   }
 }
 
@@ -43,7 +44,7 @@ bool WiFiService::connectKnownNetworks() {
     }
   }
 
-  Serial.println("[WiFi] All networks failed");
+  Log::client("WiFi", "all networks failed");
   return false;
 }
 
@@ -56,7 +57,7 @@ bool WiFiService::startCaptivePortal() {
   refreshScanResults();
 
   if (!WiFi.softAP(kCaptivePortalSsid)) {
-    Serial.println("[WiFi] Failed to start captive portal AP");
+    Log::client("WiFi", "failed to start captive portal AP");
     WiFi.mode(WIFI_OFF);
     return false;
   }
@@ -69,8 +70,8 @@ bool WiFiService::startCaptivePortal() {
   _portalProvisioned = false;
   _provisionedSsid = "";
 
-  Serial.printf("[WiFi] Captive portal started: SSID=%s IP=%s\n",
-                kCaptivePortalSsid, WiFi.softAPIP().toString().c_str());
+  Log::client("WiFi", "captive portal started ssid=%s ip=%s",
+              kCaptivePortalSsid, WiFi.softAPIP().toString().c_str());
   return true;
 }
 
@@ -141,7 +142,7 @@ void WiFiService::loadSavedNetworks() {
     }
   }
 
-  Serial.printf("[WiFi] Loaded %d saved network(s)\n", _savedNetworkCount);
+  Log::client("WiFi", "loaded saved networks count=%d", _savedNetworkCount);
 }
 
 void WiFiService::writeSavedNetworks() {
@@ -206,7 +207,7 @@ void WiFiService::rememberNetwork(const String &ssid, const String &password,
   }
 
   writeSavedNetworks();
-  Serial.printf("[WiFi] Saved network %s to NVS\n", ssid.c_str());
+  Log::client("WiFi", "saved network %s to NVS", ssid.c_str());
 }
 
 bool WiFiService::connectToNetwork(const String &ssid, const String &password,
@@ -215,8 +216,8 @@ bool WiFiService::connectToNetwork(const String &ssid, const String &password,
     return false;
   }
 
-  Serial.printf("[WiFi] Trying %s (%s)...\n", ssid.c_str(),
-                label.isEmpty() ? "Saved" : label.c_str());
+  Log::client("WiFi", "trying %s (%s)", ssid.c_str(),
+              label.isEmpty() ? "Saved" : label.c_str());
 
   WiFi.begin(ssid.c_str(), password.c_str());
 
@@ -228,8 +229,8 @@ bool WiFiService::connectToNetwork(const String &ssid, const String &password,
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("[WiFi] Connected to %s — %s\n", ssid.c_str(),
-                  WiFi.localIP().toString().c_str());
+    Log::client("WiFi", "connected to %s ip=%s", ssid.c_str(),
+                WiFi.localIP().toString().c_str());
     WiFi.setSleep(WIFI_PS_MIN_MODEM);
     configTime(0, 0, NTP_SERVER);
     return true;
@@ -345,7 +346,7 @@ void WiFiService::handlePortalSave() {
   _portalProvisioned = true;
   _portalServer.send(200, "text/html",
                      portalHtml("Saved. Return to the device; it is reconnecting now."));
-  Serial.printf("[WiFi] Captive portal saved credentials for %s\n", ssid.c_str());
+  Log::client("WiFi", "captive portal saved credentials for %s", ssid.c_str());
 }
 
 void WiFiService::redirectToPortal() {

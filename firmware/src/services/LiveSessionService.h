@@ -24,8 +24,6 @@ struct LiveSessionCallbacks {
   std::function<void(const uint8_t *, size_t)> onAudio;
   std::function<void(int)> onBrightness;
   std::function<void(int)> onVolume;
-  std::function<bool(const String &)> onSetSpeaker;
-  std::function<bool(int)> onSetExternalGain;
   std::function<bool(const String &)> onPlaySound;
   std::function<bool(const String &)> onPlayMelody;
   std::function<void()> onPowerOff;
