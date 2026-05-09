@@ -18,7 +18,25 @@ interface Env extends EmailEnv {
 	AI: Ai
 	VECTORIZE: VectorizeIndex
 	DB: D1Database
+	HISTORY_API_TOKEN?: string
 	STORAGE?: R2Bucket
+}
+
+interface DebugAudioMetadata {
+	device_id: string
+	chat_id: string
+	saved_at: string
+	reason: string
+	pcm_bytes: number
+	wav_bytes: number
+	samples: number
+	avg_abs: number
+	chunks: number
+	duration_ms: number | null
+	dropped_debug_bytes: number
+	sample_rate_hz: number
+	channels: number
+	bits_per_sample: number
 }
 
 interface ConversationMessage {
@@ -60,6 +78,12 @@ const DEFAULT_POWER_TIMEOUTS = {
 	light_sleep_ms: 300_000,
 	power_off_ms: 600_000,
 } as const
+
+const DEBUG_AUDIO_SAMPLE_RATE_HZ = 16_000
+const DEBUG_AUDIO_CHANNELS = 1
+const DEBUG_AUDIO_BITS_PER_SAMPLE = 16
+const DEBUG_AUDIO_STORAGE_WAV_KEY = 'debug-audio/latest.wav'
+const DEBUG_AUDIO_STORAGE_META_KEY = 'debug-audio/latest.json'
 
 const AVAILABLE_VOICES = [
 	{ name: 'Zephyr', description: 'Bright' },
@@ -223,6 +247,7 @@ export class LiveSession {
 	private static readonly MIN_RECONNECT_MS = 1500
 	private static readonly IDLE_CLOSE_MS = 120_000
 	private static readonly MAX_PENDING_AUDIO_BYTES = 1_100_000
+	private static readonly MAX_DEBUG_AUDIO_BYTES = 2_000_000
 	private state: DurableObjectState
 	private env: Env
 	private deviceWs: WebSocket | null = null
@@ -241,6 +266,10 @@ export class LiveSession {
 	private currentTurnAudioBytes = 0
 	private currentTurnAbsSum = 0
 	private currentTurnSamples = 0
+	private currentTurnStartedAt = 0
+	private currentTurnDebugAudioChunks: ArrayBuffer[] = []
+	private currentTurnDebugAudioBytes = 0
+	private currentTurnDebugDroppedBytes = 0
 	private pendingAudioChunks: ArrayBuffer[] = []
 	private pendingAudioBytes = 0
 	private pendingStop = false
@@ -253,6 +282,11 @@ export class LiveSession {
 	}
 
 	async fetch(request: Request): Promise<Response> {
+		const url = new URL(request.url)
+		if (url.pathname.match(/^\/debug\/audio\/[^/]+\/latest\.(wav|json)$/)) {
+			return this.handleDebugAudioRequest(request)
+		}
+
 		const now = Date.now()
 		if (now - this.lastConnectionAt < LiveSession.MIN_RECONNECT_MS) {
 			return new Response('Too many reconnects', { status: 429 })
@@ -264,7 +298,6 @@ export class LiveSession {
 		this.cleanup()
 
 		// Extract device_id, chat_id, and voice from URL
-		const url = new URL(request.url)
 		this.deviceId = url.searchParams.get('device_id') || 'unknown'
 		this.chatId = url.searchParams.get('chat_id') || crypto.randomUUID()
 		this.currentVoice = resolveVoice(url.searchParams.get('voice'))
@@ -304,6 +337,55 @@ export class LiveSession {
 		await this.connectGemini(sessionGeneration)
 
 		return new Response(null, { status: 101, webSocket: client })
+	}
+
+	private async handleDebugAudioRequest(request: Request): Promise<Response> {
+		const url = new URL(request.url)
+		const match = url.pathname.match(/^\/debug\/audio\/([^/]+)\/latest\.(wav|json)$/)
+		const requestedDeviceId = match ? decodeURIComponent(match[1]) : ''
+		if (!isAuthorizedDebugAudioRequest(request, this.env)) {
+			return new Response('Unauthorized', {
+				status: 401,
+				headers: debugCorsHeaders(),
+			})
+		}
+
+		if (url.pathname.endsWith('.json')) {
+			const metadata = await this.state.storage.get<DebugAudioMetadata>(
+				DEBUG_AUDIO_STORAGE_META_KEY
+			)
+			if (!metadata) {
+				return new Response('No debug audio captured yet', {
+					status: 404,
+					headers: debugCorsHeaders(),
+				})
+			}
+			return new Response(JSON.stringify(metadata), {
+				headers: {
+					...debugCorsHeaders(),
+					'Content-Type': 'application/json',
+				},
+			})
+		}
+
+		const wav = await this.state.storage.get<ArrayBuffer>(DEBUG_AUDIO_STORAGE_WAV_KEY)
+		if (!wav) {
+			return new Response('No debug audio captured yet', {
+				status: 404,
+				headers: debugCorsHeaders(),
+			})
+		}
+
+		const filename = `${requestedDeviceId || 'device'}-latest.wav`
+		return new Response(wav, {
+			headers: {
+				...debugCorsHeaders(),
+				'Content-Type': 'audio/wav',
+				'Content-Length': String(wav.byteLength),
+				'Content-Disposition': `attachment; filename="${filename}"`,
+				'Cache-Control': 'no-store',
+			},
+		})
 	}
 
 	private async connectGemini(sessionGeneration = this.sessionGeneration) {
@@ -749,6 +831,7 @@ export class LiveSession {
 
 				if (msg.type === 'start') {
 					this.resetCurrentTurnMetrics()
+					this.currentTurnStartedAt = Date.now()
 					this.clearPendingAudio()
 					if (!this.geminiWs) {
 						console.log('[Bridge] Start received while Gemini closed — reconnecting')
@@ -1451,11 +1534,69 @@ export class LiveSession {
 	private noteAudioChunk(data: ArrayBuffer) {
 		this.audioChunkCount++
 		this.currentTurnAudioBytes += data.byteLength
+		if (
+			this.currentTurnDebugAudioBytes + data.byteLength <=
+			LiveSession.MAX_DEBUG_AUDIO_BYTES
+		) {
+			this.currentTurnDebugAudioChunks.push(data.slice(0))
+			this.currentTurnDebugAudioBytes += data.byteLength
+		} else {
+			this.currentTurnDebugDroppedBytes += data.byteLength
+		}
 		const view = new Int16Array(data)
 		for (const sample of view) {
 			this.currentTurnAbsSum += Math.abs(sample)
 		}
 		this.currentTurnSamples += view.length
+	}
+
+	private saveCurrentTurnDebugAudio(reason: string) {
+		if (this.currentTurnDebugAudioBytes <= 0 || this.currentTurnDebugAudioChunks.length === 0) {
+			return
+		}
+
+		const chunks = this.currentTurnDebugAudioChunks.slice()
+		const pcmBytes = this.currentTurnDebugAudioBytes
+		const metadataBase: Omit<DebugAudioMetadata, 'wav_bytes'> = {
+			device_id: this.deviceId,
+			chat_id: this.chatId,
+			saved_at: new Date().toISOString(),
+			reason,
+			pcm_bytes: pcmBytes,
+			samples: this.currentTurnSamples,
+			avg_abs: this.currentTurnAverageAbs(),
+			chunks: this.audioChunkCount,
+			duration_ms:
+				this.currentTurnStartedAt > 0 ? Date.now() - this.currentTurnStartedAt : null,
+			dropped_debug_bytes: this.currentTurnDebugDroppedBytes,
+			sample_rate_hz: DEBUG_AUDIO_SAMPLE_RATE_HZ,
+			channels: DEBUG_AUDIO_CHANNELS,
+			bits_per_sample: DEBUG_AUDIO_BITS_PER_SAMPLE,
+		}
+		const wav = createPcm16Wav(
+			chunks,
+			pcmBytes,
+			DEBUG_AUDIO_SAMPLE_RATE_HZ,
+			DEBUG_AUDIO_CHANNELS,
+			DEBUG_AUDIO_BITS_PER_SAMPLE
+		)
+		const metadata: DebugAudioMetadata = {
+			...metadataBase,
+			wav_bytes: wav.byteLength,
+		}
+
+		Promise.all([
+			this.state.storage.put(DEBUG_AUDIO_STORAGE_WAV_KEY, wav),
+			this.state.storage.put(DEBUG_AUDIO_STORAGE_META_KEY, metadata),
+		])
+			.then(() => {
+				console.log(
+					`[DebugAudio] Saved ${pcmBytes} PCM bytes (${wav.byteLength} WAV bytes), avg_abs=${metadata.avg_abs}, chunks=${metadata.chunks}`
+				)
+			})
+			.catch((err) => {
+				console.error('[DebugAudio] Failed to save recording:', err)
+			})
 	}
 
 	private bufferAudioChunk(data: ArrayBuffer) {
@@ -1530,6 +1671,7 @@ export class LiveSession {
 		}
 
 		const ignoreReason = this.getIgnoredTurnReason()
+		this.saveCurrentTurnDebugAudio(ignoreReason ? `ignored:${ignoreReason}` : 'stop')
 		if (ignoreReason) {
 			console.log(
 				`[Bridge] Ignoring accidental clip (${ignoreReason}, bytes=${this.currentTurnAudioBytes}, avg_abs=${this.currentTurnAverageAbs()})`
@@ -1537,7 +1679,13 @@ export class LiveSession {
 			this.currentUserText = ''
 			this.currentAssistantText = ''
 			this.clearPendingAudio()
-			this.sendToDevice({ type: 'ignore_audio', reason: ignoreReason })
+			this.sendToDevice({
+				type: 'ignore_audio',
+				reason: ignoreReason,
+				bytes: this.currentTurnAudioBytes,
+				avg_abs: this.currentTurnAverageAbs(),
+				chunks: this.audioChunkCount,
+			})
 			this.reconnectGeminiSession().catch((err) => {
 				console.error('[Gemini] Failed to reset ignored turn:', err)
 			})
@@ -1556,6 +1704,10 @@ export class LiveSession {
 		this.currentTurnAudioBytes = 0
 		this.currentTurnAbsSum = 0
 		this.currentTurnSamples = 0
+		this.currentTurnStartedAt = 0
+		this.currentTurnDebugAudioChunks = []
+		this.currentTurnDebugAudioBytes = 0
+		this.currentTurnDebugDroppedBytes = 0
 	}
 
 	private async reconnectGeminiSession() {
@@ -1609,6 +1761,10 @@ export class LiveSession {
 	}
 
 	private cleanup() {
+		if (this.currentTurnDebugAudioBytes > 0) {
+			this.saveCurrentTurnDebugAudio('cleanup')
+		}
+
 		// Orphaned device tool calls (device disconnected before responding)
 		for (const [id, pending] of this.pendingDeviceCalls) {
 			this.logToolCall({
@@ -1651,6 +1807,74 @@ function buildLocationContext(request: Request): string {
 	const country = cf?.country || request.headers.get('cf-ipcountry') || ''
 
 	return [city, region, country].filter(Boolean).join(', ')
+}
+
+function debugCorsHeaders(): HeadersInit {
+	return {
+		'Access-Control-Allow-Origin': '*',
+		'Access-Control-Allow-Methods': 'GET, OPTIONS',
+		'Access-Control-Allow-Headers': 'X-History-Token',
+	}
+}
+
+function isAuthorizedDebugAudioRequest(request: Request, env: Env): boolean {
+	const url = new URL(request.url)
+	if (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]') {
+		return true
+	}
+
+	const configuredToken = env.HISTORY_API_TOKEN?.trim()
+	if (!configuredToken) return false
+
+	const providedToken =
+		request.headers.get('X-History-Token') ?? url.searchParams.get('token') ?? ''
+	return providedToken === configuredToken
+}
+
+function createPcm16Wav(
+	chunks: ArrayBuffer[],
+	pcmBytes: number,
+	sampleRate: number,
+	channels: number,
+	bitsPerSample: number
+): ArrayBuffer {
+	const headerBytes = 44
+	const wav = new ArrayBuffer(headerBytes + pcmBytes)
+	const view = new DataView(wav)
+	const bytes = new Uint8Array(wav)
+	const blockAlign = (channels * bitsPerSample) / 8
+	const byteRate = sampleRate * blockAlign
+
+	writeAscii(bytes, 0, 'RIFF')
+	view.setUint32(4, 36 + pcmBytes, true)
+	writeAscii(bytes, 8, 'WAVE')
+	writeAscii(bytes, 12, 'fmt ')
+	view.setUint32(16, 16, true)
+	view.setUint16(20, 1, true)
+	view.setUint16(22, channels, true)
+	view.setUint32(24, sampleRate, true)
+	view.setUint32(28, byteRate, true)
+	view.setUint16(32, blockAlign, true)
+	view.setUint16(34, bitsPerSample, true)
+	writeAscii(bytes, 36, 'data')
+	view.setUint32(40, pcmBytes, true)
+
+	let offset = headerBytes
+	for (const chunk of chunks) {
+		const source = new Uint8Array(chunk)
+		const writable = Math.min(source.byteLength, bytes.byteLength - offset)
+		if (writable <= 0) break
+		bytes.set(source.subarray(0, writable), offset)
+		offset += writable
+	}
+
+	return wav
+}
+
+function writeAscii(bytes: Uint8Array, offset: number, text: string) {
+	for (let i = 0; i < text.length; i++) {
+		bytes[offset + i] = text.charCodeAt(i)
+	}
 }
 
 // ─── Utilities ───

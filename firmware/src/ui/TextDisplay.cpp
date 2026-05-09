@@ -88,7 +88,7 @@ void TextDisplay::render(const DisplayState &state) {
       }
     }
 
-    if (pageCount > 1) {
+    if (pageCount > 1 && !hasFooterText) {
       drawPageIndicator(safePageIndex, pageCount);
     }
   }
@@ -327,6 +327,14 @@ int TextDisplay::pageCountForText(const String &text) const {
   String wrapped[128];
   const int wrappedCount = wrapBodyText(text, wrapped, 128);
   return max(1, (wrappedCount + kChatRows - 1) / kChatRows);
+}
+
+int TextDisplay::wrappedRowCount(const String &text) const {
+  if (text.isEmpty()) {
+    return 0;
+  }
+  String wrapped[128];
+  return wrapBodyText(text, wrapped, 128);
 }
 
 String TextDisplay::fitLine(const String &text) const {

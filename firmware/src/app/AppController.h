@@ -33,7 +33,8 @@ private:
   static constexpr unsigned long kThinkingTimeoutMs = 15000;
   static constexpr unsigned long kMaxRecordingMs = 30000;
   static constexpr unsigned long kResetHoldMs = 1500;
-  static constexpr unsigned long kAudioRenderMinIntervalMs = 160;
+  static constexpr unsigned long kCaptureFailureLogIntervalMs = 1000;
+  static constexpr int kPlaybackPumpMaxChunks = 6;
   static constexpr int kMaxConversationHistory = 10;
 
   AppRegion _appRegion = AppRegion::Initializing;
@@ -43,6 +44,11 @@ private:
   String _errorText;
   String _chatId;
   String _toolText;
+  String _debugText;
+  String _bootLog;
+  bool _bootMode = true;
+  bool _displayReady = false;
+  bool _renderInProgress = false;
   bool _turnComplete = false;
   bool _turnHasAudio = false;
   bool _pendingTurnReset = false;
@@ -54,7 +60,11 @@ private:
   unsigned long _lastHeartbeatMs = 0;
   unsigned long _lastHeaderRefreshMs = 0;
   unsigned long _lastRenderMs = 0;
+  unsigned long _lastCaptureFailureLogMs = 0;
   int _audioChunksSent = 0;
+  int _audioChunksFailed = 0;
+  int _captureFailures = 0;
+  size_t _audioBytesSent = 0;
   int _bodyPageIndex = 0;
   int _menuSelection = 0;
   int _historyCount = 0;
@@ -86,7 +96,13 @@ private:
   void retryAfterError();
   void performPowerOff();
   void clearToolText();
+  void setDebugText(const String &text);
+  void clearDebugText();
   void resetBodyPage();
+  void appendBootLog(const char *topic, const char *message);
+  void exitBootMode();
+  static void bootLogTrampoline(void *ctx, char side, const char *topic,
+                                const char *message);
   void restoreSessionPreview();
   void beginFactoryReset();
   const char *errorCategoryLabel() const;

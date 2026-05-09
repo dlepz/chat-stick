@@ -28,6 +28,7 @@ public:
   void setBrightness(uint8_t brightness);
   void render(const DisplayState &state);
   int pageCountForText(const String &text) const;
+  int wrappedRowCount(const String &text) const;
 
   // Store a 1-bit packed bitmap (MSB first) for the body image area. Pixel
   // dimensions must match kImageW x kImageH; mismatches return false.

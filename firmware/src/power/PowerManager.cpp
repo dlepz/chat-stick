@@ -39,7 +39,7 @@ void PowerManager::update() {
   const unsigned long idle = getIdleTime();
 
   PowerState target = PowerState::Active;
-  if (idle >= _timeouts.powerOffMs) {
+  if (idle >= _timeouts.powerOffMs && !Board::usbConnected()) {
     target = PowerState::PowerOff;
   } else if (idle >= _timeouts.lightSleepMs) {
     target = PowerState::LightSleep;
@@ -142,6 +142,7 @@ void PowerManager::transitionTo(PowerState newState) {
     break;
 
   case PowerState::ScreenOff:
+    Board::setAudioAmpEnabled(false);
     if (_brightnessCallback) {
       _brightnessCallback(BRIGHTNESS_OFF);
     }
@@ -152,6 +153,7 @@ void PowerManager::transitionTo(PowerState newState) {
     break;
 
   case PowerState::PowerOff:
+    Board::setAudioAmpEnabled(false);
     if (_brightnessCallback) {
       _brightnessCallback(BRIGHTNESS_OFF);
     }
@@ -174,6 +176,7 @@ void PowerManager::enterLightSleep() {
   if (_brightnessCallback) {
     _brightnessCallback(BRIGHTNESS_OFF);
   }
+  Board::setAudioAmpEnabled(false);
   if (_wifiCallback) {
     _wifiCallback(false);
   }
@@ -220,7 +223,7 @@ void PowerManager::enterLightSleep() {
       }
 
       const unsigned long idle = getIdleTime();
-      if (idle >= _timeouts.powerOffMs) {
+      if (idle >= _timeouts.powerOffMs && !Board::usbConnected()) {
         transitionTo(PowerState::PowerOff);
         return;
       }

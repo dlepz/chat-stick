@@ -11,7 +11,7 @@ constexpr int kChunkSamples = MIC_SAMPLE_RATE * MIC_CHUNK_MS / 1000;
 constexpr int kPlaybackChunkMs = 20;
 constexpr int kPlaybackChunkSamples = PLAY_SAMPLE_RATE * kPlaybackChunkMs / 1000;
 constexpr int kCodecI2cPort = 0;
-constexpr es8311_mic_gain_t kMicGain = ES8311_MIC_GAIN_18DB;
+constexpr es8311_mic_gain_t kMicGain = ES8311_MIC_GAIN_42DB;
 
 I2SClass i2s;
 es8311_handle_t codec = nullptr;
@@ -169,10 +169,18 @@ bool AudioService::startRecording() {
   resetPlayback();
   digitalWrite(AUDIO_PA_ENABLE_PIN, LOW);
   if (!configureAudio(MIC_SAMPLE_RATE)) {
+    digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
+    setVolume(_volume);
     return false;
   }
-  return i2s.configureRX(MIC_SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT,
-                         I2S_SLOT_MODE_STEREO, I2S_RX_TRANSFORM_NONE);
+  if (!i2s.configureRX(MIC_SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT,
+                       I2S_SLOT_MODE_STEREO, I2S_RX_TRANSFORM_NONE)) {
+    configureAudio(PLAY_SAMPLE_RATE);
+    digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
+    setVolume(_volume);
+    return false;
+  }
+  return true;
 }
 
 void AudioService::stopRecording() {
@@ -201,9 +209,20 @@ bool AudioService::captureChunk() {
   }
 
   const int channel = rightEnergy > leftEnergy ? 1 : 0;
+  int peak = 0;
   for (int i = 0; i < samples; i++) {
-    _captureChunk[i] = _captureStereoChunk[i * 2 + channel];
+    const int16_t sample = _captureStereoChunk[i * 2 + channel];
+    _captureChunk[i] = sample;
+    peak = max(peak, abs(static_cast<int>(sample)));
   }
+  _lastCaptureChannel = channel;
+  _lastCaptureLeftAverageAbs =
+      static_cast<int>(leftEnergy / max(1, samples));
+  _lastCaptureRightAverageAbs =
+      static_cast<int>(rightEnergy / max(1, samples));
+  _lastCaptureAverageAbs = channel == 1 ? _lastCaptureRightAverageAbs
+                                        : _lastCaptureLeftAverageAbs;
+  _lastCapturePeak = peak;
   return true;
 }
 
@@ -235,8 +254,8 @@ bool AudioService::playMelody(const String &melody) {
 void AudioService::resetPlayback() {
   _playWritePos = 0;
   _playReadPos = 0;
+  _playBufferedBytes = 0;
   _playbackStarted = false;
-  _chunkInFlight = false;
 }
 
 bool AudioService::queuePlayback(const uint8_t *data, size_t len) {
@@ -244,23 +263,28 @@ bool AudioService::queuePlayback(const uint8_t *data, size_t len) {
     return true;
   }
 
-  if (!_chunkInFlight) {
-    compactPlaybackBuffer();
-  }
-
-  if (_playWritePos + static_cast<int>(len) > _playCapacity) {
+  const int freeBytes = _playCapacity - _playBufferedBytes;
+  if (len > static_cast<size_t>(freeBytes)) {
     Log::client("Audio", "playback overflow dropping bytes=%u",
                 static_cast<unsigned>(len));
     return false;
   }
 
-  memcpy(_playBuffer + _playWritePos, data, len);
-  _playWritePos += static_cast<int>(len);
+  int remaining = static_cast<int>(len);
+  int sourceOffset = 0;
+  while (remaining > 0) {
+    const int contiguous = min(remaining, _playCapacity - _playWritePos);
+    memcpy(_playBuffer + _playWritePos, data + sourceOffset, contiguous);
+    _playWritePos = (_playWritePos + contiguous) % _playCapacity;
+    _playBufferedBytes += contiguous;
+    sourceOffset += contiguous;
+    remaining -= contiguous;
+  }
   return true;
 }
 
 int AudioService::bufferedPlaybackBytes() const {
-  return _playWritePos - _playReadPos;
+  return _playBufferedBytes;
 }
 
 bool AudioService::advancePlayback() { return playAvailableChunk(); }
@@ -270,10 +294,10 @@ bool AudioService::speakerBusy() const { return false; }
 bool AudioService::playbackIdle() const { return bufferedPlaybackBytes() == 0; }
 
 void AudioService::stopPlayback() {
-  _chunkInFlight = false;
   _playbackStarted = false;
   _playReadPos = 0;
   _playWritePos = 0;
+  _playBufferedBytes = 0;
 }
 
 bool AudioService::configureAudio(int sampleRate) {
@@ -281,12 +305,13 @@ bool AudioService::configureAudio(int sampleRate) {
     return true;
   }
 
+  i2sReady = false;
+  currentSampleRate = 0;
   i2s.end();
   i2s.setPins(AUDIO_I2S_BCLK_PIN, AUDIO_I2S_WS_PIN, AUDIO_I2S_DOUT_PIN,
               AUDIO_I2S_DIN_PIN, AUDIO_I2S_MCLK_PIN);
   if (!i2s.begin(I2S_MODE_STD, sampleRate, I2S_DATA_BIT_WIDTH_16BIT,
                  I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH)) {
-    i2sReady = false;
     Log::client("Audio", "I2S begin failed");
     return false;
   }
@@ -322,20 +347,6 @@ bool AudioService::configureAudio(int sampleRate) {
   return true;
 }
 
-void AudioService::compactPlaybackBuffer() {
-  if (_playReadPos == 0) {
-    return;
-  }
-
-  const int unread = bufferedPlaybackBytes();
-  if (unread > 0) {
-    memmove(_playBuffer, _playBuffer + _playReadPos, unread);
-  }
-
-  _playReadPos = 0;
-  _playWritePos = unread;
-}
-
 bool AudioService::playAvailableChunk() {
   int available = bufferedPlaybackBytes();
   if (available <= 1) {
@@ -347,15 +358,18 @@ bool AudioService::playAvailableChunk() {
   }
   digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
 
-  const int maxMonoBytes = kPlaybackChunkSamples * static_cast<int>(sizeof(int16_t));
+  const int maxMonoBytes =
+      kPlaybackChunkSamples * static_cast<int>(sizeof(int16_t));
   int monoBytes = min(available, maxMonoBytes);
   monoBytes -= monoBytes % static_cast<int>(sizeof(int16_t));
   const int monoSamples = monoBytes / static_cast<int>(sizeof(int16_t));
-  const int16_t *mono =
-      reinterpret_cast<const int16_t *>(_playBuffer + _playReadPos);
   for (int i = 0; i < monoSamples; i++) {
-    _stereoPlaybackChunk[i * 2] = mono[i];
-    _stereoPlaybackChunk[i * 2 + 1] = mono[i];
+    const int byteIndex = (_playReadPos + i * 2) % _playCapacity;
+    const uint16_t lo = _playBuffer[byteIndex];
+    const uint16_t hi = _playBuffer[(byteIndex + 1) % _playCapacity];
+    const int16_t sample = static_cast<int16_t>(lo | (hi << 8));
+    _stereoPlaybackChunk[i * 2] = sample;
+    _stereoPlaybackChunk[i * 2 + 1] = sample;
   }
 
   const size_t stereoBytes = monoSamples * 2 * sizeof(int16_t);
@@ -363,8 +377,12 @@ bool AudioService::playAvailableChunk() {
       i2s.write(reinterpret_cast<const uint8_t *>(_stereoPlaybackChunk),
                 stereoBytes) == stereoBytes;
   if (ok) {
-    _playReadPos += monoBytes;
-    compactPlaybackBuffer();
+    _playReadPos = (_playReadPos + monoBytes) % _playCapacity;
+    _playBufferedBytes -= monoBytes;
+    if (_playBufferedBytes == 0) {
+      _playReadPos = 0;
+      _playWritePos = 0;
+    }
   }
   return ok;
 }

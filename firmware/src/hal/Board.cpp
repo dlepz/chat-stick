@@ -105,6 +105,10 @@ void setDisplayBrightness(uint8_t brightness) {
 
 uint8_t displayBrightness() { return currentBrightness; }
 
+void setAudioAmpEnabled(bool enabled) {
+  digitalWrite(AUDIO_PA_ENABLE_PIN, enabled ? HIGH : LOW);
+}
+
 int batteryLevel() {
   if (!pmuReady || !pmu.isBatteryConnect()) {
     return -1;
@@ -126,11 +130,13 @@ uint16_t vbusVoltageMv() {
   return pmu.getVbusVoltage();
 }
 
+bool usbConnected() { return pmuReady && pmu.isVbusIn(); }
+
 const char *powerSourceLabel() {
   if (!pmuReady) {
     return "?";
   }
-  if (pmu.isVbusIn()) {
+  if (usbConnected()) {
     return "USB";
   }
   if (pmu.isBatteryConnect()) {
@@ -140,6 +146,9 @@ const char *powerSourceLabel() {
 }
 
 void powerOff() {
+  setAudioAmpEnabled(false);
+  setDisplayBrightness(BRIGHTNESS_OFF);
+
   if (pmuReady) {
     pmu.shutdown();
     delay(200);

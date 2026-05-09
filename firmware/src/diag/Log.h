@@ -5,7 +5,20 @@
 #include <time.h>
 
 namespace Log {
+using Sink = void (*)(void *ctx, char side, const char *topic,
+                      const char *message);
+
 namespace detail {
+struct SinkState {
+  Sink fn;
+  void *ctx;
+};
+
+inline SinkState &sinkState() {
+  static SinkState s = {nullptr, nullptr};
+  return s;
+}
+
 inline void timestamp(char *out, size_t len) {
   time_t now = time(nullptr);
   struct tm local;
@@ -25,8 +38,24 @@ inline void write(char side, const char *topic, const char *fmt, va_list args) {
   timestamp(ts, sizeof(ts));
   vsnprintf(message, sizeof(message), fmt, args);
   Serial.printf("%s - %c - %s - %s\n", ts, side, topic, message);
+  SinkState &state = sinkState();
+  if (state.fn) {
+    state.fn(state.ctx, side, topic, message);
+  }
 }
 } // namespace detail
+
+inline void setSink(Sink sink, void *ctx) {
+  detail::SinkState &state = detail::sinkState();
+  state.fn = sink;
+  state.ctx = ctx;
+}
+
+inline void clearSink() {
+  detail::SinkState &state = detail::sinkState();
+  state.fn = nullptr;
+  state.ctx = nullptr;
+}
 
 inline void client(const char *topic, const char *fmt, ...) {
   va_list args;

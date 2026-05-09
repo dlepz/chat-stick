@@ -14,10 +14,12 @@ bool buttonBIsPressed();
 
 void setDisplayBrightness(uint8_t brightness);
 uint8_t displayBrightness();
+void setAudioAmpEnabled(bool enabled);
 
 int batteryLevel();
 uint16_t batteryVoltageMv();
 uint16_t vbusVoltageMv();
+bool usbConnected();
 const char *powerSourceLabel();
 
 void powerOff();

@@ -9,6 +9,7 @@
 
 void AppController::setup() {
   Serial.begin(115200);
+  Log::setSink(&AppController::bootLogTrampoline, this);
   Log::client("Boot", "Waveshare AMOLED Live Voice Assistant");
   Serial.flush();
 
@@ -23,6 +24,9 @@ void AppController::setup() {
 
   _display.init();
   _display.setBrightness(_settings.brightness());
+  _displayReady = true;
+  _screenDirty = true;
+  renderIfNeeded();
 
   _powerManager.setSavedBrightness(_settings.brightness());
   configureCallbacks();
@@ -49,6 +53,7 @@ void AppController::setup() {
     }
   };
   callbacks.onReady = [this]() {
+    exitBootMode();
     _appRegion = AppRegion::Chat;
     setAppState(AppState::Ready, "Ready");
   };
@@ -142,15 +147,23 @@ void AppController::setup() {
                                      : ErrorCategory::ServerRefused;
     setErrorState(mapped, "Server error", error);
   };
-  callbacks.onIgnoredAudio = [this](const String &) {
+  callbacks.onIgnoredAudio = [this](const String &reason) {
+    Log::client("Recording",
+                "ignored by server reason=%s chunks=%d failed=%d bytes=%u "
+                "capture_failures=%d",
+                reason.c_str(), _audioChunksSent, _audioChunksFailed,
+                static_cast<unsigned>(_audioBytesSent), _captureFailures);
     _turnComplete = false;
     _turnHasAudio = false;
     _pendingTurnReset = false;
     _audio.stopPlayback();
+    setDebugText(String("DBG ignored:") +
+                 (reason.isEmpty() ? String("unknown") : reason));
     setAppState(AppState::Ready, "Ready");
   };
   callbacks.onAudio = [this](const uint8_t *data, size_t len) {
     if (_appState != AppState::Recording) {
+      clearDebugText();
       _audio.queuePlayback(data, len);
       _turnHasAudio = true;
     }
@@ -204,6 +217,8 @@ void AppController::setup() {
 void AppController::loop() {
   Board::update();
 
+  processPlayback();
+
   const bool audioActive = _appState == AppState::Playing;
 
   if (!audioActive && millis() - _lastPowerPollMs > 3000) {
@@ -229,20 +244,27 @@ void AppController::loop() {
     _screenDirty = true;
   }
 
-  _wifi.poll();
+  if (!audioActive) {
+    _wifi.poll();
+  }
   _live.poll();
-  _live.reconnectIfNeeded(_wifi.isConnected() &&
-                          _powerManager.getState() != PowerState::LightSleep &&
-                          _appState != AppState::Error);
+  processPlayback();
+  if (_appState != AppState::Playing) {
+    _live.reconnectIfNeeded(_wifi.isConnected() &&
+                            _powerManager.getState() !=
+                                PowerState::LightSleep &&
+                            _appState != AppState::Error);
+  }
 
   handleButtons();
   processRecording();
-  processPlayback();
   processThinkingTimeout();
   processPower();
   processCaptivePortal();
   renderIfNeeded();
-  delay(1);
+  if (_appState != AppState::Playing) {
+    delay(1);
+  }
 }
 
 void AppController::configureCallbacks() {
@@ -337,7 +359,69 @@ void AppController::clearToolText() {
   resetBodyPage();
 }
 
+void AppController::setDebugText(const String &text) {
+  if (_debugText == text) {
+    return;
+  }
+  _debugText = text;
+  _screenDirty = true;
+}
+
+void AppController::clearDebugText() {
+  if (_debugText.isEmpty()) {
+    return;
+  }
+  _debugText = "";
+  _screenDirty = true;
+}
+
 void AppController::resetBodyPage() { _bodyPageIndex = 0; }
+
+void AppController::bootLogTrampoline(void *ctx, char side, const char *topic,
+                                      const char *message) {
+  (void)side;
+  static_cast<AppController *>(ctx)->appendBootLog(topic, message);
+}
+
+void AppController::appendBootLog(const char *topic, const char *message) {
+  if (!_bootMode) {
+    return;
+  }
+
+  String entry;
+  entry.reserve(strlen(topic) + 2 + strlen(message));
+  entry += topic;
+  entry += ": ";
+  entry += message;
+
+  if (!_bootLog.isEmpty()) {
+    _bootLog += '\n';
+  }
+  _bootLog += entry;
+
+  // Drop oldest entries until the wrapped log fits on one body page.
+  while (_displayReady &&
+         _display.wrappedRowCount(_bootLog) > TextDisplay::kChatRows) {
+    const int cut = _bootLog.indexOf('\n');
+    if (cut < 0) {
+      break;
+    }
+    _bootLog = _bootLog.substring(cut + 1);
+  }
+
+  _screenDirty = true;
+  renderIfNeeded();
+}
+
+void AppController::exitBootMode() {
+  if (!_bootMode) {
+    return;
+  }
+  _bootMode = false;
+  _bootLog = "";
+  Log::clearSink();
+  _screenDirty = true;
+}
 
 void AppController::restoreSessionPreview() {
   if (_chatId.isEmpty()) {
@@ -739,23 +823,61 @@ void AppController::checkForUpdates() {
 }
 
 void AppController::startRecording() {
-  Log::client("Recording", "start");
+  Log::client("Recording", "start ws=%d state=%d", _live.isConnected(),
+              static_cast<int>(_appState));
   _powerManager.registerActivity();
   _audio.stopPlayback();
-  _audio.startRecording();
+  clearDebugText();
+  if (!_live.isConnected()) {
+    Log::client("Recording", "start rejected: websocket disconnected");
+    setDebugText("DBG websocket offline");
+    setAppState(AppState::Ready, "Ready");
+    return;
+  }
+  if (!_audio.startRecording()) {
+    Log::client("Recording", "audio start failed");
+    setDebugText("DBG mic start failed");
+    setAppState(AppState::Ready, "Ready");
+    return;
+  }
   _turnComplete = false;
   _turnHasAudio = false;
   _audioChunksSent = 0;
+  _audioChunksFailed = 0;
+  _captureFailures = 0;
+  _audioBytesSent = 0;
+  _lastCaptureFailureLogMs = 0;
   _recordingStartMs = millis();
-  _live.sendStart();
+  if (!_live.sendStart()) {
+    Log::client("Recording", "start send failed");
+    _audio.stopRecording();
+    setDebugText("DBG start send fail");
+    setAppState(AppState::Ready, "Ready");
+    return;
+  }
   setAppState(AppState::Recording, "Listening...");
   renderIfNeeded();
 }
 
 void AppController::stopRecording() {
-  Log::client("Recording", "stop sent=%d chunks", _audioChunksSent);
+  const unsigned long durationMs = millis() - _recordingStartMs;
+  Log::client("Recording",
+              "stop duration=%lu sent=%d failed=%d bytes=%u "
+              "capture_failures=%d",
+              durationMs, _audioChunksSent, _audioChunksFailed,
+              static_cast<unsigned>(_audioBytesSent), _captureFailures);
   _audio.stopRecording();
-  _live.sendStop();
+  if (_audioChunksSent == 0) {
+    Log::client("Recording", "no audio chunks sent before stop");
+    setDebugText("DBG no audio sent");
+  }
+  if (!_live.sendStop()) {
+    Log::client("Recording", "stop send failed");
+    setDebugText("DBG stop send fail");
+    _pendingTurnReset = false;
+    setAppState(AppState::Ready, "Ready");
+    return;
+  }
   _pendingTurnReset = true;
   _thinkingStartMs = millis();
   setAppState(AppState::Thinking, "Thinking...");
@@ -773,16 +895,43 @@ void AppController::processRecording() {
   }
 
   if (!_audio.captureChunk()) {
-    Log::client("Recording", "mic capture returned false");
+    _captureFailures++;
+    const unsigned long now = millis();
+    if (_captureFailures <= 3 ||
+        now - _lastCaptureFailureLogMs >= kCaptureFailureLogIntervalMs) {
+      _lastCaptureFailureLogMs = now;
+      Log::client("Recording", "mic capture returned false count=%d",
+                  _captureFailures);
+    }
+    if (_captureFailures == 1) {
+      setDebugText("DBG mic read false");
+    }
     return;
   }
 
   const bool sent =
       _live.sendAudio(_audio.captureData(), _audio.captureBytes());
   _powerManager.registerActivity();
+  if (!sent) {
+    _audioChunksFailed++;
+    Log::client("Recording", "audio chunk send failed count=%d ws=%d",
+                _audioChunksFailed, _live.isConnected());
+    setDebugText("DBG audio send fail");
+    return;
+  }
+
   _audioChunksSent++;
+  _audioBytesSent += _audio.captureBytes();
   if (_audioChunksSent <= 5 || _audioChunksSent % 10 == 0) {
-    Log::client("Recording", "#%d sent=%d", _audioChunksSent, sent);
+    Log::client("Recording",
+                "#%d sent bytes=%u total=%u avg_abs=%d peak=%d ch=%d "
+                "l_avg=%d r_avg=%d",
+                _audioChunksSent,
+                static_cast<unsigned>(_audio.captureBytes()),
+                static_cast<unsigned>(_audioBytesSent),
+                _audio.lastCaptureAverageAbs(), _audio.lastCapturePeak(),
+                _audio.lastCaptureChannel(), _audio.lastCaptureLeftAverageAbs(),
+                _audio.lastCaptureRightAverageAbs());
   }
 }
 
@@ -791,15 +940,18 @@ void AppController::processPlayback() {
     return;
   }
 
-  const int buffered = _audio.bufferedPlaybackBytes();
-  if (!_audio.playbackStarted() && buffered >= kMinPlaybackBytes) {
+  if (!_audio.playbackStarted() &&
+      _audio.bufferedPlaybackBytes() >= kMinPlaybackBytes) {
     _audio.markPlaybackStarted();
     setAppState(AppState::Playing, "Speaking...");
-    _audio.advancePlayback();
   }
 
   if (_audio.playbackStarted()) {
-    _audio.advancePlayback();
+    for (int i = 0; i < kPlaybackPumpMaxChunks; i++) {
+      if (!_audio.advancePlayback()) {
+        break;
+      }
+    }
   }
 
   // Only exit to Ready from Playing — a turnComplete that arrives while we're
@@ -820,10 +972,16 @@ void AppController::processThinkingTimeout() {
   }
 
   if (millis() - _thinkingStartMs > kThinkingTimeoutMs) {
-    Log::client("Loop", "thinking timeout");
+    Log::client("Loop",
+                "thinking timeout chunks=%d failed=%d bytes=%u "
+                "has_audio=%d turn_complete=%d buffered=%d",
+                _audioChunksSent, _audioChunksFailed,
+                static_cast<unsigned>(_audioBytesSent), _turnHasAudio,
+                _turnComplete, _audio.bufferedPlaybackBytes());
     _turnComplete = false;
     _turnHasAudio = false;
     _audio.stopPlayback();
+    setDebugText("DBG response timeout");
     setAppState(AppState::Ready, "Ready");
   }
 }
@@ -851,21 +1009,22 @@ void AppController::processCaptivePortal() {
 }
 
 void AppController::renderIfNeeded() {
-  if (!_screenDirty) {
+  if (!_screenDirty || _renderInProgress || !_displayReady) {
     return;
   }
 
-  const bool audioActive =
-      _appState == AppState::Playing ||
-      (_appState == AppState::Thinking && _audio.bufferedPlaybackBytes() > 0);
-  const unsigned long now = millis();
-  if (audioActive && now - _lastRenderMs < kAudioRenderMinIntervalMs) {
+  const bool audioActive = _appState == AppState::Playing ||
+                           _audio.playbackStarted() ||
+                           _audio.bufferedPlaybackBytes() > 0;
+  if (audioActive) {
     return;
   }
 
+  _renderInProgress = true;
   _screenDirty = false;
   _display.render(buildDisplayState());
   _lastRenderMs = millis();
+  _renderInProgress = false;
 }
 
 DisplayState AppController::buildDisplayState() const {
@@ -883,6 +1042,14 @@ DisplayState AppController::buildDisplayState() const {
   state.imagePresent = _imagePresent;
   state.pageIndex = _bodyPageIndex;
   state.pageCount = currentBodyPageCount();
+  if (!_debugText.isEmpty() && _appRegion == AppRegion::Chat) {
+    state.footerLeft = _debugText;
+    if (state.pageCount > 1) {
+      state.footerRight =
+          String(constrain(state.pageIndex + 1, 1, state.pageCount)) + "/" +
+          String(state.pageCount);
+    }
+  }
   state.showMenu = _appRegion == AppRegion::Menu;
   if (state.showMenu) {
     const int count = menuItemCount();
@@ -903,6 +1070,10 @@ DisplayState AppController::buildDisplayState() const {
 }
 
 String AppController::buildBodyText() const {
+  if (_bootMode) {
+    return _bootLog.isEmpty() ? String("Starting...") : _bootLog;
+  }
+
   if (!_toolText.isEmpty()) {
     return _toolText;
   }
@@ -993,6 +1164,7 @@ String AppController::deviceStatusJson() const {
   status["volume"] = _audio.volume();
   status["brightness"] = Board::displayBrightness();
   status["voice"] = _settings.voice();
+  status["server_endpoint"] = _live.activeEndpointLabel();
   status["wifi_network"] = _wifi.isConnected() ? _wifi.ssid() : "disconnected";
   status["uptime_seconds"] = millis() / 1000;
   status["power_timeouts"]["dim_ms"] = _powerManager.timeouts().dimMs;
