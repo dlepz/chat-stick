@@ -1,5 +1,23 @@
 #include "TurnController.h"
 
+namespace {
+bool endsWithIncomingPrefix(const String &current, const String &incoming,
+                            int prefixLen) {
+  if (prefixLen <= 0 || prefixLen > current.length() ||
+      prefixLen > incoming.length()) {
+    return false;
+  }
+
+  const int currentStart = current.length() - prefixLen;
+  for (int i = 0; i < prefixLen; i++) {
+    if (current.charAt(currentStart + i) != incoming.charAt(i)) {
+      return false;
+    }
+  }
+  return true;
+}
+} // namespace
+
 void TurnController::beginRecording(unsigned long nowMs) {
   _complete = false;
   _hasAudio = false;
@@ -95,7 +113,7 @@ String TurnController::transcriptDelta(const String &current,
 
   const int maxOverlap = min(current.length(), incoming.length());
   for (int len = maxOverlap; len >= 1; len--) {
-    if (current.endsWith(incoming.substring(0, len))) {
+    if (endsWithIncomingPrefix(current, incoming, len)) {
       return incoming.substring(len);
     }
   }
