@@ -3,7 +3,7 @@ import {
 	insertToolLog,
 	saveConversationExchange,
 } from './conversation-store'
-import { searchDocsKeyword, searchDocsVector } from './docs-search'
+import { handleDocsSearchTool } from './docs-tool'
 import { type EmailEnv, emailEnabled, sendEmail } from './email'
 import { handleFileTool } from './file-tools'
 import { USER_INSTRUCTIONS_PATH, ensureUserInstructionsFile } from './files'
@@ -559,39 +559,14 @@ export class LiveSession {
 				const startMs = Date.now()
 
 				if (call.name === 'search_docs') {
-					const query = (call.args as { query?: string }).query || ''
-					console.log(`[Gemini] Docs search: "${query}"`)
-
-					let results: { title: string; section: string; content: string; score: number }[] = []
-					let searchMode: 'vector' | 'keyword' = 'vector'
-
-					try {
-						results = await searchDocsVector(query, this.env, 3)
-					} catch (err) {
-						console.warn('[Gemini] Vector search failed, falling back to keyword search:', err)
-					}
-
-					if (results.length === 0) {
-						searchMode = 'keyword'
-						results = searchDocsKeyword(query, 3)
-					}
-
-					console.log(
-						`[Gemini] Found ${results.length} ${searchMode} results (top: ${results[0]?.title})`
-					)
-					const searchResults = results.map((r) => ({
-						title: r.title,
-						section: r.section,
-						content: r.content.slice(0, 1000),
-						score: r.score,
-					}))
+					const result = await handleDocsSearchTool(this.env, call.args)
 					const payload = JSON.stringify({
 						toolResponse: {
 							functionResponses: [
 								{
 									name: call.name,
 									id: call.id,
-									response: { results: searchResults },
+									response: result.response,
 								},
 							],
 						},
@@ -605,11 +580,7 @@ export class LiveSession {
 					await this.logToolCall({
 						name: call.name,
 						args: call.args,
-						result: {
-							mode: searchMode,
-							count: searchResults.length,
-							titles: searchResults.map((r) => r.title),
-						},
+						result: result.logResult,
 						handledBy: 'server',
 						durationMs: Date.now() - startMs,
 					})
