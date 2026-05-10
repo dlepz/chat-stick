@@ -9,15 +9,30 @@
 #include "../services/WiFiService.h"
 #include "../state/StateTypes.h"
 #include "../ui/TextDisplay.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
+/**
+ * @brief Top-level firmware coordinator for input, networking, audio, power,
+ * and UI.
+ */
 class AppController {
 public:
+  /// Initialize all services and enter the main application flow.
   void setup();
+
+  /// Run one iteration of the main controller loop.
   void loop();
 
 private:
+  /**
+   * @brief High-level screen region currently being rendered.
+   */
   enum class AppRegion { Initializing, Chat, Menu };
 
+  /**
+   * @brief Categories of user-visible error states.
+   */
   enum class ErrorCategory {
     None,
     Startup,
@@ -26,116 +41,389 @@ private:
     GeminiUnavailable,
   };
 
-  enum class MenuState { Home, Device, ResumeChat };
+  /**
+   * @brief Menu screens available from the UI overlay.
+   */
+  enum class MenuState { Home, Device, ResumeChat, Updates };
 
+  /**
+   * @brief Async loading status for menu screens backed by network requests.
+   */
+  enum class MenuLoadStatus { Idle, Loading, Loaded, Failed };
+
+  /// Minimum audio buffered before switching into playback state.
   static constexpr int kMinPlaybackBytes =
       PLAY_SAMPLE_RATE * sizeof(int16_t) * 3 / 4;
+
+  /// Maximum time to wait in Thinking before surfacing a timeout.
   static constexpr unsigned long kThinkingTimeoutMs = 15000;
+
+  /// Maximum continuous recording duration.
   static constexpr unsigned long kMaxRecordingMs = 30000;
+
+  /// Hold duration required to trigger a reset flow.
   static constexpr unsigned long kResetHoldMs = 1500;
+
+  /// Rate limit for repeated capture-failure logs.
   static constexpr unsigned long kCaptureFailureLogIntervalMs = 1000;
-  static constexpr int kPlaybackPumpMaxChunks = 6;
+
+  /// Maximum number of conversation history entries retained locally.
   static constexpr int kMaxConversationHistory = 10;
 
+  /// Stack size used by short-lived menu fetch tasks.
+  static constexpr uint32_t kMenuFetchTaskStack = 8192;
+
+  /// Current high-level screen region.
   AppRegion _appRegion = AppRegion::Initializing;
+
+  /// Current application state.
   AppState _appState = AppState::Connecting;
+
+  /// Current menu screen when the menu overlay is open.
   MenuState _menuState = MenuState::Home;
+
+  /// Primary status text shown to the user.
   String _statusText = "Starting...";
+
+  /// Detailed error text shown to the user.
   String _errorText;
+
+  /// Active conversation id.
   String _chatId;
+
+  /// Most recent tool-generated body text.
   String _toolText;
+
+  /// Auxiliary debug text shown in the UI.
   String _debugText;
+
+  /// Boot-time log text accumulated before normal UI mode.
   String _bootLog;
+
+  /// Whether the app is still showing the boot UI.
   bool _bootMode = true;
+
+  /// Whether the display subsystem finished initialization.
   bool _displayReady = false;
+
+  /// Whether a render is currently in progress.
   bool _renderInProgress = false;
+
+  /// Whether the current assistant turn has completed.
   bool _turnComplete = false;
+
+  /// Whether the current assistant turn has produced audio.
   bool _turnHasAudio = false;
+
+  /// Whether turn-completion cleanup is deferred until playback settles.
   bool _pendingTurnReset = false;
+
+  /// Whether an image is currently available for the body area.
   bool _imagePresent = false;
+
+  /// Whether the screen contents need a fresh render.
   bool _screenDirty = true;
+
+  /// Timestamp when the current Thinking state began.
   unsigned long _thinkingStartMs = 0;
+
+  /// Timestamp when the current recording state began.
   unsigned long _recordingStartMs = 0;
+
+  /// Timestamp when reset-hold detection started.
   unsigned long _resetHoldStartMs = 0;
+
+  /// Timestamp of the last heartbeat-like activity update.
   unsigned long _lastHeartbeatMs = 0;
+
+  /// Timestamp of the last header refresh.
   unsigned long _lastHeaderRefreshMs = 0;
-  unsigned long _lastRenderMs = 0;
+
+  /// Timestamp of the last capture-failure log.
   unsigned long _lastCaptureFailureLogMs = 0;
+
+  /// Number of audio chunks sent during the current turn.
   int _audioChunksSent = 0;
+
+  /// Number of failed audio chunk sends during the current turn.
   int _audioChunksFailed = 0;
+
+  /// Number of recent microphone capture failures.
   int _captureFailures = 0;
+
+  /// Total audio bytes sent during the current turn.
   size_t _audioBytesSent = 0;
+
+  /// Current body page index.
   int _bodyPageIndex = 0;
+
+  /// Current selected menu index.
   int _menuSelection = 0;
+
+  /// Number of loaded conversation history entries.
   int _historyCount = 0;
+
+  /// Current load status for the resume-chat menu.
+  MenuLoadStatus _historyLoadStatus = MenuLoadStatus::Idle;
+
+  /// User-visible status for the resume-chat menu when no rows are available.
+  String _historyLoadMessage;
+
+  /// Current load status for the firmware updates menu.
+  MenuLoadStatus _firmwareCheckStatus = MenuLoadStatus::Idle;
+
+  /// User-visible status for the firmware updates menu.
+  String _firmwareCheckMessage;
+
+  /// Last firmware update metadata fetched from the server.
+  FirmwareUpdateInfo _firmwareInfo;
+
+  /// Current error category, if any.
   ErrorCategory _errorCategory = ErrorCategory::None;
+
+  /// App state to restore after the reset confirmation flow.
   AppState _resetReturnState = AppState::Ready;
+
+  /// Status text to restore after the reset confirmation flow.
   String _resetReturnStatus;
+
+  /// Error text to restore after the reset confirmation flow.
   String _resetReturnError;
+
+  /// Error category to restore after the reset confirmation flow.
   ErrorCategory _resetReturnCategory = ErrorCategory::None;
+
+  /// Cached conversation history for the resume-chat menu.
   ConversationSummary _history[kMaxConversationHistory];
 
+  /// Background task result buffer for conversation history.
+  ConversationSummary _historyFetchResults[kMaxConversationHistory];
+
+  /// Number of entries in _historyFetchResults.
+  int _historyFetchCount = 0;
+
+  /// Whether the background history request succeeded.
+  bool _historyFetchOk = false;
+
+  /// Message produced by the background history request.
+  String _historyFetchMessage;
+
+  /// Whether the background history request has completed.
+  volatile bool _historyFetchDone = false;
+
+  /// Background task result for firmware update checks.
+  FirmwareUpdateInfo _firmwareFetchInfo;
+
+  /// Whether the background firmware check succeeded.
+  bool _firmwareFetchOk = false;
+
+  /// Message produced by the background firmware check.
+  String _firmwareFetchMessage;
+
+  /// Whether the background firmware check has completed.
+  volatile bool _firmwareFetchDone = false;
+
+  /// State machine for the push-to-talk button.
   ButtonStateMachine _buttonA = ButtonStateMachine(500, 350);
+
+  /// State machine for the menu/power button.
   ButtonStateMachine _buttonB = ButtonStateMachine(1000, 350);
 
+  /// UI renderer.
   TextDisplay _display;
+
+  /// Idle and power-state manager.
   PowerManager _powerManager;
+
+  /// WiFi and captive-portal service.
   WiFiService _wifi;
+
+  /// Audio capture and playback service.
   AudioService _audio;
+
+  /// Live chat session transport service.
   LiveSessionService _live;
+
+  /// Persistent settings store.
   SettingsStore _settings;
+
+  /// Active background task for loading conversation history.
+  TaskHandle_t _historyFetchTask = nullptr;
+
+  /// Active background task for checking firmware updates.
+  TaskHandle_t _firmwareFetchTask = nullptr;
+
+  /// Timestamp of the last power-management poll.
   unsigned long _lastPowerPollMs = 0;
 
+  /// Wire service callbacks back into controller state transitions.
   void configureCallbacks();
+
+  /// Bring up WiFi and the live session stack.
   void connectNetworkStack();
+
+  /// Enable or disable the network-dependent services.
   void setNetworkEnabled(bool enabled);
+
+  /// Transition the app state and optionally replace status/error text.
   void setAppState(AppState state, const String &status = "",
                    const String &error = "");
+
+  /// Enter an error state with category and user-facing text.
   void setErrorState(ErrorCategory category, const String &status,
                      const String &error);
+
+  /// Retry connection or session setup after an error.
   void retryAfterError();
+
+  /// Shut the device down cleanly.
   void performPowerOff();
+
+  /// Clear transient tool text from the UI.
   void clearToolText();
+
+  /// Update transient debug text shown in the UI.
   void setDebugText(const String &text);
+
+  /// Clear transient debug text.
   void clearDebugText();
+
+  /// Reset body pagination to the first page.
   void resetBodyPage();
+
+  /// Return only the not-yet-rendered suffix from a streamed transcript chunk.
+  String transcriptDelta(const String &current, const String &incoming) const;
+
+  /// Append a formatted line to the boot log.
   void appendBootLog(const char *topic, const char *message);
+
+  /// Leave boot-log mode and enter the normal UI.
   void exitBootMode();
+
+  /// Static trampoline used by boot logging callbacks.
   static void bootLogTrampoline(void *ctx, char side, const char *topic,
                                 const char *message);
+
+  /// Restore the last known assistant message for the saved chat id.
   void restoreSessionPreview();
+
+  /// Enter the factory reset confirmation flow.
   void beginFactoryReset();
+
+  /// Human-readable label for the current error category.
   const char *errorCategoryLabel() const;
 
+  /// Poll and dispatch button events.
   void handleButtons();
+
+  /// Clear latched button events when changing input regions.
+  void clearButtonEvents();
+
+  /// Handle buttons while in the chat screen.
   void handleChatButtons();
+
+  /// Handle buttons while a menu is open.
   void handleMenuButtons();
+
+  /// Start a new push-to-talk recording turn.
   void startRecording();
+
+  /// Finish the current recording turn.
   void stopRecording();
+
+  /// Capture and send microphone audio while recording.
   void processRecording();
+
+  /// Advance speaker playback and state transitions.
   void processPlayback();
+
+  /// Detect and handle prolonged Thinking timeouts.
   void processThinkingTimeout();
+
+  /// Complete background menu requests when their tasks finish.
+  void processMenuFetches();
+
+  /// Poll and react to power-management state changes.
   void processPower();
+
+  /// Service captive-portal state transitions.
   void processCaptivePortal();
+
+  /// Render the UI when needed.
   void renderIfNeeded();
+
+  /// Total number of body pages available for the current content.
   int currentBodyPageCount() const;
 
+  /// Open the menu overlay at a given menu screen.
   void openMenu(MenuState state = MenuState::Home);
-  void closeMenu();
-  void navigateBackFromMenu();
-  void cycleMenuSelection();
-  void selectCurrentMenuItem();
-  int menuItemCount() const;
-  String menuTitle() const;
-  String menuItemLabel(int index) const;
-  void loadConversationHistory();
-  void resumeConversation(int index);
-  void startFreshConversation();
-  void startCaptivePortalFlow();
-  void checkForUpdates();
 
+  /// Close the menu overlay and return to chat.
+  void closeMenu();
+
+  /// Navigate one level back from the current menu screen.
+  void navigateBackFromMenu();
+
+  /// Move the current menu selection to the next item.
+  void cycleMenuSelection();
+
+  /// Activate the currently selected menu item.
+  void selectCurrentMenuItem();
+
+  /// Number of items in the current menu screen.
+  int menuItemCount() const;
+
+  /// Title string for the current menu screen.
+  String menuTitle() const;
+
+  /// Label for a menu item by index.
+  String menuItemLabel(int index) const;
+
+  /// Load conversation history for the resume-chat menu.
+  void startConversationHistoryLoad();
+
+  /// Background worker body for conversation history fetches.
+  void conversationHistoryLoadTask();
+
+  /// FreeRTOS trampoline for conversationHistoryLoadTask().
+  static void conversationHistoryLoadTaskTrampoline(void *ctx);
+
+  /// Apply a finished conversation history fetch to menu state.
+  void finishConversationHistoryLoad();
+
+  /// Resume a conversation from the history list.
+  void resumeConversation(int index);
+
+  /// Start a new blank conversation.
+  void startFreshConversation();
+
+  /// Switch into WiFi provisioning mode.
+  void startCaptivePortalFlow();
+
+  /// Check for an available firmware update.
+  void startFirmwareUpdateCheck();
+
+  /// Background worker body for firmware update checks.
+  void firmwareUpdateCheckTask();
+
+  /// FreeRTOS trampoline for firmwareUpdateCheckTask().
+  static void firmwareUpdateCheckTaskTrampoline(void *ctx);
+
+  /// Apply a finished firmware update check to menu state.
+  void finishFirmwareUpdateCheck();
+
+  /// Download and apply the selected firmware update.
+  void installFirmwareUpdate();
+
+  /// Build the display snapshot for the current UI state.
   DisplayState buildDisplayState() const;
+
+  /// Build the body text shown in the chat region.
   String buildBodyText() const;
+
+  /// Serialize device status for tool responses.
   String deviceStatusJson() const;
+
+  /// Current local time string for the header.
   String currentTimeString() const;
 };

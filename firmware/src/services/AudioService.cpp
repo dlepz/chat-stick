@@ -78,6 +78,7 @@ int codecVolumeFromLevel(int level) {
 } // namespace
 
 AudioService::~AudioService() {
+  stopPlaybackTask();
   if (_captureChunk) {
     free(_captureChunk);
     _captureChunk = nullptr;
@@ -98,9 +99,29 @@ AudioService::~AudioService() {
     es8311_delete(codec);
     codec = nullptr;
   }
+  if (_playbackWake) {
+    vSemaphoreDelete(_playbackWake);
+    _playbackWake = nullptr;
+  }
+  if (_playbackMutex) {
+    vSemaphoreDelete(_playbackMutex);
+    _playbackMutex = nullptr;
+  }
+  if (_audioMutex) {
+    vSemaphoreDelete(_audioMutex);
+    _audioMutex = nullptr;
+  }
 }
 
 bool AudioService::init() {
+  _audioMutex = xSemaphoreCreateRecursiveMutex();
+  _playbackMutex = xSemaphoreCreateMutex();
+  _playbackWake = xSemaphoreCreateBinary();
+  if (!_audioMutex || !_playbackMutex || !_playbackWake) {
+    Log::client("Audio", "playback sync allocation failed");
+    return false;
+  }
+
   _captureChunk = static_cast<int16_t *>(ps_malloc(_chunkBytes));
   _captureStereoChunk = static_cast<int16_t *>(ps_malloc(_stereoChunkBytes));
   _playBuffer = static_cast<uint8_t *>(ps_malloc(kMaxPlayBytes));
@@ -153,24 +174,36 @@ bool AudioService::init() {
   Log::client("Audio", "capture chunk samples=%d bytes=%u", kChunkSamples,
               static_cast<unsigned>(_chunkBytes));
   Log::client("Audio", "playback buffer bytes=%d", _playCapacity);
+  if (!startPlaybackTask()) {
+    Log::client("Audio", "playback task start failed");
+    return false;
+  }
   return true;
 }
 
 void AudioService::setVolume(int level) {
   _volume = constrain(level, 0, 255);
   const int nextVolume = codecVolumeFromLevel(_volume);
+  if (!takeAudioLock()) {
+    return;
+  }
   if (codec && codecVolume != nextVolume) {
     es8311_voice_volume_set(codec, nextVolume, nullptr);
     codecVolume = nextVolume;
   }
+  releaseAudioLock();
 }
 
 bool AudioService::startRecording() {
   resetPlayback();
+  if (!takeAudioLock()) {
+    return false;
+  }
   digitalWrite(AUDIO_PA_ENABLE_PIN, LOW);
   if (!configureAudio(MIC_SAMPLE_RATE)) {
     digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
     setVolume(_volume);
+    releaseAudioLock();
     return false;
   }
   if (!i2s.configureRX(MIC_SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT,
@@ -178,24 +211,35 @@ bool AudioService::startRecording() {
     configureAudio(PLAY_SAMPLE_RATE);
     digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
     setVolume(_volume);
+    releaseAudioLock();
     return false;
   }
+  releaseAudioLock();
   return true;
 }
 
 void AudioService::stopRecording() {
+  if (!takeAudioLock()) {
+    return;
+  }
   configureAudio(PLAY_SAMPLE_RATE);
   digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
   setVolume(_volume);
+  releaseAudioLock();
 }
 
 bool AudioService::captureChunk() {
+  if (!takeAudioLock()) {
+    return false;
+  }
   if (!i2sReady) {
+    releaseAudioLock();
     return false;
   }
   const size_t read =
       i2s.readBytes(reinterpret_cast<char *>(_captureStereoChunk),
                     _stereoChunkBytes);
+  releaseAudioLock();
   if (read != _stereoChunkBytes) {
     return false;
   }
@@ -252,10 +296,16 @@ bool AudioService::playMelody(const String &melody) {
 }
 
 void AudioService::resetPlayback() {
+  if (!takePlaybackLock()) {
+    return;
+  }
   _playWritePos = 0;
   _playReadPos = 0;
   _playBufferedBytes = 0;
   _playbackStarted = false;
+  _playChunkInFlight = false;
+  releasePlaybackLock();
+  wakePlaybackTask();
 }
 
 bool AudioService::queuePlayback(const uint8_t *data, size_t len) {
@@ -263,8 +313,12 @@ bool AudioService::queuePlayback(const uint8_t *data, size_t len) {
     return true;
   }
 
+  if (!takePlaybackLock()) {
+    return false;
+  }
   const int freeBytes = _playCapacity - _playBufferedBytes;
   if (len > static_cast<size_t>(freeBytes)) {
+    releasePlaybackLock();
     Log::client("Audio", "playback overflow dropping bytes=%u",
                 static_cast<unsigned>(len));
     return false;
@@ -280,28 +334,80 @@ bool AudioService::queuePlayback(const uint8_t *data, size_t len) {
     sourceOffset += contiguous;
     remaining -= contiguous;
   }
+  releasePlaybackLock();
+  wakePlaybackTask();
   return true;
 }
 
 int AudioService::bufferedPlaybackBytes() const {
-  return _playBufferedBytes;
+  if (!takePlaybackLock()) {
+    return 0;
+  }
+  const int bytes = _playBufferedBytes;
+  releasePlaybackLock();
+  return bytes;
 }
 
-bool AudioService::advancePlayback() { return playAvailableChunk(); }
+bool AudioService::playbackStarted() const {
+  if (!takePlaybackLock()) {
+    return false;
+  }
+  const bool started = _playbackStarted;
+  releasePlaybackLock();
+  return started;
+}
 
-bool AudioService::speakerBusy() const { return false; }
+void AudioService::markPlaybackStarted() {
+  if (!takePlaybackLock()) {
+    return;
+  }
+  _playbackStarted = true;
+  releasePlaybackLock();
+  wakePlaybackTask();
+}
 
-bool AudioService::playbackIdle() const { return bufferedPlaybackBytes() == 0; }
+bool AudioService::advancePlayback() {
+  wakePlaybackTask();
+  return !playbackIdle();
+}
+
+bool AudioService::speakerBusy() const {
+  if (!takePlaybackLock()) {
+    return false;
+  }
+  const bool busy = _playChunkInFlight;
+  releasePlaybackLock();
+  return busy;
+}
+
+bool AudioService::playbackIdle() const {
+  if (!takePlaybackLock()) {
+    return true;
+  }
+  const bool idle = _playBufferedBytes == 0 && !_playChunkInFlight;
+  releasePlaybackLock();
+  return idle;
+}
 
 void AudioService::stopPlayback() {
+  if (!takePlaybackLock()) {
+    return;
+  }
   _playbackStarted = false;
   _playReadPos = 0;
   _playWritePos = 0;
   _playBufferedBytes = 0;
+  _playChunkInFlight = false;
+  releasePlaybackLock();
+  wakePlaybackTask();
 }
 
 bool AudioService::configureAudio(int sampleRate) {
+  if (!takeAudioLock()) {
+    return false;
+  }
   if (i2sReady && currentSampleRate == sampleRate) {
+    releaseAudioLock();
     return true;
   }
 
@@ -313,6 +419,7 @@ bool AudioService::configureAudio(int sampleRate) {
   if (!i2s.begin(I2S_MODE_STD, sampleRate, I2S_DATA_BIT_WIDTH_16BIT,
                  I2S_SLOT_MODE_STEREO, I2S_STD_SLOT_BOTH)) {
     Log::client("Audio", "I2S begin failed");
+    releaseAudioLock();
     return false;
   }
 
@@ -321,6 +428,7 @@ bool AudioService::configureAudio(int sampleRate) {
   }
   if (!codec) {
     Log::client("Audio", "ES8311 create failed");
+    releaseAudioLock();
     return false;
   }
 
@@ -337,6 +445,7 @@ bool AudioService::configureAudio(int sampleRate) {
       es8311_microphone_config(codec, false) != ESP_OK ||
       es8311_microphone_gain_set(codec, kMicGain) != ESP_OK) {
     Log::client("Audio", "ES8311 config failed");
+    releaseAudioLock();
     return false;
   }
 
@@ -344,19 +453,88 @@ bool AudioService::configureAudio(int sampleRate) {
   codecVolume = -1;
   i2sReady = true;
   setVolume(_volume);
+  releaseAudioLock();
   return true;
 }
 
-bool AudioService::playAvailableChunk() {
-  int available = bufferedPlaybackBytes();
-  if (available <= 1) {
-    return false;
-  }
+bool AudioService::takeAudioLock(TickType_t timeout) {
+  return !_audioMutex ||
+         xSemaphoreTakeRecursive(_audioMutex, timeout) == pdTRUE;
+}
 
-  if (!configureAudio(PLAY_SAMPLE_RATE)) {
+void AudioService::releaseAudioLock() {
+  if (_audioMutex) {
+    xSemaphoreGiveRecursive(_audioMutex);
+  }
+}
+
+bool AudioService::takePlaybackLock(TickType_t timeout) const {
+  return !_playbackMutex || xSemaphoreTake(_playbackMutex, timeout) == pdTRUE;
+}
+
+void AudioService::releasePlaybackLock() const {
+  if (_playbackMutex) {
+    xSemaphoreGive(_playbackMutex);
+  }
+}
+
+bool AudioService::startPlaybackTask() {
+  if (_playbackTask) {
+    return true;
+  }
+  _playbackTaskRunning = true;
+  const BaseType_t created =
+      xTaskCreatePinnedToCore(&AudioService::playbackTaskTrampoline,
+                              "audio_play", 4096, this, 3, &_playbackTask, 0);
+  if (created != pdPASS) {
+    _playbackTask = nullptr;
+    _playbackTaskRunning = false;
     return false;
   }
-  digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
+  return true;
+}
+
+void AudioService::stopPlaybackTask() {
+  if (!_playbackTask) {
+    return;
+  }
+  _playbackTaskRunning = false;
+  wakePlaybackTask();
+  for (int i = 0; i < 100 && _playbackTask; i++) {
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+}
+
+void AudioService::wakePlaybackTask() {
+  if (_playbackWake) {
+    xSemaphoreGive(_playbackWake);
+  }
+}
+
+void AudioService::playbackTaskTrampoline(void *ctx) {
+  static_cast<AudioService *>(ctx)->playbackTaskLoop();
+}
+
+void AudioService::playbackTaskLoop() {
+  while (_playbackTaskRunning) {
+    xSemaphoreTake(_playbackWake, pdMS_TO_TICKS(20));
+    while (_playbackTaskRunning && playAvailableChunk()) {
+      taskYIELD();
+    }
+  }
+  _playbackTask = nullptr;
+  vTaskDelete(nullptr);
+}
+
+bool AudioService::playAvailableChunk() {
+  if (!takePlaybackLock()) {
+    return false;
+  }
+  int available = _playbackStarted ? _playBufferedBytes : 0;
+  if (available <= 1) {
+    releasePlaybackLock();
+    return false;
+  }
 
   const int maxMonoBytes =
       kPlaybackChunkSamples * static_cast<int>(sizeof(int16_t));
@@ -371,18 +549,44 @@ bool AudioService::playAvailableChunk() {
     _stereoPlaybackChunk[i * 2] = sample;
     _stereoPlaybackChunk[i * 2 + 1] = sample;
   }
+  _playReadPos = (_playReadPos + monoBytes) % _playCapacity;
+  _playBufferedBytes -= monoBytes;
+  if (_playBufferedBytes == 0) {
+    _playReadPos = 0;
+    _playWritePos = 0;
+  }
+  _playChunkInFlight = true;
+  releasePlaybackLock();
+
+  if (!takeAudioLock()) {
+    if (takePlaybackLock()) {
+      _playChunkInFlight = false;
+      releasePlaybackLock();
+    }
+    return false;
+  }
+  if (!configureAudio(PLAY_SAMPLE_RATE)) {
+    if (takePlaybackLock()) {
+      _playChunkInFlight = false;
+      releasePlaybackLock();
+    }
+    releaseAudioLock();
+    return false;
+  }
+  digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
 
   const size_t stereoBytes = monoSamples * 2 * sizeof(int16_t);
   const bool ok =
       i2s.write(reinterpret_cast<const uint8_t *>(_stereoPlaybackChunk),
                 stereoBytes) == stereoBytes;
-  if (ok) {
-    _playReadPos = (_playReadPos + monoBytes) % _playCapacity;
-    _playBufferedBytes -= monoBytes;
-    if (_playBufferedBytes == 0) {
-      _playReadPos = 0;
-      _playWritePos = 0;
-    }
+  if (takePlaybackLock()) {
+    _playChunkInFlight = false;
+    releasePlaybackLock();
+  }
+  releaseAudioLock();
+  if (!ok) {
+    Log::client("Audio", "playback write failed bytes=%u",
+                static_cast<unsigned>(stereoBytes));
   }
   return ok;
 }
@@ -393,7 +597,11 @@ bool AudioService::playToneSequence(const String &sequence) {
   }
 
   stopPlayback();
+  if (!takeAudioLock()) {
+    return false;
+  }
   if (!configureAudio(PLAY_SAMPLE_RATE)) {
+    releaseAudioLock();
     return false;
   }
   digitalWrite(AUDIO_PA_ENABLE_PIN, HIGH);
@@ -452,5 +660,6 @@ bool AudioService::playToneSequence(const String &sequence) {
     start = end + 1;
   }
 
+  releaseAudioLock();
   return played;
 }

@@ -4,6 +4,7 @@ import {
 	MAX_FILE_BYTES,
 	USER_INSTRUCTIONS_PATH,
 	appendFile,
+	canonicalFilePath,
 	ensureUserInstructionsFile,
 	listFiles,
 	readFile,
@@ -904,6 +905,39 @@ export class LiveSession {
 		}
 	}
 
+	private appendTranscriptDelta(current: string, incoming: string) {
+		if (!incoming) {
+			return { text: current, delta: '' }
+		}
+		if (!current) {
+			return { text: incoming, delta: incoming }
+		}
+
+		// Live transcription messages can arrive as either true deltas or as
+		// cumulative/overlapping partial hypotheses. The device reveal animation
+		// expects append-only deltas, so strip any already-emitted prefix here.
+		if (incoming === current || current.startsWith(incoming)) {
+			return { text: current, delta: '' }
+		}
+		if (incoming.startsWith(current)) {
+			const delta = incoming.slice(current.length)
+			return { text: incoming, delta }
+		}
+		if (current.endsWith(incoming)) {
+			return { text: current, delta: '' }
+		}
+
+		const maxOverlap = Math.min(current.length, incoming.length)
+		for (let len = maxOverlap; len >= 1; len--) {
+			if (current.endsWith(incoming.slice(0, len))) {
+				const delta = incoming.slice(len)
+				return { text: current + delta, delta }
+			}
+		}
+
+		return { text: current + incoming, delta: incoming }
+	}
+
 	private async handleGeminiMessage(msg: GeminiMessage) {
 
 		// Session ready
@@ -921,6 +955,37 @@ export class LiveSession {
 
 		if (msg.serverContent) {
 			const sc = msg.serverContent
+
+			// Transcriptions drive the device captions. Send them before binary
+			// audio so the ESP32 doesn't queue text behind a burst of PCM frames.
+			if (sc.inputTranscription?.text) {
+				const next = this.appendTranscriptDelta(
+					this.currentUserText,
+					sc.inputTranscription.text
+				)
+				this.currentUserText = next.text
+				if (next.delta) {
+					this.sendToDevice({
+						type: 'transcript',
+						source: 'user',
+						text: next.delta,
+					})
+				}
+			}
+			if (sc.outputTranscription?.text) {
+				const next = this.appendTranscriptDelta(
+					this.currentAssistantText,
+					sc.outputTranscription.text
+				)
+				this.currentAssistantText = next.text
+				if (next.delta) {
+					this.sendToDevice({
+						type: 'transcript',
+						source: 'model',
+						text: next.delta,
+					})
+				}
+			}
 
 			// Model audio — decode base64 and forward as raw binary
 			if (sc.modelTurn?.parts) {
@@ -942,24 +1007,6 @@ export class LiveSession {
 			if (sc.turnComplete) {
 				this.sendToDevice({ type: 'turn_complete' })
 				await this.commitExchange()
-			}
-
-			// Transcriptions — accumulate for DB storage
-			if (sc.inputTranscription?.text) {
-				this.currentUserText += sc.inputTranscription.text
-				this.sendToDevice({
-					type: 'transcript',
-					source: 'user',
-					text: sc.inputTranscription.text,
-				})
-			}
-			if (sc.outputTranscription?.text) {
-				this.currentAssistantText += sc.outputTranscription.text
-				this.sendToDevice({
-					type: 'transcript',
-					source: 'model',
-					text: sc.outputTranscription.text,
-				})
 			}
 		}
 
@@ -1314,6 +1361,9 @@ export class LiveSession {
 	private async getUserInstructionsForPrompt(): Promise<string> {
 		try {
 			const file = await ensureUserInstructionsFile(this.env.DB, this.deviceId)
+			console.log(
+				`[Files] Loaded ${USER_INSTRUCTIONS_PATH}: ${file.content.length} bytes`
+			)
 			return file.content
 		} catch (err) {
 			console.error(`[Files] Failed to load ${USER_INSTRUCTIONS_PATH}:`, err)
@@ -1371,7 +1421,8 @@ export class LiveSession {
 		name: string,
 		args: Record<string, unknown>
 	): Promise<Record<string, unknown>> {
-		const path = typeof args.path === 'string' ? args.path.trim() : ''
+		const requestedPath = typeof args.path === 'string' ? args.path.trim() : ''
+		const path = requestedPath ? canonicalFilePath(requestedPath) : ''
 		const content = typeof args.content === 'string' ? args.content : ''
 		const query = typeof args.query === 'string' ? args.query : ''
 		try {
@@ -1420,12 +1471,19 @@ export class LiveSession {
 					}
 				}
 				await writeFile(this.env.DB, this.deviceId, path, content)
+				const saved = await readFile(this.env.DB, this.deviceId, path)
+				if (!saved || saved.content !== content) {
+					return { error: `failed to verify saved file: ${path}` }
+				}
 				return {
 					ok: true,
 					path,
+					...(requestedPath && requestedPath !== path
+						? { requested_path: requestedPath }
+						: {}),
 					size: content.length,
 					...(path === USER_INSTRUCTIONS_PATH
-						? { applies_to: 'future conversations' }
+						? { applies_to: 'next Gemini session/reconnect' }
 						: {}),
 				}
 			}
@@ -1439,12 +1497,19 @@ export class LiveSession {
 					}
 				}
 				await appendFile(this.env.DB, this.deviceId, path, content)
+				const saved = await readFile(this.env.DB, this.deviceId, path)
+				if (!saved || saved.content.length !== projectedSize) {
+					return { error: `failed to verify appended file: ${path}` }
+				}
 				return {
 					ok: true,
 					path,
+					...(requestedPath && requestedPath !== path
+						? { requested_path: requestedPath }
+						: {}),
 					size: projectedSize,
 					...(path === USER_INSTRUCTIONS_PATH
-						? { applies_to: 'future conversations' }
+						? { applies_to: 'next Gemini session/reconnect' }
 						: {}),
 				}
 			}

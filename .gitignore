@@ -6,6 +6,7 @@ firmware/src/credentials.h
 
 # PlatformIO
 firmware/.pio/
+firmware/compile_commands.json
 
 # Cloudflare / Wrangler
 server/.wrangler/
@@ -22,3 +23,5 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+.cache

@@ -44,6 +44,7 @@ void AppController::setup() {
   _chatId = _settings.chatId();
   _live.setChatId(_chatId);
   _live.setVoice(_settings.voice());
+  _live.setPreferredEndpointIndex(_settings.serverEndpointIndex());
 
   LiveSessionCallbacks callbacks;
   callbacks.onActivity = [this]() { _powerManager.registerActivity(); };
@@ -137,7 +138,11 @@ void AppController::setup() {
       return;
     }
     applyPendingTurnReset();
-    _toolText += text;
+    const String delta = transcriptDelta(_toolText, text);
+    if (delta.isEmpty()) {
+      return;
+    }
+    _toolText += delta;
     resetBodyPage();
     _screenDirty = true;
   };
@@ -199,6 +204,9 @@ void AppController::setup() {
   callbacks.onVoiceChanged = [this](const String &voice) {
     _settings.setVoice(voice);
   };
+  callbacks.onEndpointIndexChanged = [this](int endpointIndex) {
+    _settings.setServerEndpointIndex(endpointIndex);
+  };
 
   _live.init(callbacks);
 
@@ -259,6 +267,7 @@ void AppController::loop() {
   handleButtons();
   processRecording();
   processThinkingTimeout();
+  processMenuFetches();
   processPower();
   processCaptivePortal();
   renderIfNeeded();
@@ -377,6 +386,38 @@ void AppController::clearDebugText() {
 
 void AppController::resetBodyPage() { _bodyPageIndex = 0; }
 
+String AppController::transcriptDelta(const String &current,
+                                      const String &incoming) const {
+  if (incoming.isEmpty()) {
+    return "";
+  }
+  if (current.isEmpty()) {
+    return incoming;
+  }
+
+  // Gemini Live transcription usually streams deltas, but early partial
+  // hypotheses can repeat as cumulative or overlapping text. Keep the on-screen
+  // text append-only so repeated partials do not duplicate words.
+  if (incoming == current || current.startsWith(incoming)) {
+    return "";
+  }
+  if (incoming.startsWith(current)) {
+    return incoming.substring(current.length());
+  }
+  if (current.endsWith(incoming)) {
+    return "";
+  }
+
+  const int maxOverlap = min(current.length(), incoming.length());
+  for (int len = maxOverlap; len >= 1; len--) {
+    if (current.endsWith(incoming.substring(0, len))) {
+      return incoming.substring(len);
+    }
+  }
+
+  return incoming;
+}
+
 void AppController::bootLogTrampoline(void *ctx, char side, const char *topic,
                                       const char *message) {
   (void)side;
@@ -435,6 +476,11 @@ void AppController::restoreSessionPreview() {
     resetBodyPage();
     _screenDirty = true;
   }
+}
+
+void AppController::clearButtonEvents() {
+  _buttonA.clearEvents();
+  _buttonB.clearEvents();
 }
 
 void AppController::handleButtons() {
@@ -556,11 +602,22 @@ void AppController::handleMenuButtons() {
 }
 
 void AppController::openMenu(MenuState state) {
+  if (_appState == AppState::Recording) {
+    _audio.stopRecording();
+    if (_live.isConnected()) {
+      _live.sendStop();
+    }
+    _pendingTurnReset = false;
+    setAppState(AppState::Ready, "Ready");
+  }
   _appRegion = AppRegion::Menu;
   _menuState = state;
   _menuSelection = 0;
+  clearButtonEvents();
   if (state == MenuState::ResumeChat) {
-    loadConversationHistory();
+    startConversationHistoryLoad();
+  } else if (state == MenuState::Updates) {
+    startFirmwareUpdateCheck();
   }
   _screenDirty = true;
 }
@@ -569,12 +626,18 @@ void AppController::closeMenu() {
   _appRegion = AppRegion::Chat;
   _menuState = MenuState::Home;
   _menuSelection = 0;
+  clearButtonEvents();
   _screenDirty = true;
 }
 
 void AppController::navigateBackFromMenu() {
   if (_menuState == MenuState::Home) {
     closeMenu();
+    return;
+  }
+
+  if (_menuState == MenuState::Updates) {
+    openMenu(MenuState::Device);
     return;
   }
 
@@ -621,8 +684,7 @@ void AppController::selectCurrentMenuItem() {
       startCaptivePortalFlow();
       return;
     case 2:
-      closeMenu();
-      checkForUpdates();
+      openMenu(MenuState::Updates);
       return;
     case 3:
       performPowerOff();
@@ -636,10 +698,28 @@ void AppController::selectCurrentMenuItem() {
       openMenu(MenuState::Home);
       return;
     }
+    if (_historyLoadStatus == MenuLoadStatus::Loading) {
+      return;
+    }
     if (_historyCount == 0) {
       return;
     }
     resumeConversation(_menuSelection - 1);
+    return;
+
+  case MenuState::Updates:
+    if (_menuSelection == 0) {
+      openMenu(MenuState::Device);
+      return;
+    }
+    if (_firmwareCheckStatus == MenuLoadStatus::Loading ||
+        _firmwareCheckStatus == MenuLoadStatus::Idle) {
+      return;
+    }
+    if (_menuSelection == 1 && _firmwareCheckStatus == MenuLoadStatus::Loaded &&
+        _firmwareInfo.available && !_firmwareInfo.downloadUrl.isEmpty()) {
+      installFirmwareUpdate();
+    }
     return;
   }
 }
@@ -652,6 +732,12 @@ int AppController::menuItemCount() const {
     return 4;
   case MenuState::ResumeChat:
     return _historyCount > 0 ? 1 + _historyCount : 2;
+  case MenuState::Updates:
+    if (_firmwareCheckStatus == MenuLoadStatus::Loaded &&
+        _firmwareInfo.available && !_firmwareInfo.notes.isEmpty()) {
+      return 3;
+    }
+    return 2;
   }
   return 0;
 }
@@ -664,6 +750,8 @@ String AppController::menuTitle() const {
     return "Device";
   case MenuState::ResumeChat:
     return "Resume";
+  case MenuState::Updates:
+    return "Updates";
   }
   return "";
 }
@@ -702,8 +790,13 @@ String AppController::menuItemLabel(int index) const {
     if (index == 0) {
       return "Go back";
     }
+    if (_historyLoadStatus == MenuLoadStatus::Loading ||
+        _historyLoadStatus == MenuLoadStatus::Idle) {
+      return "Loading...";
+    }
     if (_historyCount == 0 && index == 1) {
-      return _toolText.isEmpty() ? "No saved chats" : _toolText.substring(0, 26);
+      return _historyLoadMessage.isEmpty() ? String("No saved chats")
+                                           : _historyLoadMessage.substring(0, 26);
     }
     if (index - 1 < _historyCount) {
       const ConversationSummary &entry = _history[index - 1];
@@ -712,30 +805,105 @@ String AppController::menuItemLabel(int index) const {
       return preview.substring(0, 26);
     }
     return "";
+
+  case MenuState::Updates:
+    if (index == 0) {
+      return "Go back";
+    }
+    if (_firmwareCheckStatus == MenuLoadStatus::Loading ||
+        _firmwareCheckStatus == MenuLoadStatus::Idle) {
+      return "Checking...";
+    }
+    if (_firmwareCheckStatus == MenuLoadStatus::Failed) {
+      return _firmwareCheckMessage.isEmpty()
+                 ? String("Update check failed")
+                 : _firmwareCheckMessage.substring(0, 26);
+    }
+    if (!_firmwareInfo.available) {
+      return "Up to date v" + String(FIRMWARE_VERSION);
+    }
+    if (_firmwareInfo.downloadUrl.isEmpty()) {
+      return "Update unavailable";
+    }
+    if (index == 1) {
+      return "Install v" + String(_firmwareInfo.latestVersion);
+    }
+    return _firmwareInfo.notes.substring(0, 26);
   }
 
   return "";
 }
 
-void AppController::loadConversationHistory() {
+void AppController::startConversationHistoryLoad() {
   _historyCount = 0;
+  _historyLoadMessage = "";
+  _historyLoadStatus = MenuLoadStatus::Loading;
+
+  if (_historyFetchTask != nullptr) {
+    return;
+  }
+
   if (!_wifi.isConnected()) {
-    _toolText = "Connect WiFi first";
-    resetBodyPage();
+    _historyLoadStatus = MenuLoadStatus::Failed;
+    _historyLoadMessage = "Connect WiFi first";
     return;
   }
 
-  if (!_live.fetchConversationHistory(_history, kMaxConversationHistory,
-                                      _historyCount)) {
-    _toolText = "History unavailable";
-    resetBodyPage();
-    return;
+  _historyFetchDone = false;
+  _historyFetchOk = false;
+  _historyFetchCount = 0;
+  _historyFetchMessage = "";
+
+  const BaseType_t ok =
+      xTaskCreatePinnedToCore(&AppController::conversationHistoryLoadTaskTrampoline,
+                              "menu_history", kMenuFetchTaskStack, this, 1,
+                              &_historyFetchTask, 1);
+  if (ok != pdPASS) {
+    _historyFetchTask = nullptr;
+    _historyLoadStatus = MenuLoadStatus::Failed;
+    _historyLoadMessage = "History unavailable";
+    Log::client("Menu", "failed to start history fetch task");
+  }
+}
+
+void AppController::conversationHistoryLoadTaskTrampoline(void *ctx) {
+  static_cast<AppController *>(ctx)->conversationHistoryLoadTask();
+}
+
+void AppController::conversationHistoryLoadTask() {
+  int count = 0;
+  _historyFetchOk = _live.fetchConversationHistory(
+      _historyFetchResults, kMaxConversationHistory, count);
+  _historyFetchCount = count;
+  if (!_historyFetchOk) {
+    _historyFetchMessage = "History unavailable";
+  } else if (count == 0) {
+    _historyFetchMessage = "No saved chats";
+  } else {
+    _historyFetchMessage = "";
+  }
+  _historyFetchDone = true;
+  vTaskDelete(nullptr);
+}
+
+void AppController::finishConversationHistoryLoad() {
+  _historyFetchTask = nullptr;
+  _historyCount = 0;
+  if (_historyFetchOk) {
+    _historyLoadStatus = MenuLoadStatus::Loaded;
+    _historyCount = min(_historyFetchCount, kMaxConversationHistory);
+    for (int i = 0; i < _historyCount; i++) {
+      _history[i] = _historyFetchResults[i];
+    }
+  } else {
+    _historyLoadStatus = MenuLoadStatus::Failed;
   }
 
-  if (_historyCount == 0) {
-    _toolText = "No saved chats";
-    resetBodyPage();
+  _historyLoadMessage = _historyFetchMessage;
+  if (_historyLoadMessage.isEmpty() && _historyCount == 0) {
+    _historyLoadMessage = "No saved chats";
   }
+  _screenDirty = true;
 }
 
 void AppController::resumeConversation(int index) {
@@ -783,48 +951,106 @@ void AppController::startCaptivePortalFlow() {
   _screenDirty = true;
 }
 
-void AppController::checkForUpdates() {
-  FirmwareUpdateInfo info;
-  if (!_wifi.isConnected()) {
-    _toolText = "Offline\nCannot check updates";
-  } else if (_live.checkFirmwareUpdate(info)) {
-    if (info.available) {
-      if (info.downloadUrl.isEmpty()) {
-        _toolText = "Update unavailable\nNo download URL";
-      } else {
-        setAppState(AppState::Connecting, "Updating...");
-        _toolText =
-            "Downloading update\nv" + String(info.latestVersion) + "\nPlease wait";
-        resetBodyPage();
-        _screenDirty = true;
-        renderIfNeeded();
+void AppController::startFirmwareUpdateCheck() {
+  _firmwareInfo = FirmwareUpdateInfo{};
+  _firmwareCheckMessage = "";
+  _firmwareCheckStatus = MenuLoadStatus::Loading;
 
-        String error;
-        if (_live.downloadAndApplyFirmwareUpdate(info.downloadUrl, error)) {
-          _toolText = "Update installed\nRestarting...";
-          resetBodyPage();
-          _screenDirty = true;
-          renderIfNeeded();
-          delay(500);
-          ESP.restart();
-        }
-
-        _toolText = "Update failed\n" + error;
-        setAppState(AppState::Ready, "Ready");
-      }
-    } else {
-      _toolText = "Up to date\nv" + String(FIRMWARE_VERSION);
-    }
-  } else {
-    _toolText = "Update check failed";
+  if (_firmwareFetchTask != nullptr) {
+    return;
   }
+
+  if (!_wifi.isConnected()) {
+    _firmwareCheckStatus = MenuLoadStatus::Failed;
+    _firmwareCheckMessage = "Offline";
+    return;
+  }
+
+  _firmwareFetchDone = false;
+  _firmwareFetchOk = false;
+  _firmwareFetchInfo = FirmwareUpdateInfo{};
+  _firmwareFetchMessage = "";
+
+  const BaseType_t ok =
+      xTaskCreatePinnedToCore(&AppController::firmwareUpdateCheckTaskTrampoline,
+                              "menu_update", kMenuFetchTaskStack, this, 1,
+                              &_firmwareFetchTask, 1);
+  if (ok != pdPASS) {
+    _firmwareFetchTask = nullptr;
+    _firmwareCheckStatus = MenuLoadStatus::Failed;
+    _firmwareCheckMessage = "Update check failed";
+    Log::client("Menu", "failed to start firmware check task");
+  }
+}
+
+void AppController::firmwareUpdateCheckTaskTrampoline(void *ctx) {
+  static_cast<AppController *>(ctx)->firmwareUpdateCheckTask();
+}
+
+void AppController::firmwareUpdateCheckTask() {
+  _firmwareFetchInfo = FirmwareUpdateInfo{};
+  _firmwareFetchOk = _live.checkFirmwareUpdate(_firmwareFetchInfo);
+  if (!_firmwareFetchOk) {
+    _firmwareFetchMessage = "Update check failed";
+  } else if (_firmwareFetchInfo.available &&
+             _firmwareFetchInfo.downloadUrl.isEmpty()) {
+    _firmwareFetchMessage = "No download URL";
+  } else {
+    _firmwareFetchMessage = "";
+  }
+  _firmwareFetchDone = true;
+  vTaskDelete(nullptr);
+}
+
+void AppController::finishFirmwareUpdateCheck() {
+  _firmwareFetchTask = nullptr;
+  if (_firmwareFetchOk) {
+    _firmwareCheckStatus = MenuLoadStatus::Loaded;
+    _firmwareInfo = _firmwareFetchInfo;
+  } else {
+    _firmwareCheckStatus = MenuLoadStatus::Failed;
+    _firmwareInfo = FirmwareUpdateInfo{};
+  }
+  _firmwareCheckMessage = _firmwareFetchMessage;
+  _screenDirty = true;
+}
+
+void AppController::installFirmwareUpdate() {
+  if (!_firmwareInfo.available || _firmwareInfo.downloadUrl.isEmpty()) {
+    return;
+  }
+
+  const FirmwareUpdateInfo info = _firmwareInfo;
+  closeMenu();
+  setAppState(AppState::Connecting, "Updating...");
+  _toolText =
+      "Downloading update\nv" + String(info.latestVersion) + "\nPlease wait";
   resetBodyPage();
+  _screenDirty = true;
+  renderIfNeeded();
+
+  String error;
+  if (_live.downloadAndApplyFirmwareUpdate(info.downloadUrl, error)) {
+    _toolText = "Update installed\nRestarting...";
+    resetBodyPage();
+    _screenDirty = true;
+    renderIfNeeded();
+    delay(500);
+    ESP.restart();
+  }
+
+  _toolText = "Update failed\n" + error;
+  setAppState(AppState::Ready, "Ready");
   _screenDirty = true;
 }
 
 void AppController::startRecording() {
   Log::client("Recording", "start ws=%d state=%d", _live.isConnected(),
               static_cast<int>(_appState));
+  if (_appRegion == AppRegion::Menu) {
+    Log::client("Recording", "start rejected: menu open");
+    return;
+  }
   _powerManager.registerActivity();
   _audio.stopPlayback();
   clearDebugText();
@@ -888,6 +1114,17 @@ void AppController::processRecording() {
     return;
   }
 
+  if (_appRegion == AppRegion::Menu) {
+    Log::client("Recording", "stopping capture because menu opened");
+    _audio.stopRecording();
+    if (_live.isConnected()) {
+      _live.sendStop();
+    }
+    _pendingTurnReset = false;
+    setAppState(AppState::Ready, "Ready");
+    return;
+  }
+
   if (millis() - _recordingStartMs >= kMaxRecordingMs) {
     Log::client("Recording", "max recording time reached");
     stopRecording();
@@ -940,18 +1177,13 @@ void AppController::processPlayback() {
     return;
   }
 
+  const int buffered = _audio.bufferedPlaybackBytes();
+  const bool hasEnoughBuffered = buffered >= kMinPlaybackBytes;
+  const bool hasCompleteShortReply = _turnComplete && buffered > 0;
   if (!_audio.playbackStarted() &&
-      _audio.bufferedPlaybackBytes() >= kMinPlaybackBytes) {
+      (hasEnoughBuffered || hasCompleteShortReply)) {
     _audio.markPlaybackStarted();
     setAppState(AppState::Playing, "Speaking...");
-  }
-
-  if (_audio.playbackStarted()) {
-    for (int i = 0; i < kPlaybackPumpMaxChunks; i++) {
-      if (!_audio.advancePlayback()) {
-        break;
-      }
-    }
   }
 
   // Only exit to Ready from Playing — a turnComplete that arrives while we're
@@ -986,6 +1218,16 @@ void AppController::processThinkingTimeout() {
   }
 }
 
+void AppController::processMenuFetches() {
+  if (_historyFetchTask != nullptr && _historyFetchDone) {
+    finishConversationHistoryLoad();
+  }
+
+  if (_firmwareFetchTask != nullptr && _firmwareFetchDone) {
+    finishFirmwareUpdateCheck();
+  }
+}
+
 void AppController::processPower() {
   if (_appRegion != AppRegion::Menu && _appState == AppState::Ready) {
     _powerManager.update();
@@ -1015,7 +1257,8 @@ void AppController::renderIfNeeded() {
 
   const bool audioActive = _appState == AppState::Playing ||
                            _audio.playbackStarted() ||
-                           _audio.bufferedPlaybackBytes() > 0;
+                           _audio.bufferedPlaybackBytes() > 0 ||
+                           _audio.speakerBusy();
   if (audioActive) {
     return;
   }
@@ -1023,7 +1266,6 @@ void AppController::renderIfNeeded() {
   _renderInProgress = true;
   _screenDirty = false;
   _display.render(buildDisplayState());
-  _lastRenderMs = millis();
   _renderInProgress = false;
 }
 
@@ -1038,7 +1280,7 @@ DisplayState AppController::buildDisplayState() const {
 
   state.bodyText = buildBodyText();
   state.bodyDim = _appState == AppState::Recording ||
-                  _appState == AppState::Thinking;
+                  (_appState == AppState::Thinking && _toolText.isEmpty());
   state.imagePresent = _imagePresent;
   state.pageIndex = _bodyPageIndex;
   state.pageCount = currentBodyPageCount();

@@ -7,9 +7,17 @@
 // (gitignored). credentials.h defines: DEVELOPMENT_SERVER_ADDRESS,
 // DEVELOPMENT_SERVER_PORT, PRODUCTION_SERVER_ADDRESS, SERVER_ENDPOINTS[],
 // and SERVER_ENDPOINT_COUNT.
+/**
+ * @brief TLS endpoint configuration for a chat server deployment.
+ */
 struct ServerEndpoint {
+  /// Hostname of the server.
   const char *host;
+
+  /// TCP port used for HTTPS or WebSocket connections.
   int port;
+
+  /// PEM certificate authority bundle used to verify the endpoint.
   const char *ca_cert;
 };
 
@@ -33,9 +41,17 @@ constexpr const char *GTS_ROOT_R4_CA =
 constexpr const char *SERVER_PATH = "/ws";
 
 // ============= WiFi Networks =============
+/**
+ * @brief Built-in WiFi credential entry compiled from credentials.h.
+ */
 struct WiFiNetwork {
+  /// Network SSID.
   const char *ssid;
+
+  /// Network password.
   const char *password;
+
+  /// Human-readable label shown in logs and UI.
   const char *label;
 };
 
@@ -57,8 +73,9 @@ constexpr int MAX_PLAYBACK_SEC = 30;    // Max response buffer
 // ============= Display =============
 constexpr int SCREEN_WIDTH_PX = 368;
 constexpr int SCREEN_HEIGHT_PX = 448;
-constexpr int DEFAULT_BRIGHTNESS = 80;  // lower = longer battery; plenty readable indoors
-constexpr int DEFAULT_VOLUME = 200;
+constexpr int DEFAULT_BRIGHTNESS =
+    80; // lower = longer battery; plenty readable indoors
+constexpr int DEFAULT_VOLUME = 180;
 
 // ============= Hardware (Waveshare ESP32-S3-Touch-AMOLED-1.8) =============
 constexpr int LCD_SDIO0_PIN = 4;
@@ -71,16 +88,16 @@ constexpr int LCD_CS_PIN = 12;
 constexpr int BOARD_I2C_SDA_PIN = 15;
 constexpr int BOARD_I2C_SCL_PIN = 14;
 
-constexpr gpio_num_t BUTTON_A_PIN = GPIO_NUM_0;   // BOOT, active low
+constexpr gpio_num_t BUTTON_A_PIN = GPIO_NUM_0; // BOOT, active low
 // PWR is read through AXP2101 IRQs. On this board AXP_IRQ is wired to the
 // TCA9554 expander (EXIO5), not a wake-capable ESP32 GPIO.
 constexpr gpio_num_t BUTTON_B_PIN = GPIO_NUM_NC;
 
 constexpr int AUDIO_I2S_MCLK_PIN = 16;
 constexpr int AUDIO_I2S_BCLK_PIN = 9;
-constexpr int AUDIO_I2S_DIN_PIN = 10;  // ES8311 ADC -> ESP32
+constexpr int AUDIO_I2S_DIN_PIN = 10; // ES8311 ADC -> ESP32
 constexpr int AUDIO_I2S_WS_PIN = 45;
-constexpr int AUDIO_I2S_DOUT_PIN = 8;  // ESP32 -> ES8311 DAC
+constexpr int AUDIO_I2S_DOUT_PIN = 8; // ESP32 -> ES8311 DAC
 constexpr int AUDIO_PA_ENABLE_PIN = 46;
 
 // ============= Clock =============

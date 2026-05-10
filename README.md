@@ -79,7 +79,12 @@ pio run -t upload
 # Monitor serial output
 pio device monitor
 # or: python monitor.py
+
+# Refresh firmware IntelliSense / clangd metadata
+pio run -t compiledb
 ```
+
+If firmware editor diagnostics complain that `Arduino.h` or STL types like `std::function` are missing while the build still succeeds, regenerate `firmware/compile_commands.json`. The repository includes a root `.clangd` file that points clangd at that PlatformIO compilation database.
 
 ### Deploy
 
@@ -128,11 +133,11 @@ For local `wrangler dev`, also add `EMAIL_SENDER` and `EMAIL_RECIPIENT` to `serv
 
 All secrets are gitignored. You need to create these files locally:
 
-| File                         | Purpose                                    | Template                             |
-| ---------------------------- | ------------------------------------------ | ------------------------------------ |
-| `server/.dev.vars`           | Gemini API key, history token              | `server/.dev.vars.example`           |
+| File                         | Purpose                                          | Template                             |
+| ---------------------------- | ------------------------------------------------ | ------------------------------------ |
+| `server/.dev.vars`           | Gemini API key, history token                    | `server/.dev.vars.example`           |
 | `server/wrangler.toml`       | Cloudflare bindings (your D1 ID, optional email) | `server/wrangler.toml.example`       |
-| `firmware/src/credentials.h` | Server addresses + WiFi SSIDs/passwords    | `firmware/src/credentials.h.example` |
+| `firmware/src/credentials.h` | Server addresses + WiFi SSIDs/passwords          | `firmware/src/credentials.h.example` |
 
 Never commit credentials. The `.gitignore` is configured to exclude these files.
 
@@ -228,12 +233,12 @@ OTA distribution is per-deployment: each user's binary lives in their own R2 buc
 
 ### Convenience scripts (repo root)
 
-| Script                       | What it does                                                |
-| ---------------------------- | ----------------------------------------------------------- |
-| `./flash.sh [--monitor]`     | Build firmware and upload over USB to a connected device.   |
-| `./deploy.sh`                | Deploy the Cloudflare Worker.                               |
-| `./publish-ota-release.sh`   | Build firmware and upload it to R2 for OTA pickup.          |
-| `./publish.sh`               | Run `publish-ota-release.sh` then `deploy.sh`.              |
+| Script                     | What it does                                              |
+| -------------------------- | --------------------------------------------------------- |
+| `./flash.sh [--monitor]`   | Build firmware and upload over USB to a connected device. |
+| `./deploy.sh`              | Deploy the Cloudflare Worker.                             |
+| `./publish-ota-release.sh` | Build firmware and upload it to R2 for OTA pickup.        |
+| `./publish.sh`             | Run `publish-ota-release.sh` then `deploy.sh`.            |
 
 ### Cutting a new firmware release
 

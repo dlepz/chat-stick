@@ -226,6 +226,13 @@ void LiveSessionService::disconnect() {
   _connected = false;
 }
 
+void LiveSessionService::setPreferredEndpointIndex(int endpointIndex) {
+  if (endpointIndex < 0 || endpointIndex >= SERVER_ENDPOINT_COUNT) {
+    return;
+  }
+  _nextServerIndex = endpointIndex;
+}
+
 void LiveSessionService::poll() {
   if (_connected) {
     _ws.poll();
@@ -309,7 +316,8 @@ bool LiveSessionService::fetchLastAssistantMessage(String &outMessage) {
     }
 
     if (statusCode == 404) {
-      return false;
+      Log::client("HTTP", "session not found at endpoint %d", index);
+      continue;
     }
 
     if (statusCode != 200 || body.isEmpty()) {
@@ -329,6 +337,7 @@ bool LiveSessionService::fetchLastAssistantMessage(String &outMessage) {
     }
 
     outMessage = lastMessage;
+    rememberSuccessfulEndpoint(index);
     return true;
   }
 
@@ -410,6 +419,7 @@ bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries
       outEntries[outCount].updatedAt = row["updated_at"] | "";
       outCount++;
     }
+    rememberSuccessfulEndpoint(index);
     return true;
   }
 
@@ -478,6 +488,7 @@ bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
     outInfo.latestVersion = doc["latest_version"] | FIRMWARE_VERSION;
     outInfo.notes = doc["notes"] | "";
     outInfo.downloadUrl = doc["download_url"] | "";
+    rememberSuccessfulEndpoint(index);
     return true;
   }
 
@@ -536,6 +547,7 @@ void LiveSessionService::handleEvent(WebsocketsEvent event, String data) {
   case WebsocketsEvent::ConnectionOpened:
     Log::client("WS", "opened");
     _connected = true;
+    rememberSuccessfulEndpoint(_activeServerIndex);
     if (_callbacks.onStatus) {
       _callbacks.onStatus("Waiting for AI...");
     }
@@ -811,4 +823,15 @@ String LiveSessionService::endpointBaseUrl(const ServerEndpoint &endpoint) const
     url += ":" + String(endpoint.port);
   }
   return url;
+}
+
+void LiveSessionService::rememberSuccessfulEndpoint(int endpointIndex) {
+  if (endpointIndex < 0 || endpointIndex >= SERVER_ENDPOINT_COUNT) {
+    return;
+  }
+
+  _nextServerIndex = endpointIndex;
+  if (_callbacks.onEndpointIndexChanged) {
+    _callbacks.onEndpointIndexChanged(endpointIndex);
+  }
 }
