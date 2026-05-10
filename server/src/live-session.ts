@@ -11,12 +11,12 @@ import { USER_INSTRUCTIONS_PATH, ensureUserInstructionsFile } from './files'
 import { buildGeminiTools } from './gemini-tools'
 import { generateAndProcessImage } from './image-gen'
 import {
-	AVAILABLE_VOICES,
 	DEFAULT_VOICE,
 	buildSystemInstructionText,
 	findVoice,
 	resolveVoice,
 } from './prompt-builder'
+import { handleSetVoiceTool } from './voice-tool'
 import { type WebFetchArgs, fetchWebPage } from './web-fetch'
 
 interface Env extends EmailEnv {
@@ -642,56 +642,27 @@ export class LiveSession {
 							durationMs: Date.now() - startMs,
 						})
 				} else if (call.name === 'set_voice') {
-						const requested = (call.args as { name?: string }).name || ''
-						const match = findVoice(requested)
-						if (!match) {
-							const payload = JSON.stringify({
-								toolResponse: {
-									functionResponses: [
-										{
-											name: call.name,
-											id: call.id,
-											response: {
-												result: `Unknown voice "${requested}". Available: ${AVAILABLE_VOICES.map((v) => v.name).join(', ')}.`,
-											},
-										},
-									],
-								},
-							})
-							if (this.geminiWs) this.geminiWs.send(payload)
-							await this.logToolCall({
-								name: call.name,
-								args: call.args,
-								result: `unknown voice: ${requested}`,
-								handledBy: 'server',
-								status: 'error',
-								durationMs: Date.now() - startMs,
-							})
-						} else {
-							console.log(`[Gemini] Switching voice → ${match.name}`)
-							this.currentVoice = match.name
-							const payload = JSON.stringify({
-								toolResponse: {
-									functionResponses: [
-										{
-											name: call.name,
-											id: call.id,
-											response: {
-												result: `Voice set to ${match.name} (${match.description}). Reconnecting.`,
-											},
-										},
-									],
-								},
-							})
-							if (this.geminiWs) this.geminiWs.send(payload)
-							this.sendToDevice({ type: 'voice_changed', voice: match.name })
-							await this.logToolCall({
-								name: call.name,
-								args: call.args,
-								result: match.name,
-								handledBy: 'server',
-								durationMs: Date.now() - startMs,
-							})
+						const result = handleSetVoiceTool(call.args)
+						const payload = JSON.stringify({
+							toolResponse: {
+								functionResponses: [
+									{ name: call.name, id: call.id, response: result.response },
+								],
+							},
+						})
+						if (this.geminiWs) this.geminiWs.send(payload)
+						await this.logToolCall({
+							name: call.name,
+							args: call.args,
+							result: result.logResult,
+							handledBy: 'server',
+							status: result.status,
+							durationMs: Date.now() - startMs,
+						})
+						if (result.ok) {
+							console.log(`[Gemini] Switching voice → ${result.voice}`)
+							this.currentVoice = result.voice
+							this.sendToDevice({ type: 'voice_changed', voice: result.voice })
 							if (this.geminiWs) {
 								try { this.geminiWs.close() } catch { /* ignore */ }
 								this.geminiWs = null
