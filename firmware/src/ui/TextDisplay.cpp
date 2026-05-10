@@ -1,9 +1,9 @@
 #include "TextDisplay.h"
 
-#include "SmartBrickFont.h"
 #include "../Config.h"
 #include "../diag/Log.h"
 #include "../hal/Board.h"
+#include "SmartBrickFont.h"
 #include <esp_heap_caps.h>
 
 namespace {
@@ -124,8 +124,8 @@ bool TextDisplay::setImage(const uint8_t *packed, size_t packedLen, int width,
   // Images are stored as 1-bit packed masks and drawn in white on black. The
   // server already scales/generates the bitmap to this fixed display slot.
   if (!packed || width != kImageW || height != kImageH) {
-    Log::client("Display", "image rejected %dx%d expected=%dx%d", width,
-                height, kImageW, kImageH);
+    Log::client("Display", "image rejected %dx%d expected=%dx%d", width, height,
+                kImageW, kImageH);
     return false;
   }
   const size_t expectedBytes = static_cast<size_t>((width * height + 7) / 8);
@@ -170,8 +170,7 @@ void TextDisplay::clearFrame(uint16_t color) const {
     return;
   }
 
-  const size_t pixels =
-      static_cast<size_t>(SCREEN_WIDTH_PX) * SCREEN_HEIGHT_PX;
+  const size_t pixels = static_cast<size_t>(SCREEN_WIDTH_PX) * SCREEN_HEIGHT_PX;
   for (size_t i = 0; i < pixels; i++) {
     _framebuffer[i] = color;
   }
@@ -201,7 +200,8 @@ void TextDisplay::flushFrame(bool forceFull) const {
   int maxY = -1;
 
   // Find one bounding rectangle around all changed pixels. The display library
-  // accepts contiguous RGB565 spans, so later we push this rectangle row by row.
+  // accepts contiguous RGB565 spans, so later we push this rectangle row by
+  // row.
   for (int y = 0; y < SCREEN_HEIGHT_PX; y++) {
     const uint16_t *row =
         _framebuffer + static_cast<size_t>(y) * SCREEN_WIDTH_PX;
