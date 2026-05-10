@@ -8,32 +8,23 @@ import {
 	handleDebugAudioRequest,
 	saveDebugAudio,
 } from './debug-audio-store'
-import { handleDocsSearchTool } from './docs-tool'
-import { type EmailEnv, emailEnabled } from './email'
-import { handleEmailTool } from './email-tool'
-import { handleFileTool } from './file-tools'
+import { emailEnabled } from './email'
 import { USER_INSTRUCTIONS_PATH, ensureUserInstructionsFile } from './files'
 import { buildGeminiTools, buildToolResponsePayload } from './gemini-tools'
-import {
-	generateAndSendImage,
-	imagePromptFromArgs,
-} from './image-tool'
 import {
 	DEFAULT_VOICE,
 	buildSystemInstructionText,
 	findVoice,
 	resolveVoice,
 } from './prompt-builder'
-import { handleSetVoiceTool } from './voice-tool'
-import { type WebFetchArgs, fetchWebPage } from './web-fetch'
+import {
+	type GeminiFunctionCall,
+	type ToolRouterEnv,
+	routeGeminiToolCall,
+} from './tool-router'
 
-interface Env extends EmailEnv {
-	GEMINI_API_KEY: string
-	AI: Ai
-	VECTORIZE: VectorizeIndex
-	DB: D1Database
+interface Env extends ToolRouterEnv {
 	HISTORY_API_TOKEN?: string
-	STORAGE?: R2Bucket
 }
 
 interface GeminiMessage {
@@ -481,185 +472,67 @@ export class LiveSession {
 
 		if (msg.toolCall) {
 			for (const call of msg.toolCall.functionCalls) {
-				console.log(`[Gemini] Tool call: ${call.name}(${JSON.stringify(call.args)})`)
-				const startMs = Date.now()
-
-				if (call.name === 'search_docs') {
-					const result = await handleDocsSearchTool(this.env, call.args)
-					const payload = buildToolResponsePayload(call.name, call.id, result.response)
-					console.log(`[Gemini] Sending tool response: ${payload.length} bytes`)
-
-					if (this.geminiWs) {
-						this.geminiWs.send(payload)
-						console.log(`[Gemini] Tool response sent`)
-					}
-					await this.logToolCall({
-						name: call.name,
-						args: call.args,
-						result: result.logResult,
-						handledBy: 'server',
-						durationMs: Date.now() - startMs,
-					})
-				} else if (call.name === 'web_fetch' || call.name === 'fetch_url') {
-						const args = call.args as WebFetchArgs
-						const url = args.url || ''
-						console.log(`[Gemini] Fetching: ${url}`)
-						const result = await fetchWebPage(url, args.max_chars)
-						const payload = buildToolResponsePayload(call.name, call.id, result)
-						if (this.geminiWs) {
-							this.geminiWs.send(payload)
-							console.log(`[Gemini] ${call.name} response sent (${result.content.length} chars)`)
-						}
-						await this.logToolCall({
-							name: call.name,
-							args: call.args,
-							result: { url, chars: result.content.length },
-							handledBy: 'server',
-							durationMs: Date.now() - startMs,
-						})
-				} else if (
-						call.name === 'list_files' ||
-						call.name === 'read_file' ||
-						call.name === 'write_file' ||
-						call.name === 'append_to_file' ||
-						call.name === 'search_files'
-					) {
-						const response = await handleFileTool(
-							this.env.DB,
-							this.deviceId,
-							call.name,
-							call.args
-						)
-						const payload = buildToolResponsePayload(call.name, call.id, response)
-						if (this.geminiWs) this.geminiWs.send(payload)
-						await this.logToolCall({
-							name: call.name,
-							args: call.args,
-							result: response,
-							handledBy: 'server',
-							status: 'error' in (response as Record<string, unknown>) ? 'error' : 'ok',
-							durationMs: Date.now() - startMs,
-						})
-				} else if (call.name === 'set_voice') {
-						const result = handleSetVoiceTool(call.args)
-						const payload = buildToolResponsePayload(call.name, call.id, result.response)
-						if (this.geminiWs) this.geminiWs.send(payload)
-						await this.logToolCall({
-							name: call.name,
-							args: call.args,
-							result: result.logResult,
-							handledBy: 'server',
-							status: result.status,
-							durationMs: Date.now() - startMs,
-						})
-						if (result.ok) {
-							console.log(`[Gemini] Switching voice → ${result.voice}`)
-							this.currentVoice = result.voice
-							this.sendToDevice({ type: 'voice_changed', voice: result.voice })
-							if (this.geminiWs) {
-								try { this.geminiWs.close() } catch { /* ignore */ }
-								this.geminiWs = null
-								this.geminiReady = false
-							}
-							await this.connectGemini()
-						}
-				} else if (call.name === 'email_me') {
-						const result = await handleEmailTool(this.env, call.args)
-						const payload = buildToolResponsePayload(call.name, call.id, result.response)
-						if (this.geminiWs) this.geminiWs.send(payload)
-						await this.logToolCall({
-							name: call.name,
-							args: result.logArgs,
-							result: result.logResult,
-							handledBy: 'server',
-							status: result.status,
-							error: result.error,
-							durationMs: Date.now() - startMs,
-						})
-				} else if (call.name === 'show_image') {
-						const prompt = imagePromptFromArgs(call.args)
-						if (!prompt) {
-							const payload = buildToolResponsePayload(call.name, call.id, {
-								result: 'no prompt provided',
-							})
-							if (this.geminiWs) this.geminiWs.send(payload)
-							await this.logToolCall({
-								name: call.name,
-								args: call.args,
-								result: 'no prompt',
-								handledBy: 'server',
-								status: 'error',
-								durationMs: Date.now() - startMs,
-							})
-						} else {
-							// Tell Gemini the image is on its way so it can keep talking.
-							const ackPayload = buildToolResponsePayload(call.name, call.id, {
-								result: 'image generation started; it will appear on screen shortly',
-							})
-							if (this.geminiWs) this.geminiWs.send(ackPayload)
-							// Tell the device an image is coming so it can show the pulse animation.
-							this.sendToDevice({ type: 'show_image_pending' })
-							// Run the pipeline in the background and push the result when ready.
-							generateAndSendImage({
-								prompt,
-								geminiApiKey: this.env.GEMINI_API_KEY,
-								storage: this.env.STORAGE,
-								deviceId: this.deviceId,
-								chatId: this.chatId,
-								toolName: call.name,
-								toolArgs: call.args,
-								startMs,
-								sendToDevice: (msg) => this.sendToDevice(msg),
-								logToolCall: (entry) => this.logToolCall(entry),
-							}).catch((err) => {
-								console.error('[ImageGen] Background generation failed:', err)
-							})
-						}
-				} else if (call.name === 'new_conversation' || call.name === 'new_chat') {
-						// Handle server-side: close Gemini session and open a fresh one
-						console.log('[Gemini] Resetting conversation')
-						await this.logToolCall({
-							name: call.name,
-							args: call.args,
-							result: 'conversation reset',
-							handledBy: 'server',
-							durationMs: Date.now() - startMs,
-						})
-						await this.commitExchange()
-						this.chatId = crypto.randomUUID()
-						this.currentUserText = ''
-						this.currentAssistantText = ''
-						this.sendToDevice({
-							type: 'session',
-							chatId: this.chatId,
-							reset: true,
-						})
-						if (this.geminiWs) {
-							try { this.geminiWs.close() } catch { /* ignore */ }
-							this.geminiWs = null
-							this.geminiReady = false
-						}
-					await this.connectGemini()
-				} else {
-					// Forward tool call to device for execution — log when response arrives
-					this.pendingDeviceCalls.set(call.id, {
-						name: call.name,
-						args: call.args,
-						startMs,
-					})
-					this.sendToDevice({
-						type: 'tool_call',
-						name: call.name,
-						id: call.id,
-						args: call.args,
-					})
-				}
+				await routeGeminiToolCall({
+					call,
+					env: this.env,
+					deviceId: this.deviceId,
+					chatId: this.chatId,
+					sendToGemini: (payload) => this.sendToGemini(payload),
+					sendToDevice: (deviceMsg) => this.sendToDevice(deviceMsg),
+					logToolCall: (entry) => this.logToolCall(entry),
+					applyVoiceChange: (voice) => this.applyVoiceChange(voice),
+					startNewConversation: () => this.startNewConversation(),
+					forwardDeviceToolCall: (deviceCall, startMs) =>
+						this.forwardDeviceToolCall(deviceCall, startMs),
+				})
 			}
 		}
 	}
 
+	private sendToGemini(payload: string): boolean {
+		if (!this.geminiWs) {
+			return false
+		}
+		this.geminiWs.send(payload)
+		return true
+	}
+
 	private sendToDevice(msg: Record<string, unknown>) {
 		this.deviceWs?.send(JSON.stringify(msg))
+	}
+
+	private async applyVoiceChange(voice: string) {
+		console.log(`[Gemini] Switching voice: ${voice}`)
+		this.currentVoice = voice
+		this.sendToDevice({ type: 'voice_changed', voice })
+		await this.replaceGeminiConnection()
+	}
+
+	private async startNewConversation() {
+		await this.commitExchange()
+		this.chatId = crypto.randomUUID()
+		this.currentUserText = ''
+		this.currentAssistantText = ''
+		this.sendToDevice({
+			type: 'session',
+			chatId: this.chatId,
+			reset: true,
+		})
+		await this.replaceGeminiConnection()
+	}
+
+	private forwardDeviceToolCall(call: GeminiFunctionCall, startMs: number) {
+		this.pendingDeviceCalls.set(call.id, {
+			name: call.name,
+			args: call.args,
+			startMs,
+		})
+		this.sendToDevice({
+			type: 'tool_call',
+			name: call.name,
+			id: call.id,
+			args: call.args,
+		})
 	}
 
 	private async getUserInstructionsForPrompt(): Promise<string> {
@@ -863,6 +736,11 @@ export class LiveSession {
 
 	private async reconnectGeminiSession() {
 		this.resetCurrentTurnMetrics()
+		this.clearPendingAudio()
+		await this.replaceGeminiConnection()
+	}
+
+	private async replaceGeminiConnection() {
 		if (this.geminiWs) {
 			try {
 				this.geminiWs.close()
@@ -872,7 +750,6 @@ export class LiveSession {
 		}
 		this.geminiWs = null
 		this.geminiReady = false
-		this.clearPendingAudio()
 		await this.connectGemini()
 	}
 
