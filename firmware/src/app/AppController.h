@@ -9,6 +9,7 @@
 #include "../services/WiFiService.h"
 #include "../state/StateTypes.h"
 #include "../ui/TextDisplay.h"
+#include "TurnController.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -109,26 +110,11 @@ private:
   /// Whether a render is currently in progress.
   bool _renderInProgress = false;
 
-  /// Whether the current assistant turn has completed.
-  bool _turnComplete = false;
-
-  /// Whether the current assistant turn has produced audio.
-  bool _turnHasAudio = false;
-
-  /// Whether turn-completion cleanup is deferred until playback settles.
-  bool _pendingTurnReset = false;
-
   /// Whether an image is currently available for the body area.
   bool _imagePresent = false;
 
   /// Whether the screen contents need a fresh render.
   bool _screenDirty = true;
-
-  /// Timestamp when the current Thinking state began.
-  unsigned long _thinkingStartMs = 0;
-
-  /// Timestamp when the current recording state began.
-  unsigned long _recordingStartMs = 0;
 
   /// Timestamp when reset-hold detection started.
   unsigned long _resetHoldStartMs = 0;
@@ -138,21 +124,6 @@ private:
 
   /// Timestamp of the last header refresh.
   unsigned long _lastHeaderRefreshMs = 0;
-
-  /// Timestamp of the last capture-failure log.
-  unsigned long _lastCaptureFailureLogMs = 0;
-
-  /// Number of audio chunks sent during the current turn.
-  int _audioChunksSent = 0;
-
-  /// Number of failed audio chunk sends during the current turn.
-  int _audioChunksFailed = 0;
-
-  /// Number of recent microphone capture failures.
-  int _captureFailures = 0;
-
-  /// Total audio bytes sent during the current turn.
-  size_t _audioBytesSent = 0;
 
   /// Current body page index.
   int _bodyPageIndex = 0;
@@ -229,6 +200,9 @@ private:
   /// State machine for the menu/power button.
   ButtonStateMachine _buttonB = ButtonStateMachine(1000, 350);
 
+  /// Per-turn voice exchange state.
+  TurnController _turn;
+
   /// UI renderer.
   TextDisplay _display;
 
@@ -290,9 +264,6 @@ private:
 
   /// Reset body pagination to the first page.
   void resetBodyPage();
-
-  /// Return only the not-yet-rendered suffix from a streamed transcript chunk.
-  String transcriptDelta(const String &current, const String &incoming) const;
 
   /// Append a formatted line to the boot log.
   void appendBootLog(const char *topic, const char *message);

@@ -61,17 +61,14 @@ void AppController::setup() {
   callbacks.onTurnComplete = [this]() {
     // Ignore turnComplete signals that arrive before any audio for the current
     // turn — they're stale from a prior turn that the user interrupted.
-    if (_turnHasAudio) {
-      _turnComplete = true;
-    }
+    _turn.noteTurnComplete();
   };
   callbacks.onDropAudio = [this]() {
     // Gemini detected a user interrupt mid-response. Flush any queued tail of
     // the prior turn so it doesn't play into the new one. Don't change state —
     // the user is mid-recording; release will drive the next transition.
     _audio.stopPlayback();
-    _turnComplete = false;
-    _turnHasAudio = false;
+    _turn.clearResponse();
   };
   callbacks.onChatId = [this](const String &chatId) {
     _chatId = chatId;
@@ -86,21 +83,20 @@ void AppController::setup() {
       _display.clearImage();
       _imagePresent = false;
     }
-    _turnComplete = false;
-    _turnHasAudio = false;
-    _pendingTurnReset = false;
+    _turn.clearResponse();
+    _turn.clearPendingReset();
     resetBodyPage();
     setAppState(AppState::Ready, "Ready");
     _screenDirty = true;
   };
   callbacks.onShowText = [this](const String &text) {
-    _pendingTurnReset = false;
+    _turn.clearPendingReset();
     _toolText = text;
     resetBodyPage();
     _screenDirty = true;
   };
   auto applyPendingTurnReset = [this]() {
-    if (!_pendingTurnReset) {
+    if (!_turn.pendingReset()) {
       return;
     }
     _toolText = "";
@@ -108,7 +104,7 @@ void AppController::setup() {
       _display.clearImage();
       _imagePresent = false;
     }
-    _pendingTurnReset = false;
+    _turn.clearPendingReset();
   };
   callbacks.onShowImagePending = [this, applyPendingTurnReset]() {
     applyPendingTurnReset();
@@ -138,7 +134,7 @@ void AppController::setup() {
       return;
     }
     applyPendingTurnReset();
-    const String delta = transcriptDelta(_toolText, text);
+    const String delta = _turn.transcriptDelta(_toolText, text);
     if (delta.isEmpty()) {
       return;
     }
@@ -156,11 +152,12 @@ void AppController::setup() {
     Log::client("Recording",
                 "ignored by server reason=%s chunks=%d failed=%d bytes=%u "
                 "capture_failures=%d",
-                reason.c_str(), _audioChunksSent, _audioChunksFailed,
-                static_cast<unsigned>(_audioBytesSent), _captureFailures);
-    _turnComplete = false;
-    _turnHasAudio = false;
-    _pendingTurnReset = false;
+                reason.c_str(), _turn.audioChunksSent(),
+                _turn.audioChunksFailed(),
+                static_cast<unsigned>(_turn.audioBytesSent()),
+                _turn.captureFailures());
+    _turn.clearResponse();
+    _turn.clearPendingReset();
     _audio.stopPlayback();
     setDebugText(String("DBG ignored:") +
                  (reason.isEmpty() ? String("unknown") : reason));
@@ -170,7 +167,7 @@ void AppController::setup() {
     if (_appState != AppState::Recording) {
       clearDebugText();
       _audio.queuePlayback(data, len);
-      _turnHasAudio = true;
+      _turn.noteAudioReceived();
     }
   };
   callbacks.onBrightness = [this](int level) {
@@ -386,38 +383,6 @@ void AppController::clearDebugText() {
 
 void AppController::resetBodyPage() { _bodyPageIndex = 0; }
 
-String AppController::transcriptDelta(const String &current,
-                                      const String &incoming) const {
-  if (incoming.isEmpty()) {
-    return "";
-  }
-  if (current.isEmpty()) {
-    return incoming;
-  }
-
-  // Gemini Live transcription usually streams deltas, but early partial
-  // hypotheses can repeat as cumulative or overlapping text. Keep the on-screen
-  // text append-only so repeated partials do not duplicate words.
-  if (incoming == current || current.startsWith(incoming)) {
-    return "";
-  }
-  if (incoming.startsWith(current)) {
-    return incoming.substring(current.length());
-  }
-  if (current.endsWith(incoming)) {
-    return "";
-  }
-
-  const int maxOverlap = min(current.length(), incoming.length());
-  for (int len = maxOverlap; len >= 1; len--) {
-    if (current.endsWith(incoming.substring(0, len))) {
-      return incoming.substring(len);
-    }
-  }
-
-  return incoming;
-}
-
 void AppController::bootLogTrampoline(void *ctx, char side, const char *topic,
                                       const char *message) {
   (void)side;
@@ -607,7 +572,7 @@ void AppController::openMenu(MenuState state) {
     if (_live.isConnected()) {
       _live.sendStop();
     }
-    _pendingTurnReset = false;
+    _turn.clearPendingReset();
     setAppState(AppState::Ready, "Ready");
   }
   _appRegion = AppRegion::Menu;
@@ -1066,14 +1031,7 @@ void AppController::startRecording() {
     setAppState(AppState::Ready, "Ready");
     return;
   }
-  _turnComplete = false;
-  _turnHasAudio = false;
-  _audioChunksSent = 0;
-  _audioChunksFailed = 0;
-  _captureFailures = 0;
-  _audioBytesSent = 0;
-  _lastCaptureFailureLogMs = 0;
-  _recordingStartMs = millis();
+  _turn.beginRecording(millis());
   if (!_live.sendStart()) {
     Log::client("Recording", "start send failed");
     _audio.stopRecording();
@@ -1086,26 +1044,27 @@ void AppController::startRecording() {
 }
 
 void AppController::stopRecording() {
-  const unsigned long durationMs = millis() - _recordingStartMs;
+  const unsigned long now = millis();
+  const unsigned long durationMs = _turn.recordingDurationMs(now);
   Log::client("Recording",
               "stop duration=%lu sent=%d failed=%d bytes=%u "
               "capture_failures=%d",
-              durationMs, _audioChunksSent, _audioChunksFailed,
-              static_cast<unsigned>(_audioBytesSent), _captureFailures);
+              durationMs, _turn.audioChunksSent(), _turn.audioChunksFailed(),
+              static_cast<unsigned>(_turn.audioBytesSent()),
+              _turn.captureFailures());
   _audio.stopRecording();
-  if (_audioChunksSent == 0) {
+  if (_turn.audioChunksSent() == 0) {
     Log::client("Recording", "no audio chunks sent before stop");
     setDebugText("DBG no audio sent");
   }
   if (!_live.sendStop()) {
     Log::client("Recording", "stop send failed");
     setDebugText("DBG stop send fail");
-    _pendingTurnReset = false;
+    _turn.clearPendingReset();
     setAppState(AppState::Ready, "Ready");
     return;
   }
-  _pendingTurnReset = true;
-  _thinkingStartMs = millis();
+  _turn.beginThinking(millis());
   setAppState(AppState::Thinking, "Thinking...");
 }
 
@@ -1120,27 +1079,26 @@ void AppController::processRecording() {
     if (_live.isConnected()) {
       _live.sendStop();
     }
-    _pendingTurnReset = false;
+    _turn.clearPendingReset();
     setAppState(AppState::Ready, "Ready");
     return;
   }
 
-  if (millis() - _recordingStartMs >= kMaxRecordingMs) {
+  if (_turn.recordingTimedOut(millis(), kMaxRecordingMs)) {
     Log::client("Recording", "max recording time reached");
     stopRecording();
     return;
   }
 
   if (!_audio.captureChunk()) {
-    _captureFailures++;
     const unsigned long now = millis();
-    if (_captureFailures <= 3 ||
-        now - _lastCaptureFailureLogMs >= kCaptureFailureLogIntervalMs) {
-      _lastCaptureFailureLogMs = now;
+    const TurnController::CaptureFailureReport failure =
+        _turn.noteCaptureFailure(now, kCaptureFailureLogIntervalMs);
+    if (failure.shouldLog) {
       Log::client("Recording", "mic capture returned false count=%d",
-                  _captureFailures);
+                  failure.count);
     }
-    if (_captureFailures == 1) {
+    if (failure.firstFailure) {
       setDebugText("DBG mic read false");
     }
     return;
@@ -1150,22 +1108,21 @@ void AppController::processRecording() {
       _live.sendAudio(_audio.captureData(), _audio.captureBytes());
   _powerManager.registerActivity();
   if (!sent) {
-    _audioChunksFailed++;
+    const int failed = _turn.noteAudioSendFailed();
     Log::client("Recording", "audio chunk send failed count=%d ws=%d",
-                _audioChunksFailed, _live.isConnected());
+                failed, _live.isConnected());
     setDebugText("DBG audio send fail");
     return;
   }
 
-  _audioChunksSent++;
-  _audioBytesSent += _audio.captureBytes();
-  if (_audioChunksSent <= 5 || _audioChunksSent % 10 == 0) {
+  const int sentCount = _turn.noteAudioChunkSent(_audio.captureBytes());
+  if (sentCount <= 5 || sentCount % 10 == 0) {
     Log::client("Recording",
                 "#%d sent bytes=%u total=%u avg_abs=%d peak=%d ch=%d "
                 "l_avg=%d r_avg=%d",
-                _audioChunksSent,
+                sentCount,
                 static_cast<unsigned>(_audio.captureBytes()),
-                static_cast<unsigned>(_audioBytesSent),
+                static_cast<unsigned>(_turn.audioBytesSent()),
                 _audio.lastCaptureAverageAbs(), _audio.lastCapturePeak(),
                 _audio.lastCaptureChannel(), _audio.lastCaptureLeftAverageAbs(),
                 _audio.lastCaptureRightAverageAbs());
@@ -1179,7 +1136,7 @@ void AppController::processPlayback() {
 
   const int buffered = _audio.bufferedPlaybackBytes();
   const bool hasEnoughBuffered = buffered >= kMinPlaybackBytes;
-  const bool hasCompleteShortReply = _turnComplete && buffered > 0;
+  const bool hasCompleteShortReply = _turn.complete() && buffered > 0;
   if (!_audio.playbackStarted() &&
       (hasEnoughBuffered || hasCompleteShortReply)) {
     _audio.markPlaybackStarted();
@@ -1189,10 +1146,9 @@ void AppController::processPlayback() {
   // Only exit to Ready from Playing — a turnComplete that arrives while we're
   // still Thinking (e.g. a stale signal from a prior, interrupted turn) must
   // not short-circuit waiting for the new response's audio.
-  if (_appState == AppState::Playing && _turnComplete &&
+  if (_appState == AppState::Playing && _turn.complete() &&
       _audio.playbackIdle()) {
-    _turnComplete = false;
-    _turnHasAudio = false;
+    _turn.clearResponse();
     _audio.stopPlayback();
     setAppState(AppState::Ready, "Ready");
   }
@@ -1203,15 +1159,15 @@ void AppController::processThinkingTimeout() {
     return;
   }
 
-  if (millis() - _thinkingStartMs > kThinkingTimeoutMs) {
+  if (_turn.thinkingTimedOut(millis(), kThinkingTimeoutMs)) {
     Log::client("Loop",
                 "thinking timeout chunks=%d failed=%d bytes=%u "
                 "has_audio=%d turn_complete=%d buffered=%d",
-                _audioChunksSent, _audioChunksFailed,
-                static_cast<unsigned>(_audioBytesSent), _turnHasAudio,
-                _turnComplete, _audio.bufferedPlaybackBytes());
-    _turnComplete = false;
-    _turnHasAudio = false;
+                _turn.audioChunksSent(), _turn.audioChunksFailed(),
+                static_cast<unsigned>(_turn.audioBytesSent()),
+                _turn.hasAudio(), _turn.complete(),
+                _audio.bufferedPlaybackBytes());
+    _turn.clearResponse();
     _audio.stopPlayback();
     setDebugText("DBG response timeout");
     setAppState(AppState::Ready, "Ready");
