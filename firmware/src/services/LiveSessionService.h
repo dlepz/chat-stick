@@ -220,6 +220,41 @@ public:
                                       String &outError);
 
 private:
+  /**
+   * @brief HTTP GET response returned from a configured endpoint.
+   */
+  struct HttpGetResponse {
+    /// Index into SERVER_ENDPOINTS.
+    int endpointIndex = -1;
+
+    /// HTTP status code, or a negative value when the request failed locally.
+    int statusCode = -1;
+
+    /// Response body for successful transport-level responses.
+    String body;
+  };
+
+  /**
+   * @brief Caller decision after inspecting a configured-endpoint response.
+   */
+  enum class HttpGetDecision {
+    /// Try the next configured endpoint.
+    Continue,
+
+    /// Treat the response as successful and remember the endpoint.
+    Success,
+
+    /// Stop retrying and return failure.
+    Stop,
+  };
+
+  /// Builds a URL for a configured endpoint.
+  using EndpointUrlBuilder = std::function<String(const ServerEndpoint &)>;
+
+  /// Handles one configured-endpoint HTTP response.
+  using HttpGetHandler =
+      std::function<HttpGetDecision(const HttpGetResponse &)>;
+
   /// Active WebSocket client connection to the server.
   websockets::WebsocketsClient _ws;
 
@@ -270,6 +305,28 @@ private:
    * @return Base URL string.
    */
   String endpointBaseUrl(const ServerEndpoint &endpoint) const;
+
+  /**
+   * @brief GET a URL using secure or insecure client setup from the endpoint.
+   * @param endpoint Endpoint configuration associated with the URL.
+   * @param url Full URL to request.
+   * @param statusCode Receives the HTTP status code.
+   * @param body Receives the response body when available.
+   * @return True when the request was started and completed at HTTP level.
+   */
+  bool performEndpointGet(const ServerEndpoint &endpoint, const String &url,
+                          int &statusCode, String &body) const;
+
+  /**
+   * @brief Try a GET request across configured endpoints.
+   * @param logAction Phrase logged before each URL, e.g. "fetching from".
+   * @param buildUrl Builds the URL for the current endpoint.
+   * @param handleResponse Parses or rejects the response.
+   * @return True when handleResponse accepts a response.
+   */
+  bool getFromConfiguredEndpoints(const char *logAction,
+                                  const EndpointUrlBuilder &buildUrl,
+                                  const HttpGetHandler &handleResponse);
 
   /**
    * @brief Remember the endpoint that most recently worked.

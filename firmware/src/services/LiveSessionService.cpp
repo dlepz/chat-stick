@@ -275,73 +275,39 @@ bool LiveSessionService::fetchLastAssistantMessage(String &outMessage) {
     return false;
   }
 
-  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
-    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
-    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
-    const String url = endpointBaseUrl(endpoint) + "/session/" + _chatId +
-                       "?device_id=" + DEVICE_ID;
-
-    Log::client("HTTP", "restoring session from %s", url.c_str());
-
-    int statusCode = -1;
-    String body;
-    {
-      HTTPClient http;
-      if (endpoint.port == 443) {
-        WiFiClientSecure client;
-        if (endpoint.ca_cert) {
-          client.setCACert(endpoint.ca_cert);
-        } else {
-          client.setInsecure();
+  return getFromConfiguredEndpoints(
+      "restoring session from",
+      [this](const ServerEndpoint &endpoint) {
+        return endpointBaseUrl(endpoint) + "/session/" + _chatId +
+               "?device_id=" + DEVICE_ID;
+      },
+      [&outMessage](const HttpGetResponse &response) {
+        if (response.statusCode == 404) {
+          Log::client("HTTP", "session not found at endpoint %d",
+                      response.endpointIndex);
+          return HttpGetDecision::Continue;
         }
-        if (!http.begin(client, url)) {
-          continue;
+
+        if (response.statusCode != 200 || response.body.isEmpty()) {
+          Log::client("HTTP", "session restore failed status=%d",
+                      response.statusCode);
+          return HttpGetDecision::Continue;
         }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
+
+        JsonDocument doc;
+        if (deserializeJson(doc, response.body)) {
+          Log::client("HTTP", "session restore returned invalid JSON");
+          return HttpGetDecision::Continue;
         }
-        http.end();
-      } else {
-        WiFiClient client;
-        if (!http.begin(client, url)) {
-          continue;
+
+        const char *lastMessage = doc["last_message"];
+        if (!lastMessage || !lastMessage[0]) {
+          return HttpGetDecision::Stop;
         }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
-        }
-        http.end();
-      }
-    }
 
-    if (statusCode == 404) {
-      Log::client("HTTP", "session not found at endpoint %d", index);
-      continue;
-    }
-
-    if (statusCode != 200 || body.isEmpty()) {
-      Log::client("HTTP", "session restore failed status=%d", statusCode);
-      continue;
-    }
-
-    JsonDocument doc;
-    if (deserializeJson(doc, body)) {
-      Log::client("HTTP", "session restore returned invalid JSON");
-      continue;
-    }
-
-    const char *lastMessage = doc["last_message"];
-    if (!lastMessage || !lastMessage[0]) {
-      return false;
-    }
-
-    outMessage = lastMessage;
-    rememberSuccessfulEndpoint(index);
-    return true;
-  }
-
-  return false;
+        outMessage = lastMessage;
+        return HttpGetDecision::Success;
+      });
 }
 
 bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries[],
@@ -352,147 +318,77 @@ bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries
     return false;
   }
 
-  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
-    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
-    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
-    const String url = endpointBaseUrl(endpoint) + "/history/" + DEVICE_ID +
-                       "?device_id=" + DEVICE_ID;
-
-    Log::client("HTTP", "fetching history from %s", url.c_str());
-
-    int statusCode = -1;
-    String body;
-    {
-      HTTPClient http;
-      if (endpoint.port == 443) {
-        WiFiClientSecure client;
-        if (endpoint.ca_cert) {
-          client.setCACert(endpoint.ca_cert);
-        } else {
-          client.setInsecure();
+  return getFromConfiguredEndpoints(
+      "fetching history from",
+      [this](const ServerEndpoint &endpoint) {
+        return endpointBaseUrl(endpoint) + "/history/" + DEVICE_ID +
+               "?device_id=" + DEVICE_ID;
+      },
+      [outEntries, maxEntries, &outCount](const HttpGetResponse &response) {
+        if (response.statusCode != 200 || response.body.isEmpty()) {
+          Log::client("HTTP", "history fetch failed status=%d",
+                      response.statusCode);
+          return HttpGetDecision::Continue;
         }
-        if (!http.begin(client, url)) {
-          continue;
+
+        JsonDocument doc;
+        if (deserializeJson(doc, response.body) || !doc.is<JsonArray>()) {
+          Log::client("HTTP", "history response invalid");
+          return HttpGetDecision::Continue;
         }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
+
+        JsonArray rows = doc.as<JsonArray>();
+        for (JsonVariant row : rows) {
+          if (outCount >= maxEntries) {
+            break;
+          }
+
+          const char *chatId = row["chat_id"];
+          if (!chatId || !chatId[0]) {
+            continue;
+          }
+
+          outEntries[outCount].chatId = chatId;
+          outEntries[outCount].lastMessage = row["last_message"] | "";
+          outEntries[outCount].updatedAt = row["updated_at"] | "";
+          outCount++;
         }
-        http.end();
-      } else {
-        WiFiClient client;
-        if (!http.begin(client, url)) {
-          continue;
-        }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
-        }
-        http.end();
-      }
-    }
-
-    if (statusCode != 200 || body.isEmpty()) {
-      Log::client("HTTP", "history fetch failed status=%d", statusCode);
-      continue;
-    }
-
-    JsonDocument doc;
-    if (deserializeJson(doc, body) || !doc.is<JsonArray>()) {
-      Log::client("HTTP", "history response invalid");
-      continue;
-    }
-
-    JsonArray rows = doc.as<JsonArray>();
-    for (JsonVariant row : rows) {
-      if (outCount >= maxEntries) {
-        break;
-      }
-
-      const char *chatId = row["chat_id"];
-      if (!chatId || !chatId[0]) {
-        continue;
-      }
-
-      outEntries[outCount].chatId = chatId;
-      outEntries[outCount].lastMessage = row["last_message"] | "";
-      outEntries[outCount].updatedAt = row["updated_at"] | "";
-      outCount++;
-    }
-    rememberSuccessfulEndpoint(index);
-    return true;
-  }
-
-  return false;
+        return HttpGetDecision::Success;
+      });
 }
 
 bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
   outInfo = FirmwareUpdateInfo{};
 
-  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
-    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
-    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
-    const String url = endpointBaseUrl(endpoint) + "/firmware/check?version=" +
-                       String(FIRMWARE_VERSION);
-
-    Log::client("HTTP", "checking firmware at %s", url.c_str());
-
-    int statusCode = -1;
-    String body;
-    {
-      HTTPClient http;
-      if (endpoint.port == 443) {
-        WiFiClientSecure client;
-        if (endpoint.ca_cert) {
-          client.setCACert(endpoint.ca_cert);
-        } else {
-          client.setInsecure();
+  return getFromConfiguredEndpoints(
+      "checking firmware at",
+      [this](const ServerEndpoint &endpoint) {
+        return endpointBaseUrl(endpoint) + "/firmware/check?version=" +
+               String(FIRMWARE_VERSION);
+      },
+      [&outInfo](const HttpGetResponse &response) {
+        if (response.statusCode == 404) {
+          return HttpGetDecision::Continue;
         }
-        if (!http.begin(client, url)) {
-          continue;
+
+        if (response.statusCode != 200 || response.body.isEmpty()) {
+          Log::client("HTTP", "firmware check failed status=%d",
+                      response.statusCode);
+          return HttpGetDecision::Continue;
         }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
+
+        JsonDocument doc;
+        if (deserializeJson(doc, response.body)) {
+          Log::client("HTTP", "firmware check invalid JSON");
+          return HttpGetDecision::Continue;
         }
-        http.end();
-      } else {
-        WiFiClient client;
-        if (!http.begin(client, url)) {
-          continue;
-        }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
-        }
-        http.end();
-      }
-    }
 
-    if (statusCode == 404) {
-      continue;
-    }
-
-    if (statusCode != 200 || body.isEmpty()) {
-      Log::client("HTTP", "firmware check failed status=%d", statusCode);
-      continue;
-    }
-
-    JsonDocument doc;
-    if (deserializeJson(doc, body)) {
-      Log::client("HTTP", "firmware check invalid JSON");
-      continue;
-    }
-
-    outInfo.available = doc["available"] | false;
-    outInfo.latestVersion = doc["latest_version"] | FIRMWARE_VERSION;
-    outInfo.notes = doc["notes"] | "";
-    outInfo.downloadUrl = doc["download_url"] | "";
-    rememberSuccessfulEndpoint(index);
-    return true;
-  }
-
-  return false;
+        outInfo.available = doc["available"] | false;
+        outInfo.latestVersion = doc["latest_version"] | FIRMWARE_VERSION;
+        outInfo.notes = doc["notes"] | "";
+        outInfo.downloadUrl = doc["download_url"] | "";
+        return HttpGetDecision::Success;
+      });
 }
 
 bool LiveSessionService::downloadAndApplyFirmwareUpdate(
@@ -823,6 +719,79 @@ String LiveSessionService::endpointBaseUrl(const ServerEndpoint &endpoint) const
     url += ":" + String(endpoint.port);
   }
   return url;
+}
+
+bool LiveSessionService::performEndpointGet(const ServerEndpoint &endpoint,
+                                            const String &url,
+                                            int &statusCode,
+                                            String &body) const {
+  statusCode = -1;
+  body = "";
+
+  HTTPClient http;
+  if (urlUsesHttps(url)) {
+    WiFiClientSecure client;
+    if (endpoint.ca_cert) {
+      client.setCACert(endpoint.ca_cert);
+    } else {
+      client.setInsecure();
+    }
+
+    if (!http.begin(client, url)) {
+      Log::client("HTTP", "begin failed for %s", url.c_str());
+      return false;
+    }
+
+    statusCode = http.GET();
+    if (statusCode > 0) {
+      body = http.getString();
+    }
+    http.end();
+    return true;
+  }
+
+  WiFiClient client;
+  if (!http.begin(client, url)) {
+    Log::client("HTTP", "begin failed for %s", url.c_str());
+    return false;
+  }
+
+  statusCode = http.GET();
+  if (statusCode > 0) {
+    body = http.getString();
+  }
+  http.end();
+  return true;
+}
+
+bool LiveSessionService::getFromConfiguredEndpoints(
+    const char *logAction, const EndpointUrlBuilder &buildUrl,
+    const HttpGetHandler &handleResponse) {
+  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
+    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
+    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
+    const String url = buildUrl(endpoint);
+
+    Log::client("HTTP", "%s %s", logAction, url.c_str());
+
+    HttpGetResponse response;
+    response.endpointIndex = index;
+    if (!performEndpointGet(endpoint, url, response.statusCode,
+                            response.body)) {
+      continue;
+    }
+
+    const HttpGetDecision decision = handleResponse(response);
+    if (decision == HttpGetDecision::Success) {
+      rememberSuccessfulEndpoint(index);
+      return true;
+    }
+    if (decision == HttpGetDecision::Stop) {
+      return false;
+    }
+  }
+
+  return false;
 }
 
 void LiveSessionService::rememberSuccessfulEndpoint(int endpointIndex) {
