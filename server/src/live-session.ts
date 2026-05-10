@@ -14,7 +14,10 @@ import { handleEmailTool } from './email-tool'
 import { handleFileTool } from './file-tools'
 import { USER_INSTRUCTIONS_PATH, ensureUserInstructionsFile } from './files'
 import { buildGeminiTools, buildToolResponsePayload } from './gemini-tools'
-import { generateAndProcessImage } from './image-gen'
+import {
+	generateAndSendImage,
+	imagePromptFromArgs,
+} from './image-tool'
 import {
 	DEFAULT_VOICE,
 	buildSystemInstructionText,
@@ -574,8 +577,7 @@ export class LiveSession {
 							durationMs: Date.now() - startMs,
 						})
 				} else if (call.name === 'show_image') {
-						const args = call.args as { prompt?: string }
-						const prompt = (args.prompt || '').trim()
+						const prompt = imagePromptFromArgs(call.args)
 						if (!prompt) {
 							const payload = buildToolResponsePayload(call.name, call.id, {
 								result: 'no prompt provided',
@@ -598,11 +600,20 @@ export class LiveSession {
 							// Tell the device an image is coming so it can show the pulse animation.
 							this.sendToDevice({ type: 'show_image_pending' })
 							// Run the pipeline in the background and push the result when ready.
-							this.generateAndSendImage(prompt, call.name, call.args, startMs).catch(
-								(err) => {
-									console.error('[ImageGen] Background generation failed:', err)
-								}
-							)
+							generateAndSendImage({
+								prompt,
+								geminiApiKey: this.env.GEMINI_API_KEY,
+								storage: this.env.STORAGE,
+								deviceId: this.deviceId,
+								chatId: this.chatId,
+								toolName: call.name,
+								toolArgs: call.args,
+								startMs,
+								sendToDevice: (msg) => this.sendToDevice(msg),
+								logToolCall: (entry) => this.logToolCall(entry),
+							}).catch((err) => {
+								console.error('[ImageGen] Background generation failed:', err)
+							})
 						}
 				} else if (call.name === 'new_conversation' || call.name === 'new_chat') {
 						// Handle server-side: close Gemini session and open a fresh one
@@ -649,61 +660,6 @@ export class LiveSession {
 
 	private sendToDevice(msg: Record<string, unknown>) {
 		this.deviceWs?.send(JSON.stringify(msg))
-	}
-
-	private async generateAndSendImage(
-		prompt: string,
-		toolName: string,
-		toolArgs: unknown,
-		startMs: number
-	): Promise<void> {
-		const turnChatId = this.chatId
-		const result = await generateAndProcessImage(prompt, this.env.GEMINI_API_KEY)
-		if (!result) {
-			this.sendToDevice({ type: 'show_image_failed' })
-			await this.logToolCall({
-				name: toolName,
-				args: toolArgs,
-				result: 'generation failed',
-				handledBy: 'server',
-				status: 'error',
-				durationMs: Date.now() - startMs,
-			})
-			return
-		}
-
-		// Persist the dithered PNG to R2 if STORAGE is bound. Best-effort; failure
-		// here doesn't block sending to the device.
-		let imageKey: string | undefined
-		if (this.env.STORAGE) {
-			const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-			imageKey = `chat-stick/assets/${this.deviceId}/images/${turnChatId}-${stamp}.png`
-			try {
-				await this.env.STORAGE.put(imageKey, result.ditheredPng, {
-					httpMetadata: { contentType: 'image/png' },
-				})
-				console.log(`[ImageGen] Stored dithered PNG at ${imageKey}`)
-			} catch (err) {
-				console.error('[ImageGen] R2 upload failed:', err)
-				imageKey = undefined
-			}
-		}
-
-		this.sendToDevice({
-			type: 'show_image',
-			data: result.data,
-			width: result.width,
-			height: result.height,
-			...(imageKey ? { key: imageKey } : {}),
-		})
-
-		await this.logToolCall({
-			name: toolName,
-			args: toolArgs,
-			result: { width: result.width, height: result.height, key: imageKey ?? null },
-			handledBy: 'server',
-			durationMs: Date.now() - startMs,
-		})
 	}
 
 	private async getUserInstructionsForPrompt(): Promise<string> {
