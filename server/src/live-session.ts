@@ -4,7 +4,8 @@ import {
 	saveConversationExchange,
 } from './conversation-store'
 import { handleDocsSearchTool } from './docs-tool'
-import { type EmailEnv, emailEnabled, sendEmail } from './email'
+import { type EmailEnv, emailEnabled } from './email'
+import { handleEmailTool } from './email-tool'
 import { handleFileTool } from './file-tools'
 import { USER_INSTRUCTIONS_PATH, ensureUserInstructionsFile } from './files'
 import { buildGeminiTools } from './gemini-tools'
@@ -699,31 +700,22 @@ export class LiveSession {
 							await this.connectGemini()
 						}
 				} else if (call.name === 'email_me') {
-						const args = call.args as { subject?: string; body?: string }
-						const result = await sendEmail(
-							this.env,
-							args.subject || '',
-							args.body || ''
-						)
-						const responsePayload =
-							'ok' in result
-								? { result: `email sent to ${result.recipient}` }
-								: { result: `email failed: ${result.error}` }
+						const result = await handleEmailTool(this.env, call.args)
 						const payload = JSON.stringify({
 							toolResponse: {
 								functionResponses: [
-									{ name: call.name, id: call.id, response: responsePayload },
+									{ name: call.name, id: call.id, response: result.response },
 								],
 							},
 						})
 						if (this.geminiWs) this.geminiWs.send(payload)
 						await this.logToolCall({
 							name: call.name,
-							args: { subject: args.subject, body_chars: (args.body || '').length },
-							result: 'ok' in result ? 'sent' : result.error,
+							args: result.logArgs,
+							result: result.logResult,
 							handledBy: 'server',
-							status: 'ok' in result ? 'ok' : 'error',
-							error: 'ok' in result ? undefined : result.error,
+							status: result.status,
+							error: result.error,
 							durationMs: Date.now() - startMs,
 						})
 				} else if (call.name === 'show_image') {
