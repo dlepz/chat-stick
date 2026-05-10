@@ -10,7 +10,15 @@ import {
 } from './debug-audio-store'
 import { emailEnabled } from './email'
 import { USER_INSTRUCTIONS_PATH, ensureUserInstructionsFile } from './files'
-import { buildGeminiTools, buildToolResponsePayload } from './gemini-tools'
+import {
+	type GeminiMessage,
+	buildGeminiAudioStreamEndPayload,
+	buildGeminiRealtimeAudioPayload,
+	buildGeminiRealtimeTextPayload,
+	buildGeminiSetupPayload,
+	openGeminiLiveWebSocket,
+} from './gemini-live'
+import { buildToolResponsePayload } from './gemini-tools'
 import {
 	DEFAULT_VOICE,
 	buildSystemInstructionText,
@@ -25,29 +33,6 @@ import {
 
 interface Env extends ToolRouterEnv {
 	HISTORY_API_TOKEN?: string
-}
-
-interface GeminiMessage {
-	setupComplete?: Record<string, unknown>
-	serverContent?: {
-		modelTurn?: {
-			parts?: Array<{
-				inlineData?: { mimeType: string; data: string }
-				text?: string
-			}>
-		}
-		turnComplete?: boolean
-		interrupted?: boolean
-		inputTranscription?: { text: string }
-		outputTranscription?: { text: string }
-	}
-	toolCall?: {
-		functionCalls: Array<{
-			name: string
-			id: string
-			args: Record<string, unknown>
-		}>
-	}
 }
 
 const DEFAULT_POWER_TIMEOUTS = {
@@ -162,16 +147,8 @@ export class LiveSession {
 
 		this.geminiConnecting = true
 		try {
-			const url =
-				'https://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent' +
-				`?key=${this.env.GEMINI_API_KEY}`
 			const userInstructions = await this.getUserInstructionsForPrompt()
-
-			const resp = await fetch(url, {
-				headers: { Upgrade: 'websocket' },
-			})
-
-			const ws = resp.webSocket
+			const ws = await openGeminiLiveWebSocket(this.env.GEMINI_API_KEY)
 			if (!ws) {
 				console.error('[Gemini] WebSocket upgrade failed')
 				this.sendToDevice({
@@ -219,37 +196,20 @@ export class LiveSession {
 			})
 
 			const voice = findVoice(this.currentVoice) ?? findVoice(DEFAULT_VOICE)!
+			const canEmail = emailEnabled(this.env)
 			const systemInstructionText = buildSystemInstructionText({
 				voice,
 				locationContext: this.locationContext,
 				userInstructions,
-				canEmail: emailEnabled(this.env),
+				canEmail,
 			})
 
 			// Send session setup
 			ws.send(
-				JSON.stringify({
-					setup: {
-						model: 'models/gemini-3.1-flash-live-preview',
-						generationConfig: {
-							responseModalities: ['AUDIO'],
-							speechConfig: {
-								voiceConfig: {
-									prebuiltVoiceConfig: { voiceName: voice.name },
-								},
-							},
-						},
-						outputAudioTranscription: {},
-						inputAudioTranscription: {},
-						systemInstruction: {
-							parts: [
-								{
-									text: systemInstructionText,
-								},
-							],
-						},
-						tools: buildGeminiTools({ canEmail: emailEnabled(this.env) }),
-					},
+				buildGeminiSetupPayload({
+					voiceName: voice.name,
+					systemInstructionText,
+					canEmail,
 				})
 			)
 
@@ -331,11 +291,7 @@ export class LiveSession {
 
 				// Forward text input to Gemini
 				if (msg.type === 'text' && msg.content && this.geminiWs && this.geminiReady) {
-					this.geminiWs.send(
-						JSON.stringify({
-							realtimeInput: { text: msg.content },
-						})
-					)
+					this.geminiWs.send(buildGeminiRealtimeTextPayload(msg.content))
 				}
 
 				// Send trailing silence so Gemini's VAD detects end-of-speech
@@ -646,16 +602,7 @@ export class LiveSession {
 	private forwardAudioChunk(data: ArrayBuffer) {
 		if (!this.geminiWs || !this.geminiReady) return
 		const base64 = arrayBufferToBase64(data)
-		this.geminiWs.send(
-			JSON.stringify({
-				realtimeInput: {
-					audio: {
-						data: base64,
-						mimeType: 'audio/pcm;rate=16000',
-					},
-				},
-			})
-		)
+		this.geminiWs.send(buildGeminiRealtimeAudioPayload(base64))
 	}
 
 	private flushPendingAudioIfReady() {
@@ -755,13 +702,7 @@ export class LiveSession {
 
 	private sendAudioStreamEnd() {
 		if (!this.geminiWs) return
-		this.geminiWs.send(
-			JSON.stringify({
-				realtimeInput: {
-					audioStreamEnd: true,
-				},
-			})
-		)
+		this.geminiWs.send(buildGeminiAudioStreamEndPayload())
 		console.log('[Bridge] Sent audio stream end')
 		this.resetCurrentTurnMetrics()
 		this.clearPendingAudio()
