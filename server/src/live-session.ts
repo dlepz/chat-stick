@@ -8,7 +8,7 @@ import { type EmailEnv, emailEnabled } from './email'
 import { handleEmailTool } from './email-tool'
 import { handleFileTool } from './file-tools'
 import { USER_INSTRUCTIONS_PATH, ensureUserInstructionsFile } from './files'
-import { buildGeminiTools } from './gemini-tools'
+import { buildGeminiTools, buildToolResponsePayload } from './gemini-tools'
 import { generateAndProcessImage } from './image-gen'
 import {
 	DEFAULT_VOICE,
@@ -388,17 +388,7 @@ export class LiveSession {
 				if (msg.type === 'tool_response' && this.geminiWs && this.geminiReady) {
 					console.log(`[Bridge] Tool response: ${msg.name} → Gemini`)
 					this.geminiWs.send(
-						JSON.stringify({
-							toolResponse: {
-								functionResponses: [
-									{
-										name: msg.name,
-										id: msg.id,
-										response: { result: msg.result },
-									},
-								],
-							},
-						})
+						buildToolResponsePayload(msg.name, msg.id, { result: msg.result })
 					)
 					const pending = this.pendingDeviceCalls.get(msg.id)
 					if (pending) {
@@ -561,17 +551,7 @@ export class LiveSession {
 
 				if (call.name === 'search_docs') {
 					const result = await handleDocsSearchTool(this.env, call.args)
-					const payload = JSON.stringify({
-						toolResponse: {
-							functionResponses: [
-								{
-									name: call.name,
-									id: call.id,
-									response: result.response,
-								},
-							],
-						},
-					})
+					const payload = buildToolResponsePayload(call.name, call.id, result.response)
 					console.log(`[Gemini] Sending tool response: ${payload.length} bytes`)
 
 					if (this.geminiWs) {
@@ -590,17 +570,7 @@ export class LiveSession {
 						const url = args.url || ''
 						console.log(`[Gemini] Fetching: ${url}`)
 						const result = await fetchWebPage(url, args.max_chars)
-						const payload = JSON.stringify({
-							toolResponse: {
-								functionResponses: [
-									{
-										name: call.name,
-										id: call.id,
-										response: result,
-									},
-								],
-							},
-						})
+						const payload = buildToolResponsePayload(call.name, call.id, result)
 						if (this.geminiWs) {
 							this.geminiWs.send(payload)
 							console.log(`[Gemini] ${call.name} response sent (${result.content.length} chars)`)
@@ -625,13 +595,7 @@ export class LiveSession {
 							call.name,
 							call.args
 						)
-						const payload = JSON.stringify({
-							toolResponse: {
-								functionResponses: [
-									{ name: call.name, id: call.id, response },
-								],
-							},
-						})
+						const payload = buildToolResponsePayload(call.name, call.id, response)
 						if (this.geminiWs) this.geminiWs.send(payload)
 						await this.logToolCall({
 							name: call.name,
@@ -643,13 +607,7 @@ export class LiveSession {
 						})
 				} else if (call.name === 'set_voice') {
 						const result = handleSetVoiceTool(call.args)
-						const payload = JSON.stringify({
-							toolResponse: {
-								functionResponses: [
-									{ name: call.name, id: call.id, response: result.response },
-								],
-							},
-						})
+						const payload = buildToolResponsePayload(call.name, call.id, result.response)
 						if (this.geminiWs) this.geminiWs.send(payload)
 						await this.logToolCall({
 							name: call.name,
@@ -672,13 +630,7 @@ export class LiveSession {
 						}
 				} else if (call.name === 'email_me') {
 						const result = await handleEmailTool(this.env, call.args)
-						const payload = JSON.stringify({
-							toolResponse: {
-								functionResponses: [
-									{ name: call.name, id: call.id, response: result.response },
-								],
-							},
-						})
+						const payload = buildToolResponsePayload(call.name, call.id, result.response)
 						if (this.geminiWs) this.geminiWs.send(payload)
 						await this.logToolCall({
 							name: call.name,
@@ -693,16 +645,8 @@ export class LiveSession {
 						const args = call.args as { prompt?: string }
 						const prompt = (args.prompt || '').trim()
 						if (!prompt) {
-							const payload = JSON.stringify({
-								toolResponse: {
-									functionResponses: [
-										{
-											name: call.name,
-											id: call.id,
-											response: { result: 'no prompt provided' },
-										},
-									],
-								},
+							const payload = buildToolResponsePayload(call.name, call.id, {
+								result: 'no prompt provided',
 							})
 							if (this.geminiWs) this.geminiWs.send(payload)
 							await this.logToolCall({
@@ -715,18 +659,8 @@ export class LiveSession {
 							})
 						} else {
 							// Tell Gemini the image is on its way so it can keep talking.
-							const ackPayload = JSON.stringify({
-								toolResponse: {
-									functionResponses: [
-										{
-											name: call.name,
-											id: call.id,
-											response: {
-												result: 'image generation started; it will appear on screen shortly',
-											},
-										},
-									],
-								},
+							const ackPayload = buildToolResponsePayload(call.name, call.id, {
+								result: 'image generation started; it will appear on screen shortly',
 							})
 							if (this.geminiWs) this.geminiWs.send(ackPayload)
 							// Tell the device an image is coming so it can show the pulse animation.

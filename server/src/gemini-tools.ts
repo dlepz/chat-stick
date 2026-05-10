@@ -11,6 +11,18 @@ export type GeminiTool =
 	| { googleSearch: Record<string, never> }
 	| { functionDeclarations: FunctionDeclaration[] }
 
+export function buildToolResponsePayload(
+	name: string,
+	id: string,
+	response: unknown
+): string {
+	return JSON.stringify({
+		toolResponse: {
+			functionResponses: [{ name, id, response }],
+		},
+	})
+}
+
 export function buildGeminiTools({
 	canEmail,
 }: {
