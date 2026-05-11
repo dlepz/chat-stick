@@ -10,13 +10,13 @@ import {
 } from './debug-audio-store'
 import { emailEnabled } from './email'
 import { USER_INSTRUCTIONS_PATH, ensureUserInstructionsFile } from './files'
+import { GeminiClient } from './gemini-client'
 import {
 	type GeminiMessage,
 	buildGeminiAudioStreamEndPayload,
 	buildGeminiRealtimeAudioPayload,
 	buildGeminiRealtimeTextPayload,
 	buildGeminiSetupPayload,
-	openGeminiLiveWebSocket,
 } from './gemini-live'
 import { buildToolResponsePayload } from './gemini-tools'
 import {
@@ -49,9 +49,7 @@ export class LiveSession {
 	private state: DurableObjectState
 	private env: Env
 	private deviceWs: WebSocket | null = null
-	private geminiWs: WebSocket | null = null
-	private geminiConnecting = false
-	private geminiReady = false
+	private gemini = new GeminiClient()
 	private deviceId = 'unknown'
 	private chatId = ''
 	private currentVoice = DEFAULT_VOICE
@@ -138,63 +136,12 @@ export class LiveSession {
 	}
 
 	private async connectGemini(sessionGeneration = this.sessionGeneration) {
-		if (this.geminiConnecting) {
-			return
-		}
-		if (this.geminiWs) {
+		if (this.gemini.isConnecting || this.gemini.isConnected) {
 			return
 		}
 
-		this.geminiConnecting = true
 		try {
 			const userInstructions = await this.getUserInstructionsForPrompt()
-			const ws = await openGeminiLiveWebSocket(this.env.GEMINI_API_KEY)
-			if (!ws) {
-				console.error('[Gemini] WebSocket upgrade failed')
-				this.sendToDevice({
-					type: 'error',
-					category: 'gemini_unavailable',
-					message: 'Failed to connect to AI',
-				})
-				return
-			}
-			if (sessionGeneration !== this.sessionGeneration) {
-				try {
-					ws.close()
-				} catch {
-					// ignore
-				}
-				return
-			}
-
-			ws.accept()
-			this.geminiWs = ws
-
-			ws.addEventListener('message', (event) => {
-				if (sessionGeneration !== this.sessionGeneration) return
-				const raw = event.data
-				const text =
-					typeof raw === 'string'
-						? raw
-						: new TextDecoder().decode(raw as ArrayBuffer)
-				this.onGeminiMessage(text).catch((err) => {
-					console.error('[Gemini] Message handler error:', err)
-				})
-			})
-
-			ws.addEventListener('close', (event) => {
-				if (sessionGeneration !== this.sessionGeneration) return
-				console.log(`[Gemini] Disconnected: code=${event.code} reason="${event.reason}" wasReady=${this.geminiReady}`)
-				this.geminiWs = null
-				this.geminiReady = false
-				// Don't send error if we haven't set up yet — connectGemini will retry
-			})
-
-			ws.addEventListener('error', (event) => {
-				if (sessionGeneration !== this.sessionGeneration) return
-				console.error('[Gemini] WebSocket error:', event)
-			})
-
 			const voice = findVoice(this.currentVoice) ?? findVoice(DEFAULT_VOICE)!
 			const canEmail = emailEnabled(this.env)
 			const systemInstructionText = buildSystemInstructionText({
@@ -203,17 +150,46 @@ export class LiveSession {
 				userInstructions,
 				canEmail,
 			})
-
-			// Send session setup
-			ws.send(
-				buildGeminiSetupPayload({
+			const result = await this.gemini.connect({
+				apiKey: this.env.GEMINI_API_KEY,
+				setupPayload: buildGeminiSetupPayload({
 					voiceName: voice.name,
 					systemInstructionText,
 					canEmail,
-				})
-			)
+				}),
+				isCurrent: () => sessionGeneration === this.sessionGeneration,
+				onMessage: (text) => {
+					if (sessionGeneration !== this.sessionGeneration) return
+					this.onGeminiMessage(text).catch((err) => {
+						console.error('[Gemini] Message handler error:', err)
+					})
+				},
+				onClose: (event, wasReady) => {
+					if (sessionGeneration !== this.sessionGeneration) return
+					console.log(
+						`[Gemini] Disconnected: code=${event.code} reason="${event.reason}" wasReady=${wasReady}`
+					)
+					// Don't send error if we haven't set up yet — connectGemini will retry
+				},
+				onError: (event) => {
+					if (sessionGeneration !== this.sessionGeneration) return
+					console.error('[Gemini] WebSocket error:', event)
+				},
+			})
 
-			console.log('[Gemini] Setup message sent')
+			if (result === 'unavailable') {
+				console.error('[Gemini] WebSocket upgrade failed')
+				this.sendToDevice({
+					type: 'error',
+					category: 'gemini_unavailable',
+					message: 'Failed to connect to AI',
+				})
+				return
+			}
+
+			if (result === 'connected') {
+				console.log('[Gemini] Setup message sent')
+			}
 		} catch (err) {
 			console.error('[Gemini] Connection error:', err)
 			this.sendToDevice({
@@ -221,8 +197,6 @@ export class LiveSession {
 				category: 'gemini_unavailable',
 				message: `AI connection failed: ${err}`,
 			})
-		} finally {
-			this.geminiConnecting = false
 		}
 	}
 
@@ -237,15 +211,15 @@ export class LiveSession {
 			this.noteAudioChunk(chunk)
 			if (this.audioChunkCount <= 3 || this.audioChunkCount % 10 === 0) {
 				const firstSamples = Array.from(new Int16Array(chunk).slice(0, 4))
-				const destination = this.geminiWs && this.geminiReady ? 'Gemini' : 'buffer'
+				const destination = this.gemini.isReady ? 'Gemini' : 'buffer'
 				console.log(
 					`[Bridge] Audio chunk #${this.audioChunkCount}: ${chunk.byteLength} bytes → ${destination} (samples: ${firstSamples})`
 				)
 			}
 
-			if (!this.geminiWs || !this.geminiReady) {
+			if (!this.gemini.isConnected || !this.gemini.isReady) {
 				this.bufferAudioChunk(chunk)
-				if (!this.geminiWs) {
+				if (!this.gemini.isConnected) {
 					console.warn('[Bridge] Audio buffered — Gemini WS is null, reconnecting...')
 					this.connectGemini()
 				}
@@ -264,16 +238,16 @@ export class LiveSession {
 					this.resetCurrentTurnMetrics()
 					this.currentTurnStartedAt = Date.now()
 					this.clearPendingAudio()
-					if (!this.geminiWs) {
+					if (!this.gemini.isConnected) {
 						console.log('[Bridge] Start received while Gemini closed — reconnecting')
 						this.connectGemini()
 					}
 				}
 
 				// Forward tool response to Gemini
-				if (msg.type === 'tool_response' && this.geminiWs && this.geminiReady) {
+				if (msg.type === 'tool_response' && this.gemini.isReady) {
 					console.log(`[Bridge] Tool response: ${msg.name} → Gemini`)
-					this.geminiWs.send(
+					this.gemini.send(
 						buildToolResponsePayload(msg.name, msg.id, { result: msg.result })
 					)
 					const pending = this.pendingDeviceCalls.get(msg.id)
@@ -290,8 +264,8 @@ export class LiveSession {
 				}
 
 				// Forward text input to Gemini
-				if (msg.type === 'text' && msg.content && this.geminiWs && this.geminiReady) {
-					this.geminiWs.send(buildGeminiRealtimeTextPayload(msg.content))
+				if (msg.type === 'text' && msg.content && this.gemini.isReady) {
+					this.gemini.send(buildGeminiRealtimeTextPayload(msg.content))
 				}
 
 				// Send trailing silence so Gemini's VAD detects end-of-speech
@@ -359,7 +333,7 @@ export class LiveSession {
 		// Session ready
 		if (msg.setupComplete) {
 			console.log('[Gemini] Setup complete')
-			this.geminiReady = true
+			this.gemini.markReady()
 			this.sendToDevice({ type: 'ready' })
 			this.sendToDevice({
 				type: 'settings',
@@ -446,11 +420,7 @@ export class LiveSession {
 	}
 
 	private sendToGemini(payload: string): boolean {
-		if (!this.geminiWs) {
-			return false
-		}
-		this.geminiWs.send(payload)
-		return true
+		return this.gemini.send(payload)
 	}
 
 	private sendToDevice(msg: Record<string, unknown>) {
@@ -600,13 +570,13 @@ export class LiveSession {
 	}
 
 	private forwardAudioChunk(data: ArrayBuffer) {
-		if (!this.geminiWs || !this.geminiReady) return
+		if (!this.gemini.isReady) return
 		const base64 = arrayBufferToBase64(data)
-		this.geminiWs.send(buildGeminiRealtimeAudioPayload(base64))
+		this.gemini.send(buildGeminiRealtimeAudioPayload(base64))
 	}
 
 	private flushPendingAudioIfReady() {
-		if (!this.geminiWs || !this.geminiReady || this.pendingAudioChunks.length === 0) {
+		if (!this.gemini.isReady || this.pendingAudioChunks.length === 0) {
 			return
 		}
 
@@ -626,9 +596,9 @@ export class LiveSession {
 	}
 
 	private handleStopMessage() {
-		if (!this.geminiWs || !this.geminiReady) {
+		if (!this.gemini.isConnected || !this.gemini.isReady) {
 			this.pendingStop = true
-			if (!this.geminiWs) {
+			if (!this.gemini.isConnected) {
 				this.connectGemini()
 			}
 			console.log('[Bridge] Stop buffered until Gemini is ready')
@@ -688,40 +658,25 @@ export class LiveSession {
 	}
 
 	private async replaceGeminiConnection() {
-		if (this.geminiWs) {
-			try {
-				this.geminiWs.close()
-			} catch {
-				// ignore
-			}
-		}
-		this.geminiWs = null
-		this.geminiReady = false
+		this.gemini.close()
 		await this.connectGemini()
 	}
 
 	private sendAudioStreamEnd() {
-		if (!this.geminiWs) return
-		this.geminiWs.send(buildGeminiAudioStreamEndPayload())
+		if (!this.gemini.send(buildGeminiAudioStreamEndPayload())) return
 		console.log('[Bridge] Sent audio stream end')
 		this.resetCurrentTurnMetrics()
 		this.clearPendingAudio()
 	}
 
 	async alarm() {
-		if (!this.geminiWs && !this.deviceWs) return
+		if (!this.gemini.isConnected && !this.deviceWs) return
 		const idle = Date.now() - this.lastActivityMs
 		if (idle >= LiveSession.IDLE_CLOSE_MS) {
-			if (this.geminiWs) {
+			if (this.gemini.isConnected) {
 				console.log(`[Session] Idle ${Math.floor(idle / 1000)}s — closing Gemini`)
 				await this.commitExchange()
-				try {
-					this.geminiWs.close()
-				} catch {
-					// ignore
-				}
-				this.geminiWs = null
-				this.geminiReady = false
+				this.gemini.close()
 			}
 			return
 		}
@@ -747,15 +702,7 @@ export class LiveSession {
 		}
 		this.pendingDeviceCalls.clear()
 
-		if (this.geminiWs) {
-			try {
-				this.geminiWs.close()
-			} catch {
-				// ignore
-			}
-			this.geminiWs = null
-			this.geminiReady = false
-		}
+		this.gemini.close()
 		if (this.deviceWs) {
 			try {
 				this.deviceWs.close()
