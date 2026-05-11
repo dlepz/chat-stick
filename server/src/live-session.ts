@@ -30,6 +30,7 @@ import {
 	type ToolRouterEnv,
 	routeGeminiToolCall,
 } from './tool-router'
+import { appendTranscriptDelta } from './transcript-delta'
 
 interface Env extends ToolRouterEnv {
 	HISTORY_API_TOKEN?: string
@@ -295,39 +296,6 @@ export class LiveSession {
 		}
 	}
 
-	private appendTranscriptDelta(current: string, incoming: string) {
-		if (!incoming) {
-			return { text: current, delta: '' }
-		}
-		if (!current) {
-			return { text: incoming, delta: incoming }
-		}
-
-		// Live transcription messages can arrive as either true deltas or as
-		// cumulative/overlapping partial hypotheses. The device reveal animation
-		// expects append-only deltas, so strip any already-emitted prefix here.
-		if (incoming === current || current.startsWith(incoming)) {
-			return { text: current, delta: '' }
-		}
-		if (incoming.startsWith(current)) {
-			const delta = incoming.slice(current.length)
-			return { text: incoming, delta }
-		}
-		if (current.endsWith(incoming)) {
-			return { text: current, delta: '' }
-		}
-
-		const maxOverlap = Math.min(current.length, incoming.length)
-		for (let len = maxOverlap; len >= 1; len--) {
-			if (current.endsWith(incoming.slice(0, len))) {
-				const delta = incoming.slice(len)
-				return { text: current + delta, delta }
-			}
-		}
-
-		return { text: current + incoming, delta: incoming }
-	}
-
 	private async handleGeminiMessage(msg: GeminiMessage) {
 
 		// Session ready
@@ -349,7 +317,7 @@ export class LiveSession {
 			// Transcriptions drive the device captions. Send them before binary
 			// audio so the ESP32 doesn't queue text behind a burst of PCM frames.
 			if (sc.inputTranscription?.text) {
-				const next = this.appendTranscriptDelta(
+				const next = appendTranscriptDelta(
 					this.currentUserText,
 					sc.inputTranscription.text
 				)
@@ -363,7 +331,7 @@ export class LiveSession {
 				}
 			}
 			if (sc.outputTranscription?.text) {
-				const next = this.appendTranscriptDelta(
+				const next = appendTranscriptDelta(
 					this.currentAssistantText,
 					sc.outputTranscription.text
 				)
