@@ -6,6 +6,9 @@
 #include <WiFi.h>
 #include <time.h>
 
+/**
+ * @brief Open preferences storage and load any saved WiFi networks.
+ */
 void WiFiService::init() {
   _prefsReady = _prefs.begin(kPrefsNamespace, false);
   if (_prefsReady) {
@@ -15,6 +18,9 @@ void WiFiService::init() {
   }
 }
 
+/**
+ * @brief Service captive-portal DNS and HTTP handlers when active.
+ */
 void WiFiService::poll() {
   if (!_captivePortalActive) {
     return;
@@ -24,6 +30,10 @@ void WiFiService::poll() {
   _portalServer.handleClient();
 }
 
+/**
+ * @brief Try connecting to saved and compiled-in networks in priority order.
+ * @return True on a successful association.
+ */
 bool WiFiService::connectKnownNetworks() {
   stopCaptivePortal();
   WiFi.mode(WIFI_STA);
@@ -48,6 +58,10 @@ bool WiFiService::connectKnownNetworks() {
   return false;
 }
 
+/**
+ * @brief Start the soft-AP captive portal used to provision WiFi credentials.
+ * @return True when the portal AP, DNS, and HTTP server all start.
+ */
 bool WiFiService::startCaptivePortal() {
   stopCaptivePortal();
   WiFi.disconnect(true, true);
@@ -75,6 +89,9 @@ bool WiFiService::startCaptivePortal() {
   return true;
 }
 
+/**
+ * @brief Stop captive-portal DNS and HTTP services and disable the soft-AP.
+ */
 void WiFiService::stopCaptivePortal() {
   if (_captivePortalActive) {
     _dnsServer.stop();
@@ -87,6 +104,11 @@ void WiFiService::stopCaptivePortal() {
   }
 }
 
+/**
+ * @brief Consume a pending portal-provisioning notification and stop the portal.
+ * @param ssid Receives the SSID that was just provisioned.
+ * @return True when a new provisioning event was pending.
+ */
 bool WiFiService::consumeProvisioningSuccess(String &ssid) {
   if (!_portalProvisioned) {
     return false;
@@ -99,12 +121,18 @@ bool WiFiService::consumeProvisioningSuccess(String &ssid) {
   return true;
 }
 
+/**
+ * @brief Disconnect from any active WiFi network and stop the captive portal.
+ */
 void WiFiService::disconnect() {
   stopCaptivePortal();
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
 }
 
+/**
+ * @brief Clear saved networks and stop any active portal/network session.
+ */
 void WiFiService::reset() {
   _savedNetworkCount = 0;
   if (_prefsReady) {
@@ -113,18 +141,37 @@ void WiFiService::reset() {
   disconnect();
 }
 
+/**
+ * @brief Whether the station interface is currently associated.
+ * @return True when WiFi reports a connected status.
+ */
 bool WiFiService::isConnected() const { return WiFi.status() == WL_CONNECTED; }
 
+/**
+ * @brief SSID of the currently connected network.
+ * @return SSID string, or empty when disconnected.
+ */
 String WiFiService::ssid() const { return isConnected() ? WiFi.SSID() : ""; }
 
+/**
+ * @brief Current station IP address.
+ * @return IP string, or empty when disconnected.
+ */
 String WiFiService::localIp() const {
   return isConnected() ? WiFi.localIP().toString() : "";
 }
 
+/**
+ * @brief Captive portal soft-AP gateway IP.
+ * @return IP string, or empty when the portal is not active.
+ */
 String WiFiService::captivePortalIp() const {
   return _captivePortalActive ? WiFi.softAPIP().toString() : "";
 }
 
+/**
+ * @brief Load persisted WiFi credentials from preferences into memory.
+ */
 void WiFiService::loadSavedNetworks() {
   _savedNetworkCount = constrain(_prefs.getUChar("count", 0), 0,
                                  kMaxSavedNetworks);
@@ -145,6 +192,9 @@ void WiFiService::loadSavedNetworks() {
   Log::client("WiFi", "loaded saved networks count=%d", _savedNetworkCount);
 }
 
+/**
+ * @brief Persist the in-memory saved-network list back to preferences.
+ */
 void WiFiService::writeSavedNetworks() {
   if (!_prefsReady) {
     return;
@@ -169,6 +219,12 @@ void WiFiService::writeSavedNetworks() {
   }
 }
 
+/**
+ * @brief Save or refresh a credential entry, moving it to the front of the list.
+ * @param ssid Network SSID.
+ * @param password Network password.
+ * @param label Human-readable label.
+ */
 void WiFiService::rememberNetwork(const String &ssid, const String &password,
                                   const String &label) {
   if (!_prefsReady || ssid.isEmpty()) {
@@ -210,6 +266,13 @@ void WiFiService::rememberNetwork(const String &ssid, const String &password,
   Log::client("WiFi", "saved network %s to NVS", ssid.c_str());
 }
 
+/**
+ * @brief Attempt to connect to a specific network with a timeout.
+ * @param ssid Network SSID.
+ * @param password Network password.
+ * @param label Human-readable label used in logs.
+ * @return True on successful association.
+ */
 bool WiFiService::connectToNetwork(const String &ssid, const String &password,
                                    const String &label) {
   if (ssid.isEmpty()) {
@@ -240,6 +303,9 @@ bool WiFiService::connectToNetwork(const String &ssid, const String &password,
   return false;
 }
 
+/**
+ * @brief Register HTTP routes for the captive portal pages and OS probes.
+ */
 void WiFiService::configureCaptivePortalRoutes() {
   if (_portalRoutesConfigured) {
     return;
@@ -259,6 +325,9 @@ void WiFiService::configureCaptivePortalRoutes() {
   _portalRoutesConfigured = true;
 }
 
+/**
+ * @brief Refresh the cached list of nearby networks shown in the portal page.
+ */
 void WiFiService::refreshScanResults() {
   _scanResultCount = 0;
   const int found = WiFi.scanNetworks(false, true);
@@ -288,6 +357,11 @@ void WiFiService::refreshScanResults() {
   WiFi.scanDelete();
 }
 
+/**
+ * @brief Build the captive-portal HTML page.
+ * @param message Optional status message to embed at the top of the page.
+ * @return Complete HTML response body.
+ */
 String WiFiService::portalHtml(const String &message) const {
   String html;
   html.reserve(2048);
@@ -322,10 +396,16 @@ String WiFiService::portalHtml(const String &message) const {
   return html;
 }
 
+/**
+ * @brief Serve the captive portal landing page.
+ */
 void WiFiService::handlePortalRoot() {
   _portalServer.send(200, "text/html", portalHtml());
 }
 
+/**
+ * @brief Handle a credential submission from the captive portal form.
+ */
 void WiFiService::handlePortalSave() {
   String selectedSsid = _portalServer.arg("ssid");
   String manualSsid = _portalServer.arg("manual_ssid");
@@ -349,6 +429,9 @@ void WiFiService::handlePortalSave() {
   Log::client("WiFi", "captive portal saved credentials for %s", ssid.c_str());
 }
 
+/**
+ * @brief Redirect any unrecognized request back to the captive portal root.
+ */
 void WiFiService::redirectToPortal() {
   _portalServer.sendHeader("Location", "http://" + WiFi.softAPIP().toString(),
                            true);

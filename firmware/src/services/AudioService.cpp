@@ -7,18 +7,41 @@
 #include <math.h>
 
 namespace {
+/// Number of mono samples in one microphone capture chunk.
 constexpr int kChunkSamples = MIC_SAMPLE_RATE * MIC_CHUNK_MS / 1000;
+
+/// Duration of each speaker playback chunk in milliseconds.
 constexpr int kPlaybackChunkMs = 20;
+
+/// Number of mono samples per speaker playback chunk.
 constexpr int kPlaybackChunkSamples = PLAY_SAMPLE_RATE * kPlaybackChunkMs / 1000;
+
+/// I2C port used to control the ES8311 codec.
 constexpr int kCodecI2cPort = 0;
+
+/// Microphone gain applied to the ES8311 codec.
 constexpr es8311_mic_gain_t kMicGain = ES8311_MIC_GAIN_42DB;
 
+/// Shared I2S peripheral wrapper used for capture and playback.
 I2SClass i2s;
+
+/// ES8311 codec handle, created on first configure.
 es8311_handle_t codec = nullptr;
+
+/// Sample rate the codec is currently configured for.
 int currentSampleRate = 0;
+
+/// Last volume value written to the codec, or -1 if unknown.
 int codecVolume = -1;
+
+/// Whether the I2S peripheral is currently initialized.
 bool i2sReady = false;
 
+/**
+ * @brief Map a letter note to its semitone offset within an octave.
+ * @param note Note letter such as 'A'-'G' or 'R' for rest.
+ * @return Semitone offset, or -1 for unknown notes.
+ */
 int noteIndex(char note) {
   switch (toupper(note)) {
   case 'C':
@@ -40,6 +63,11 @@ int noteIndex(char note) {
   }
 }
 
+/**
+ * @brief Convert a note token like "C#4" or "R" into a frequency in Hz.
+ * @param noteToken Parsed note token from a melody string.
+ * @return Frequency in Hz, 0 for a rest, or -1 for an invalid token.
+ */
 float noteFrequency(const String &noteToken) {
   if (noteToken.isEmpty()) {
     return 0.0f;
@@ -72,11 +100,19 @@ float noteFrequency(const String &noteToken) {
   return 440.0f * powf(2.0f, (midi - 69) / 12.0f);
 }
 
+/**
+ * @brief Map an 8-bit volume level into the ES8311's 0-100 range.
+ * @param level Volume level in the range 0-255.
+ * @return Codec volume value in the range 0-100.
+ */
 int codecVolumeFromLevel(int level) {
   return map(constrain(level, 0, 255), 0, 255, 0, 100);
 }
 } // namespace
 
+/**
+ * @brief Tear down the playback task, audio buffers, and codec handle.
+ */
 AudioService::~AudioService() {
   stopPlaybackTask();
   if (_captureChunk) {
@@ -113,6 +149,10 @@ AudioService::~AudioService() {
   }
 }
 
+/**
+ * @brief Allocate audio buffers, configure the codec, and start the playback task.
+ * @return True when initialization succeeded.
+ */
 bool AudioService::init() {
   _audioMutex = xSemaphoreCreateRecursiveMutex();
   _playbackMutex = xSemaphoreCreateMutex();
@@ -181,6 +221,10 @@ bool AudioService::init() {
   return true;
 }
 
+/**
+ * @brief Set the speaker volume and update the codec if it changed.
+ * @param level Volume level in the range 0-255.
+ */
 void AudioService::setVolume(int level) {
   _volume = constrain(level, 0, 255);
   const int nextVolume = codecVolumeFromLevel(_volume);
@@ -194,6 +238,10 @@ void AudioService::setVolume(int level) {
   releaseAudioLock();
 }
 
+/**
+ * @brief Reset playback and reconfigure the codec for microphone capture.
+ * @return True when recording is ready to begin.
+ */
 bool AudioService::startRecording() {
   resetPlayback();
   if (!takeAudioLock()) {
@@ -218,6 +266,9 @@ bool AudioService::startRecording() {
   return true;
 }
 
+/**
+ * @brief Switch the codec back to playback configuration after recording.
+ */
 void AudioService::stopRecording() {
   if (!takeAudioLock()) {
     return;
@@ -228,6 +279,10 @@ void AudioService::stopRecording() {
   releaseAudioLock();
 }
 
+/**
+ * @brief Read one stereo capture chunk and downmix it into the mono buffer.
+ * @return True when a full chunk was captured and analyzed.
+ */
 bool AudioService::captureChunk() {
   if (!takeAudioLock()) {
     return false;
@@ -270,6 +325,11 @@ bool AudioService::captureChunk() {
   return true;
 }
 
+/**
+ * @brief Play a named UI sound by mapping it to a built-in tone sequence.
+ * @param name Sound identifier such as "beep" or "success".
+ * @return True when the sound was scheduled.
+ */
 bool AudioService::playNamedSound(const String &name) {
   const String normalized = name;
   if (normalized.equalsIgnoreCase("beep")) {
@@ -291,10 +351,18 @@ bool AudioService::playNamedSound(const String &name) {
   return false;
 }
 
+/**
+ * @brief Play a melody described as a tone-sequence string.
+ * @param melody Tone-sequence description.
+ * @return True when the melody was scheduled.
+ */
 bool AudioService::playMelody(const String &melody) {
   return playToneSequence(melody);
 }
 
+/**
+ * @brief Clear queued playback bytes and wake the playback task.
+ */
 void AudioService::resetPlayback() {
   if (!takePlaybackLock()) {
     return;
@@ -308,6 +376,12 @@ void AudioService::resetPlayback() {
   wakePlaybackTask();
 }
 
+/**
+ * @brief Copy PCM bytes into the playback ring buffer.
+ * @param data PCM bytes to enqueue.
+ * @param len Number of bytes in @p data.
+ * @return True when all bytes were accepted; false on overflow.
+ */
 bool AudioService::queuePlayback(const uint8_t *data, size_t len) {
   if (len == 0) {
     return true;
@@ -339,6 +413,10 @@ bool AudioService::queuePlayback(const uint8_t *data, size_t len) {
   return true;
 }
 
+/**
+ * @brief Snapshot the number of bytes currently buffered for playback.
+ * @return Buffered byte count.
+ */
 int AudioService::bufferedPlaybackBytes() const {
   if (!takePlaybackLock()) {
     return 0;
@@ -348,6 +426,10 @@ int AudioService::bufferedPlaybackBytes() const {
   return bytes;
 }
 
+/**
+ * @brief Whether playback of the current turn has been marked started.
+ * @return True after markPlaybackStarted() has been called for the turn.
+ */
 bool AudioService::playbackStarted() const {
   if (!takePlaybackLock()) {
     return false;
@@ -357,6 +439,9 @@ bool AudioService::playbackStarted() const {
   return started;
 }
 
+/**
+ * @brief Mark the current playback turn as started and wake the task.
+ */
 void AudioService::markPlaybackStarted() {
   if (!takePlaybackLock()) {
     return;
@@ -366,11 +451,19 @@ void AudioService::markPlaybackStarted() {
   wakePlaybackTask();
 }
 
+/**
+ * @brief Nudge the playback task to drain the next chunk.
+ * @return True when playback is not yet idle.
+ */
 bool AudioService::advancePlayback() {
   wakePlaybackTask();
   return !playbackIdle();
 }
 
+/**
+ * @brief Whether a speaker chunk is currently in flight on the I2S bus.
+ * @return True when a chunk is being written.
+ */
 bool AudioService::speakerBusy() const {
   if (!takePlaybackLock()) {
     return false;
@@ -380,6 +473,10 @@ bool AudioService::speakerBusy() const {
   return busy;
 }
 
+/**
+ * @brief Whether playback has nothing left to send and nothing in flight.
+ * @return True when both the queue is empty and no chunk is mid-write.
+ */
 bool AudioService::playbackIdle() const {
   if (!takePlaybackLock()) {
     return true;
@@ -389,6 +486,9 @@ bool AudioService::playbackIdle() const {
   return idle;
 }
 
+/**
+ * @brief Discard queued audio and clear playback state immediately.
+ */
 void AudioService::stopPlayback() {
   if (!takePlaybackLock()) {
     return;
@@ -402,6 +502,11 @@ void AudioService::stopPlayback() {
   wakePlaybackTask();
 }
 
+/**
+ * @brief (Re)initialize I2S and the ES8311 codec at the given sample rate.
+ * @param sampleRate Target sample rate in Hz.
+ * @return True when I2S and codec are ready at the requested rate.
+ */
 bool AudioService::configureAudio(int sampleRate) {
   if (!takeAudioLock()) {
     return false;
@@ -457,27 +562,47 @@ bool AudioService::configureAudio(int sampleRate) {
   return true;
 }
 
+/**
+ * @brief Acquire the recursive mutex guarding audio hardware access.
+ * @param timeout FreeRTOS wait timeout.
+ * @return True when the lock was acquired or the mutex is absent.
+ */
 bool AudioService::takeAudioLock(TickType_t timeout) {
   return !_audioMutex ||
          xSemaphoreTakeRecursive(_audioMutex, timeout) == pdTRUE;
 }
 
+/**
+ * @brief Release the audio hardware mutex.
+ */
 void AudioService::releaseAudioLock() {
   if (_audioMutex) {
     xSemaphoreGiveRecursive(_audioMutex);
   }
 }
 
+/**
+ * @brief Acquire the mutex guarding playback ring-buffer state.
+ * @param timeout FreeRTOS wait timeout.
+ * @return True when the lock was acquired or the mutex is absent.
+ */
 bool AudioService::takePlaybackLock(TickType_t timeout) const {
   return !_playbackMutex || xSemaphoreTake(_playbackMutex, timeout) == pdTRUE;
 }
 
+/**
+ * @brief Release the playback-state mutex.
+ */
 void AudioService::releasePlaybackLock() const {
   if (_playbackMutex) {
     xSemaphoreGive(_playbackMutex);
   }
 }
 
+/**
+ * @brief Launch the background FreeRTOS task that feeds the speaker.
+ * @return True when the task was created or already running.
+ */
 bool AudioService::startPlaybackTask() {
   if (_playbackTask) {
     return true;
@@ -494,6 +619,9 @@ bool AudioService::startPlaybackTask() {
   return true;
 }
 
+/**
+ * @brief Signal the background playback task to exit and wait briefly.
+ */
 void AudioService::stopPlaybackTask() {
   if (!_playbackTask) {
     return;
@@ -505,16 +633,26 @@ void AudioService::stopPlaybackTask() {
   }
 }
 
+/**
+ * @brief Wake the background playback task via its binary semaphore.
+ */
 void AudioService::wakePlaybackTask() {
   if (_playbackWake) {
     xSemaphoreGive(_playbackWake);
   }
 }
 
+/**
+ * @brief FreeRTOS entry point that forwards into playbackTaskLoop().
+ * @param ctx AudioService instance pointer cast from void*.
+ */
 void AudioService::playbackTaskTrampoline(void *ctx) {
   static_cast<AudioService *>(ctx)->playbackTaskLoop();
 }
 
+/**
+ * @brief Main loop of the background playback task.
+ */
 void AudioService::playbackTaskLoop() {
   while (_playbackTaskRunning) {
     xSemaphoreTake(_playbackWake, pdMS_TO_TICKS(20));
@@ -526,6 +664,10 @@ void AudioService::playbackTaskLoop() {
   vTaskDelete(nullptr);
 }
 
+/**
+ * @brief Pop the next queued chunk and write it to the speaker.
+ * @return True when a chunk was sent successfully.
+ */
 bool AudioService::playAvailableChunk() {
   if (!takePlaybackLock()) {
     return false;
@@ -591,6 +733,11 @@ bool AudioService::playAvailableChunk() {
   return ok;
 }
 
+/**
+ * @brief Synthesize and play a sequence of notes synchronously.
+ * @param sequence Space- or comma-separated tokens like "C5:120 E5:80".
+ * @return True when at least one note was played.
+ */
 bool AudioService::playToneSequence(const String &sequence) {
   if (sequence.isEmpty()) {
     return false;

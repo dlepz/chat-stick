@@ -11,8 +11,14 @@
 using namespace websockets;
 
 namespace {
-// Decode a standard base64 string into `out`. Returns the decoded byte count,
-// or -1 if the input is malformed. Tolerates whitespace in the input.
+/**
+ * @brief Decode a standard base64 string into a byte buffer.
+ * @param in Pointer to the base64 input characters.
+ * @param inLen Number of input characters.
+ * @param out Output buffer that receives the decoded bytes.
+ * @param outCap Capacity of @p out in bytes.
+ * @return Number of decoded bytes, or -1 if the input is malformed.
+ */
 int decodeBase64(const char *in, size_t inLen, uint8_t *out, size_t outCap) {
   static const int8_t T[256] = {
       // build table at runtime once below
@@ -48,8 +54,18 @@ int decodeBase64(const char *in, size_t inLen, uint8_t *out, size_t outCap) {
   return (int)outLen;
 }
 
+/**
+ * @brief Whether a URL uses the https scheme.
+ * @param url URL to inspect.
+ * @return True when the URL begins with "https://".
+ */
 bool urlUsesHttps(const String &url) { return url.startsWith("https://"); }
 
+/**
+ * @brief Strip any scheme prefix and path from a configured endpoint host.
+ * @param rawHost Host string as configured in ServerEndpoint::host.
+ * @return Bare hostname (still possibly including a :port suffix).
+ */
 String stripEndpointScheme(const char *rawHost) {
   String host = rawHost ? String(rawHost) : String("");
   if (host.startsWith("http://")) {
@@ -69,6 +85,11 @@ String stripEndpointScheme(const char *rawHost) {
   return host;
 }
 
+/**
+ * @brief Resolve the hostname (without scheme or port) used to dial an endpoint.
+ * @param endpoint Endpoint configuration.
+ * @return Host string suitable for WebSocket or HTTP connection.
+ */
 String endpointHostForConnection(const ServerEndpoint &endpoint) {
   String host = stripEndpointScheme(endpoint.host);
   const int colonIndex = host.lastIndexOf(':');
@@ -87,6 +108,11 @@ String endpointHostForConnection(const ServerEndpoint &endpoint) {
   return host;
 }
 
+/**
+ * @brief Pick "http" or "https" for an endpoint based on its host and port.
+ * @param endpoint Endpoint configuration.
+ * @return Scheme literal "http" or "https".
+ */
 const char *httpSchemeForEndpoint(const ServerEndpoint &endpoint) {
   const String rawHost = endpoint.host ? String(endpoint.host) : String("");
   if (rawHost.startsWith("https://")) {
@@ -98,10 +124,20 @@ const char *httpSchemeForEndpoint(const ServerEndpoint &endpoint) {
   return endpoint.port == 443 ? "https" : "http";
 }
 
+/**
+ * @brief Pick "ws" or "wss" for an endpoint based on its HTTP scheme.
+ * @param endpoint Endpoint configuration.
+ * @return Scheme literal "ws" or "wss".
+ */
 const char *wsSchemeForEndpoint(const ServerEndpoint &endpoint) {
   return strcmp(httpSchemeForEndpoint(endpoint), "https") == 0 ? "wss" : "ws";
 }
 
+/**
+ * @brief Look up a pinned CA certificate for an https URL.
+ * @param url Full URL to dial.
+ * @return CA certificate string, or nullptr when no matching endpoint is found.
+ */
 const char *caCertForUrl(const String &url) {
   for (int i = 0; i < SERVER_ENDPOINT_COUNT; i++) {
     const ServerEndpoint &endpoint = SERVER_ENDPOINTS[i];
@@ -115,11 +151,21 @@ const char *caCertForUrl(const String &url) {
   return nullptr;
 }
 
+/**
+ * @brief Format the most recent OTA error from the Update library.
+ * @return Error string, or "unknown update error" when none is reported.
+ */
 String updateError() {
   const char *error = Update.errorString();
   return error && error[0] ? String(error) : String("unknown update error");
 }
 
+/**
+ * @brief Stream an OTA payload through the Update library to completion.
+ * @param http Active HTTP client positioned at the firmware download.
+ * @param outError Receives a human-readable error message on failure.
+ * @return True when the firmware was written, ended, and finished cleanly.
+ */
 bool runFirmwareUpdateDownload(HTTPClient &http, String &outError) {
   const int statusCode = http.GET();
   if (statusCode != HTTP_CODE_OK) {
@@ -174,6 +220,10 @@ bool runFirmwareUpdateDownload(HTTPClient &http, String &outError) {
 }
 } // namespace
 
+/**
+ * @brief Store the callback bundle and wire up WebSocket event handlers.
+ * @param callbacks Callback hooks for session events and tool actions.
+ */
 void LiveSessionService::init(const LiveSessionCallbacks &callbacks) {
   _callbacks = callbacks;
   _ws.onMessage([this](WebsocketsMessage msg) { handleMessage(msg); });
@@ -181,6 +231,9 @@ void LiveSessionService::init(const LiveSessionCallbacks &callbacks) {
       [this](WebsocketsEvent event, String data) { handleEvent(event, data); });
 }
 
+/**
+ * @brief Open the WebSocket to the next server endpoint in rotation.
+ */
 void LiveSessionService::connect() {
   _activeServerIndex = _nextServerIndex;
   const ServerEndpoint &endpoint = SERVER_ENDPOINTS[_nextServerIndex];
@@ -219,6 +272,9 @@ void LiveSessionService::connect() {
   }
 }
 
+/**
+ * @brief Close the active WebSocket connection if one is open.
+ */
 void LiveSessionService::disconnect() {
   if (_ws.available()) {
     _ws.close();
@@ -226,6 +282,10 @@ void LiveSessionService::disconnect() {
   _connected = false;
 }
 
+/**
+ * @brief Bias the next connect attempt toward a specific server endpoint.
+ * @param endpointIndex Index into SERVER_ENDPOINTS.
+ */
 void LiveSessionService::setPreferredEndpointIndex(int endpointIndex) {
   if (endpointIndex < 0 || endpointIndex >= SERVER_ENDPOINT_COUNT) {
     return;
@@ -233,12 +293,19 @@ void LiveSessionService::setPreferredEndpointIndex(int endpointIndex) {
   _nextServerIndex = endpointIndex;
 }
 
+/**
+ * @brief Pump the WebSocket client to drive callbacks.
+ */
 void LiveSessionService::poll() {
   if (_connected) {
     _ws.poll();
   }
 }
 
+/**
+ * @brief Reconnect when disconnected and reconnects are currently allowed.
+ * @param enabled Whether reconnect behavior is currently enabled.
+ */
 void LiveSessionService::reconnectIfNeeded(bool enabled) {
   if (_connected || !enabled) {
     return;
@@ -253,6 +320,10 @@ void LiveSessionService::reconnectIfNeeded(bool enabled) {
   connect();
 }
 
+/**
+ * @brief Human-readable label for the currently active endpoint.
+ * @return "dev" for the local worker, "prod" otherwise, or "no server".
+ */
 String LiveSessionService::activeEndpointLabel() const {
   if (_activeServerIndex < 0 || _activeServerIndex >= SERVER_ENDPOINT_COUNT) {
     return "no server";
@@ -261,14 +332,33 @@ String LiveSessionService::activeEndpointLabel() const {
   return _activeServerIndex == 0 ? "dev" : "prod";
 }
 
+/**
+ * @brief Send a start-of-turn JSON message to the server.
+ * @return True when the message was sent.
+ */
 bool LiveSessionService::sendStart() { return _ws.send("{\"type\":\"start\"}"); }
 
+/**
+ * @brief Send an end-of-turn JSON message to the server.
+ * @return True when the message was sent.
+ */
 bool LiveSessionService::sendStop() { return _ws.send("{\"type\":\"stop\"}"); }
 
+/**
+ * @brief Send a chunk of raw microphone PCM as a binary WebSocket frame.
+ * @param data PCM samples.
+ * @param len Number of bytes to send.
+ * @return True when the frame was queued to the socket.
+ */
 bool LiveSessionService::sendAudio(const int16_t *data, size_t len) {
   return _ws.sendBinary(reinterpret_cast<const char *>(data), len);
 }
 
+/**
+ * @brief Fetch the last assistant message for the current chat from the server.
+ * @param outMessage Receives the last assistant message text.
+ * @return True when a message was retrieved.
+ */
 bool LiveSessionService::fetchLastAssistantMessage(String &outMessage) {
   outMessage = "";
   if (_chatId.isEmpty()) {
@@ -310,6 +400,13 @@ bool LiveSessionService::fetchLastAssistantMessage(String &outMessage) {
       });
 }
 
+/**
+ * @brief Fetch recent conversation summaries for this device.
+ * @param outEntries Output array for summary entries.
+ * @param maxEntries Capacity of @p outEntries.
+ * @param outCount Receives the number of entries written.
+ * @return True when the server returned a valid history payload.
+ */
 bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries[],
                                                   int maxEntries,
                                                   int &outCount) {
@@ -357,6 +454,11 @@ bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries
       });
 }
 
+/**
+ * @brief Ask the server whether a newer firmware build is available.
+ * @param outInfo Receives firmware update metadata.
+ * @return True when the server responded with a parseable payload.
+ */
 bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
   outInfo = FirmwareUpdateInfo{};
 
@@ -391,6 +493,12 @@ bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
       });
 }
 
+/**
+ * @brief Download an OTA firmware payload and apply it via the Update library.
+ * @param downloadUrl URL of the OTA binary.
+ * @param outError Receives a human-readable error message on failure.
+ * @return True when the update was installed successfully.
+ */
 bool LiveSessionService::downloadAndApplyFirmwareUpdate(
     const String &downloadUrl, String &outError) {
   outError = "";
@@ -438,6 +546,11 @@ bool LiveSessionService::downloadAndApplyFirmwareUpdate(
   return ok;
 }
 
+/**
+ * @brief React to WebSocket lifecycle events.
+ * @param event Lifecycle event from the WebSocket client.
+ * @param data Event-specific payload (e.g. close reason).
+ */
 void LiveSessionService::handleEvent(WebsocketsEvent event, String data) {
   switch (event) {
   case WebsocketsEvent::ConnectionOpened:
@@ -463,6 +576,10 @@ void LiveSessionService::handleEvent(WebsocketsEvent event, String data) {
   }
 }
 
+/**
+ * @brief Dispatch an inbound WebSocket message to the appropriate callback.
+ * @param msg Inbound message (binary audio or JSON control frame).
+ */
 void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   if (_callbacks.onActivity) {
     _callbacks.onActivity();
@@ -638,6 +755,10 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 }
 
+/**
+ * @brief Execute a device-side tool call and send the response back.
+ * @param doc Parsed tool-call JSON payload from the server.
+ */
 void LiveSessionService::handleToolCall(const JsonDocument &doc) {
   const char *name = doc["name"];
   const char *id = doc["id"];
@@ -698,6 +819,12 @@ void LiveSessionService::handleToolCall(const JsonDocument &doc) {
   sendToolResponse(name, id, result);
 }
 
+/**
+ * @brief Serialize and send a tool response back to the server.
+ * @param name Tool name being responded to.
+ * @param id Tool call identifier the server provided.
+ * @param result Serialized tool result payload.
+ */
 void LiveSessionService::sendToolResponse(const char *name, const char *id,
                                           const String &result) {
   JsonDocument response;
@@ -712,6 +839,11 @@ void LiveSessionService::sendToolResponse(const char *name, const char *id,
   Log::server("Tool", "%s -> %s", name, result.c_str());
 }
 
+/**
+ * @brief Build the HTTP base URL for a configured server endpoint.
+ * @param endpoint Endpoint configuration.
+ * @return Base URL like "https://host" or "http://host:port".
+ */
 String LiveSessionService::endpointBaseUrl(const ServerEndpoint &endpoint) const {
   const char *scheme = httpSchemeForEndpoint(endpoint);
   String url = String(scheme) + "://" + endpointHostForConnection(endpoint);
@@ -721,6 +853,14 @@ String LiveSessionService::endpointBaseUrl(const ServerEndpoint &endpoint) const
   return url;
 }
 
+/**
+ * @brief Issue a single GET request using the right secure/insecure client.
+ * @param endpoint Endpoint associated with @p url for CA pinning.
+ * @param url Full URL to request.
+ * @param statusCode Receives the HTTP status code on completion.
+ * @param body Receives the response body when one is available.
+ * @return True when the request completed at the HTTP layer.
+ */
 bool LiveSessionService::performEndpointGet(const ServerEndpoint &endpoint,
                                             const String &url,
                                             int &statusCode,
@@ -764,6 +904,13 @@ bool LiveSessionService::performEndpointGet(const ServerEndpoint &endpoint,
   return true;
 }
 
+/**
+ * @brief Iterate configured endpoints, GET each URL, and let the caller decide.
+ * @param logAction Phrase logged before each URL (e.g. "fetching from").
+ * @param buildUrl Builds the URL to request for the current endpoint.
+ * @param handleResponse Inspects each response and reports success/continue/stop.
+ * @return True when @p handleResponse accepted a response.
+ */
 bool LiveSessionService::getFromConfiguredEndpoints(
     const char *logAction, const EndpointUrlBuilder &buildUrl,
     const HttpGetHandler &handleResponse) {
@@ -794,6 +941,10 @@ bool LiveSessionService::getFromConfiguredEndpoints(
   return false;
 }
 
+/**
+ * @brief Remember a successful endpoint and notify listeners.
+ * @param endpointIndex Index into SERVER_ENDPOINTS.
+ */
 void LiveSessionService::rememberSuccessfulEndpoint(int endpointIndex) {
   if (endpointIndex < 0 || endpointIndex >= SERVER_ENDPOINT_COUNT) {
     return;

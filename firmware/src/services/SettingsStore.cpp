@@ -3,6 +3,9 @@
 #include "../Config.h"
 #include "../diag/Log.h"
 
+/**
+ * @brief Open NVS preferences and load persisted device settings.
+ */
 void SettingsStore::init() {
   _brightness = DEFAULT_BRIGHTNESS;
   _volume = DEFAULT_VOLUME;
@@ -34,6 +37,10 @@ void SettingsStore::init() {
               _voice.c_str(), _serverEndpointIndex);
 }
 
+/**
+ * @brief Persist a new screen brightness level.
+ * @param brightness Brightness level to save.
+ */
 void SettingsStore::setBrightness(int brightness) {
   _brightness = constrain(brightness, 0, 255);
   if (_ready) {
@@ -41,6 +48,10 @@ void SettingsStore::setBrightness(int brightness) {
   }
 }
 
+/**
+ * @brief Persist a new speaker volume level.
+ * @param volume Volume level to save.
+ */
 void SettingsStore::setVolume(int volume) {
   _volume = constrain(volume, 0, 255);
   if (_ready) {
@@ -48,6 +59,10 @@ void SettingsStore::setVolume(int volume) {
   }
 }
 
+/**
+ * @brief Persist the active conversation id.
+ * @param chatId Conversation identifier to save.
+ */
 void SettingsStore::setChatId(const String &chatId) {
   _chatId = chatId;
   if (_ready) {
@@ -55,6 +70,9 @@ void SettingsStore::setChatId(const String &chatId) {
   }
 }
 
+/**
+ * @brief Remove any persisted conversation id.
+ */
 void SettingsStore::clearChatId() {
   _chatId = "";
   if (_ready) {
@@ -62,6 +80,10 @@ void SettingsStore::clearChatId() {
   }
 }
 
+/**
+ * @brief Persist the selected voice identifier.
+ * @param voice Voice identifier to save; empty values fall back to the default.
+ */
 void SettingsStore::setVoice(const String &voice) {
   _voice = voice.isEmpty() ? String(kDefaultVoice) : voice;
   if (_ready) {
@@ -69,6 +91,10 @@ void SettingsStore::setVoice(const String &voice) {
   }
 }
 
+/**
+ * @brief Persist the preferred server endpoint index.
+ * @param endpointIndex Index into SERVER_ENDPOINTS to save.
+ */
 void SettingsStore::setServerEndpointIndex(int endpointIndex) {
   _serverEndpointIndex = max(0, endpointIndex);
   if (_ready) {
@@ -76,6 +102,9 @@ void SettingsStore::setServerEndpointIndex(int endpointIndex) {
   }
 }
 
+/**
+ * @brief Clear persisted settings and restore in-memory defaults.
+ */
 void SettingsStore::reset() {
   _brightness = DEFAULT_BRIGHTNESS;
   _volume = DEFAULT_VOLUME;
