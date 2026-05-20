@@ -54,8 +54,17 @@ private:
   int _externalSpeakerGain = 24;
   int _volume = DEFAULT_VOLUME;
 
+  float _hpPrevX = 0.0f;
+  float _hpPrevY = 0.0f;
+  float _eqX1 = 0.0f;
+  float _eqX2 = 0.0f;
+  float _eqY1 = 0.0f;
+  float _eqY2 = 0.0f;
+
   void beginSpeaker();
   void compactPlaybackBuffer();
   bool playAvailableChunk();
   bool playToneSequence(const String &sequence);
+  void applyInternalSpeakerEq(int16_t *samples, int count);
+  void resetEqState();
 };

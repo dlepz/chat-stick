@@ -12,6 +12,13 @@ import {
 	writeFile,
 } from './files'
 import { generateAndProcessImage } from './image-gen'
+import {
+	type ImageSummary,
+	getImageById,
+	listRecentImages,
+	recordImage,
+	searchImages,
+} from './images'
 
 interface Env extends EmailEnv {
 	GEMINI_API_KEY: string
@@ -189,7 +196,11 @@ function buildSystemInstructionText({
 		'- set_external_speaker_gain: tune loudness of the external SPK2 HAT (1–64, default 24)',
 		'- set_voice: change the voice used for speech output',
 		'- show_text: display a message on the screen',
-		'- show_image: generate and display an image on the screen (1-bit dithered, ~10s to generate). Use only when the user explicitly asks for a picture, drawing, or image. After calling, give a brief one-line acknowledgement like "Sure, here it comes" or "Coming right up" — do NOT explain how image generation works, what the prompt was, or that it takes a moment. The device shows a pulse animation; the user does not need narration.',
+		'- show_image: generate and display an image on the screen (1-bit dithered, ~10s to generate). Use only when the user explicitly asks for a picture, drawing, or image. After calling, give a brief one-line acknowledgement like "Sure, here it comes" or "Coming right up" — do NOT explain how image generation works, what the prompt was, or that it takes a moment. The device shows a pulse animation; the user does not need narration. Past images are saved automatically and can be recalled later.',
+		'- list_recent_images: list the most recently generated images for this device (id + prompt + timestamp). Use when the user asks "what was that picture from earlier?" or wants to revisit a recent visual.',
+		'- search_images: keyword search across past image prompts. Use when the user references an old image by topic ("the mountain one", "that cat I asked for") and you need to find it.',
+		'- show_saved_image: re-display a previously generated image on the device by id. Use after list_recent_images / search_images when the user wants to see it again — instantly, no regeneration.',
+		'- set_timer / list_timers / cancel_timer / extend_timer: manage countdown timers on the device (persist across sessions and reboots; the device beeps when one expires). Each timer has a stable numeric `id`. When the user refers to a timer ambiguously ("the shorter one", "the first one I set", "the eggs timer"), call list_timers, pick the matching entry yourself based on its name / remaining_seconds / created_at_epoch, and pass that `id` to cancel_timer / extend_timer. Do not invent selector keywords or ask the user to disambiguate — reason from the list and act.',
 		'- play_sound: play a named device sound effect',
 		'- play_melody: play a short note sequence on the device speaker',
 		'- power_off: shut the device down',
@@ -207,6 +218,13 @@ function buildSystemInstructionText({
 		'',
 		'You have a search_docs tool that searches an indexed knowledge base.',
 		'Use it when the user asks about topics that may be covered in the indexed documents.',
+		'',
+		'## Timers:',
+		'- The device is the source of truth for timer state — call list_timers before describing remaining time, never guess.',
+		'- "Set a timer for two minutes" → set_timer(duration_seconds=120). "Set the eggs timer for five minutes" → set_timer(duration_seconds=300, name="eggs"). Acknowledge briefly: "Timer started" or "Eggs timer, 5 minutes."',
+		'- For "add five minutes" call extend_timer(delta_seconds=300). For "cancel the timer" call cancel_timer (no name) if exactly one is running, otherwise list_timers and ask which.',
+		'- "Cancel all timers" → cancel_timer(all=true).',
+		'- When a timer expires the device plays a chime and shows a bell — the user dismisses it on the device, you don\'t need to do anything.',
 		'',
 		'## Behavior examples:',
 		'- If the user says "set the volume to 80", call set_volume with level 80 and say "Done."',
@@ -526,7 +544,7 @@ export class LiveSession {
 										{
 											name: 'show_image',
 											description:
-												"Generate and display an image on the device screen as a 1-bit dithered bitmap. Provide a detailed visual description. Use only when the user explicitly asks for a picture, drawing, or visual — examples: 'a cute cartoon cat sitting', 'a simple mountain landscape'. Generation takes ~10 seconds; you can keep talking while it generates and the device shows a pulse animation. The image and any text from this turn are paged together.",
+												"Generate and display an image on the device screen as a 1-bit dithered bitmap. Provide a detailed visual description. Use only when the user explicitly asks for a picture, drawing, or visual — examples: 'a cute cartoon cat sitting', 'a simple mountain landscape'. Generation takes ~10 seconds; you can keep talking while it generates and the device shows a pulse animation. The image and any text from this turn are paged together. Past images are saved automatically; use list_recent_images / search_images / show_saved_image to recall them.",
 											parameters: {
 												type: 'OBJECT',
 												properties: {
@@ -537,6 +555,139 @@ export class LiveSession {
 													},
 												},
 												required: ['prompt'],
+											},
+										},
+										{
+											name: 'list_recent_images',
+											description:
+												'List the most recently generated images for this device. Returns id, prompt, and creation time per image. Use when the user wants to revisit recent visuals or you need an id for show_saved_image.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {
+													limit: {
+														type: 'INTEGER',
+														description:
+															'How many recent images to return. Default 10, max 50.',
+													},
+												},
+											},
+										},
+										{
+											name: 'search_images',
+											description:
+												"Search past image prompts for this device by keyword (case-insensitive substring). Returns matching ids, prompts, and snippets. Use when the user refers to an old image by topic — e.g. 'show me that mountain one again'.",
+											parameters: {
+												type: 'OBJECT',
+												properties: {
+													query: {
+														type: 'STRING',
+														description:
+															'Keyword or phrase to search for across past image prompts.',
+													},
+													limit: {
+														type: 'INTEGER',
+														description:
+															'Max number of matches to return. Default 10, max 50.',
+													},
+												},
+												required: ['query'],
+											},
+										},
+										{
+											name: 'show_saved_image',
+											description:
+												'Re-display a previously generated image on the device, identified by id (from list_recent_images or search_images). Instant — no regeneration. Use when the user wants to see a past image again.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {
+													id: {
+														type: 'INTEGER',
+														description:
+															'The image id returned by list_recent_images or search_images.',
+													},
+												},
+												required: ['id'],
+											},
+										},
+										{
+											name: 'set_timer',
+											description:
+												'Start a countdown timer on the device. The device beeps an alarm when the timer expires. Timers persist across chat sessions and reboots. Optionally give the timer a short name so the user can refer to it later ("the eggs timer"). Returns the resulting timer list. Always pass the duration in seconds — for "2 minutes" pass 120, "an hour and a half" pass 5400.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {
+													duration_seconds: {
+														type: 'INTEGER',
+														description:
+															'Timer length in whole seconds. Minimum 1, maximum 86400 (24 hours).',
+													},
+													name: {
+														type: 'STRING',
+														description:
+															'Optional short label, e.g. "eggs", "laundry". Lowercase preferred. Must be unique among active timers; omit for an unnamed timer.',
+													},
+												},
+												required: ['duration_seconds'],
+											},
+										},
+										{
+											name: 'list_timers',
+											description:
+												'List all timers currently running on the device. Each entry includes id (stable numeric handle for cancel_timer / extend_timer), name, duration_seconds, remaining_seconds, and created_at_epoch. Call this whenever the user asks about active timers ("what timers are running?", "how much is left?", "what\'s on the eggs timer?"), or whenever you need an id to act on a specific timer. The device is the source of truth — do not rely on past values.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {},
+											},
+										},
+										{
+											name: 'cancel_timer',
+											description:
+												'Cancel a timer. Pass `id` (preferred; obtained from list_timers) or `name` (case-insensitive). When only one timer is active you may omit both. Set all=true to cancel everything. If the user refers to a timer ambiguously (e.g. "the shorter one"), call list_timers first, pick the right entry yourself, then pass its id. Returns the resulting timer list.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {
+													id: {
+														type: 'INTEGER',
+														description:
+															'Stable numeric id of the timer to cancel, from list_timers. Preferred over name when the user refers to a timer indirectly.',
+													},
+													name: {
+														type: 'STRING',
+														description:
+															'Name of the timer to cancel. Case-insensitive. Use when the user named the timer explicitly. Ignored if id is provided.',
+													},
+													all: {
+														type: 'BOOLEAN',
+														description:
+															'If true, cancel every active timer regardless of id/name.',
+													},
+												},
+											},
+										},
+										{
+											name: 'extend_timer',
+											description:
+												'Adjust a running timer by adding or subtracting seconds. Positive values extend, negative values shorten. Pass `id` (preferred; obtained from list_timers) or `name`. When only one timer is active you may omit both. Use this for "add five more minutes" (delta_seconds=300) or "take a minute off the eggs timer" (delta_seconds=-60, name="eggs"). For ambiguous references, call list_timers first and pass the chosen id. Returns the resulting timer list.',
+											parameters: {
+												type: 'OBJECT',
+												properties: {
+													delta_seconds: {
+														type: 'INTEGER',
+														description:
+															'Seconds to add (positive) or subtract (negative). Cannot drop the remaining time below 1 second.',
+													},
+													id: {
+														type: 'INTEGER',
+														description:
+															'Stable numeric id of the timer to adjust, from list_timers. Preferred over name when the user refers to a timer indirectly.',
+													},
+													name: {
+														type: 'STRING',
+														description:
+															'Name of the timer to adjust. Ignored if id is provided.',
+													},
+												},
+												required: ['delta_seconds'],
 											},
 										},
 										{
@@ -1264,6 +1415,28 @@ export class LiveSession {
 								}
 							)
 						}
+				} else if (
+						call.name === 'list_recent_images' ||
+						call.name === 'search_images' ||
+						call.name === 'show_saved_image'
+					) {
+						const response = await this.handleImageTool(call.name, call.args)
+						const payload = JSON.stringify({
+							toolResponse: {
+								functionResponses: [
+									{ name: call.name, id: call.id, response },
+								],
+							},
+						})
+						if (this.geminiWs) this.geminiWs.send(payload)
+						await this.logToolCall({
+							name: call.name,
+							args: call.args,
+							result: response,
+							handledBy: 'server',
+							status: 'error' in (response as Record<string, unknown>) ? 'error' : 'ok',
+							durationMs: Date.now() - startMs,
+						})
 				} else if (call.name === 'new_conversation' || call.name === 'new_chat') {
 						// Handle server-side: close Gemini session and open a fresh one
 						console.log('[Gemini] Resetting conversation')
@@ -1332,21 +1505,54 @@ export class LiveSession {
 			return
 		}
 
-		// Persist the dithered PNG to R2 if STORAGE is bound. Best-effort; failure
-		// here doesn't block sending to the device.
-		let imageKey: string | undefined
+		// Persist the dithered PNG (what the device shows) and the original full-color
+		// PNG (for archival / future re-dither) to R2 if STORAGE is bound. Best-effort;
+		// failure here doesn't block sending to the device.
+		let ditheredKey: string | undefined
+		let originalKey: string | undefined
 		if (this.env.STORAGE) {
 			const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-			imageKey = `chat-stick/assets/${this.deviceId}/images/${turnChatId}-${stamp}.png`
+			const basePath = `chat-stick/assets/${this.deviceId}/images/${turnChatId}-${stamp}`
+			ditheredKey = `${basePath}.png`
+			originalKey = `${basePath}-original.png`
 			try {
-				await this.env.STORAGE.put(imageKey, result.ditheredPng, {
+				await this.env.STORAGE.put(ditheredKey, result.ditheredPng, {
 					httpMetadata: { contentType: 'image/png' },
 				})
-				console.log(`[ImageGen] Stored dithered PNG at ${imageKey}`)
+				console.log(`[ImageGen] Stored dithered PNG at ${ditheredKey}`)
 			} catch (err) {
-				console.error('[ImageGen] R2 upload failed:', err)
-				imageKey = undefined
+				console.error('[ImageGen] R2 upload (dithered) failed:', err)
+				ditheredKey = undefined
 			}
+			try {
+				await this.env.STORAGE.put(originalKey, result.originalPng, {
+					httpMetadata: { contentType: 'image/png' },
+				})
+				console.log(`[ImageGen] Stored original PNG at ${originalKey}`)
+			} catch (err) {
+				console.error('[ImageGen] R2 upload (original) failed:', err)
+				originalKey = undefined
+			}
+		}
+
+		// Record the image in D1 so the model can recall it later by prompt search
+		// or re-display by id. Packed bits are kept inline so re-display is a single
+		// DB read with no R2 round-trip or PNG decode.
+		let imageId: number | undefined
+		try {
+			imageId = await recordImage(this.env.DB, {
+				deviceId: this.deviceId,
+				chatId: turnChatId || null,
+				prompt,
+				enhancedPrompt: result.enhancedPrompt,
+				ditheredKey: ditheredKey ?? null,
+				originalKey: originalKey ?? null,
+				packedBits: result.data,
+				width: result.width,
+				height: result.height,
+			})
+		} catch (err) {
+			console.error('[ImageGen] Failed to record image in D1:', err)
 		}
 
 		this.sendToDevice({
@@ -1354,13 +1560,20 @@ export class LiveSession {
 			data: result.data,
 			width: result.width,
 			height: result.height,
-			...(imageKey ? { key: imageKey } : {}),
+			...(ditheredKey ? { key: ditheredKey } : {}),
+			...(imageId ? { image_id: imageId } : {}),
 		})
 
 		await this.logToolCall({
 			name: toolName,
 			args: toolArgs,
-			result: { width: result.width, height: result.height, key: imageKey ?? null },
+			result: {
+				width: result.width,
+				height: result.height,
+				key: ditheredKey ?? null,
+				original_key: originalKey ?? null,
+				image_id: imageId ?? null,
+			},
 			handledBy: 'server',
 			durationMs: Date.now() - startMs,
 		})
@@ -1553,6 +1766,68 @@ export class LiveSession {
 			}
 			default:
 				return { error: `unknown file tool: ${name}` }
+		}
+	}
+
+	private async handleImageTool(
+		name: string,
+		args: Record<string, unknown>
+	): Promise<Record<string, unknown>> {
+		const formatSummary = (img: ImageSummary) => ({
+			id: img.id,
+			prompt: img.prompt,
+			created_at: img.created_at,
+			chat_id: img.chat_id,
+			width: img.width,
+			height: img.height,
+		})
+
+		switch (name) {
+			case 'list_recent_images': {
+				const rawLimit = args.limit
+				const limit = typeof rawLimit === 'number' ? rawLimit : 10
+				const images = await listRecentImages(this.env.DB, this.deviceId, limit)
+				return { images: images.map(formatSummary), count: images.length }
+			}
+			case 'search_images': {
+				const query = typeof args.query === 'string' ? args.query : ''
+				if (!query.trim()) return { error: 'query is required' }
+				const rawLimit = args.limit
+				const limit = typeof rawLimit === 'number' ? rawLimit : 10
+				const hits = await searchImages(this.env.DB, this.deviceId, query, limit)
+				return {
+					hits: hits.map((hit) => ({
+						...formatSummary(hit),
+						snippet: hit.snippet,
+						match_count: hit.match_count,
+					})),
+					count: hits.length,
+				}
+			}
+			case 'show_saved_image': {
+				const idArg = args.id ?? (args as { image_id?: unknown }).image_id
+				const id = typeof idArg === 'number' ? idArg : Number(idArg)
+				if (!Number.isFinite(id) || id <= 0) return { error: 'id is required' }
+				const image = await getImageById(this.env.DB, this.deviceId, id)
+				if (!image) return { error: `image not found: ${id}` }
+				this.sendToDevice({
+					type: 'show_image',
+					data: image.packed_bits,
+					width: image.width,
+					height: image.height,
+					image_id: image.id,
+					...(image.dithered_key ? { key: image.dithered_key } : {}),
+				})
+				return {
+					result: 'ok',
+					id: image.id,
+					prompt: image.prompt,
+					width: image.width,
+					height: image.height,
+				}
+			}
+			default:
+				return { error: `unknown image tool: ${name}` }
 		}
 	}
 

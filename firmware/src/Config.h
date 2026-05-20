@@ -69,6 +69,15 @@ constexpr gpio_num_t BUTTON_B_PIN = GPIO_NUM_12;
 constexpr const char *NTP_SERVER = "pool.ntp.org";
 constexpr const char *LOCAL_TZ = "PST8PDT,M3.2.0,M11.1.0";
 
+// ============= Timers / Alarms =============
+constexpr int MAX_TIMERS = 4;
+constexpr int TIMER_NAME_MAX_LEN = 24;
+constexpr int TIMER_MIN_DURATION_SEC = 1;
+constexpr int TIMER_MAX_DURATION_SEC = 24 * 60 * 60; // 24 hours
+// `time(nullptr)` below this epoch is treated as "clock not yet synced",
+// so timers can't be created or fired blindly. ~2024-01-01 UTC.
+constexpr time_t TIMER_MIN_VALID_EPOCH = 1704067200;
+
 // ============= Power Management =============
 constexpr int CPU_ACTIVE_MHZ = 160;
 constexpr int CPU_IDLE_MHZ = 80;

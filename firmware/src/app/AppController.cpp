@@ -4,7 +4,26 @@
 #include <ArduinoJson.h>
 #include <M5Unified.h>
 #include <WiFi.h>
+#include <driver/rtc_io.h>
+#include <esp_sleep.h>
 #include <time.h>
+
+namespace {
+constexpr AppController::AlarmStep kAlarmPatternData[] = {
+    {1760, 90}, {2349, 90}, {1760, 90}, {2349, 90}, {1760, 200},
+    {0, 140},
+    {1760, 90}, {2349, 90}, {1760, 90}, {2349, 90}, {1760, 200},
+    {0, 2000},
+};
+constexpr int kAlarmPatternCount =
+    sizeof(kAlarmPatternData) / sizeof(kAlarmPatternData[0]);
+} // namespace
+
+const AppController::AlarmStep *AppController::alarmPattern() {
+  return kAlarmPatternData;
+}
+
+int AppController::alarmPatternLen() { return kAlarmPatternCount; }
 
 void AppController::setup() {
   Serial.begin(115200);
@@ -19,6 +38,13 @@ void AppController::setup() {
   tzset();
 
   _settings.init();
+  _timers.init();
+
+  const esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+  if (wakeCause == ESP_SLEEP_WAKEUP_TIMER || wakeCause == ESP_SLEEP_WAKEUP_EXT1) {
+    Serial.printf("[Boot] Wake from deep sleep cause=%d\n",
+                  static_cast<int>(wakeCause));
+  }
 
   const m5pm1_err_t pm1BeginRc = _pm1.begin(&M5.In_I2C);
   if (pm1BeginRc == M5PM1_OK) {
@@ -237,6 +263,16 @@ void AppController::setup() {
   callbacks.onVoiceChanged = [this](const String &voice) {
     _settings.setVoice(voice);
   };
+  callbacks.onSetTimer = [this](int duration, const String &name) {
+    return handleSetTimerTool(duration, name);
+  };
+  callbacks.onListTimers = [this]() { return handleListTimersTool(); };
+  callbacks.onCancelTimer = [this](const TimerRef &ref, bool all) {
+    return handleCancelTimerTool(ref, all);
+  };
+  callbacks.onExtendTimer = [this](int delta, const TimerRef &ref) {
+    return handleExtendTimerTool(delta, ref);
+  };
 
   _live.init(callbacks);
 
@@ -247,8 +283,17 @@ void AppController::setup() {
 
   renderIfNeeded();
 
-  connectNetworkStack();
-  renderIfNeeded();
+  // If a timer has already expired (e.g. we just woke from deep sleep on its
+  // deadline), enter the alarm state before bringing up the network — the
+  // trill needs the main loop to run, so we can't block on WiFi.
+  checkTimerExpiry();
+  if (_appState != AppState::Alarm) {
+    _networkStackStarted = true;
+    connectNetworkStack();
+    renderIfNeeded();
+  } else {
+    _bootHadExpiredAlarm = true;
+  }
 
   setCpuFrequencyMhz(CPU_ACTIVE_MHZ);
   Serial.printf("[Setup] CPU clock set to %lu MHz\n", getCpuFrequencyMhz());
@@ -300,12 +345,18 @@ void AppController::loop() {
   _live.reconnectIfNeeded(_wifi.isConnected() &&
                           _appState != AppState::Error);
 
+  checkTimerExpiry();
+
   handleButtons();
-  processRecording();
-  processPlayback();
-  processThinkingTimeout();
-  processPower();
-  processCaptivePortal();
+  if (_appState != AppState::Alarm) {
+    processRecording();
+    processPlayback();
+    processThinkingTimeout();
+    processPower();
+    processCaptivePortal();
+  } else {
+    serviceAlarmTrill();
+  }
   renderIfNeeded();
   delay(1);
 }
@@ -420,6 +471,10 @@ void AppController::retryAfterError() {
 }
 
 void AppController::performPowerOff() {
+  if (maybeDeepSleepUntilNextTimer()) {
+    return; // doesn't return — device deep-sleeps until next deadline
+  }
+
   Serial.println("[Power] Powering off");
   _live.disconnect();
   _wifi.disconnect();
@@ -430,6 +485,49 @@ void AppController::performPowerOff() {
     delay(200);
   }
   M5.Power.powerOff();
+}
+
+bool AppController::maybeDeepSleepUntilNextTimer() {
+  if (_timers.count() == 0) {
+    return false;
+  }
+
+  const time_t now = time(nullptr);
+  const time_t deadline = _timers.nextDeadline();
+  if (now < TIMER_MIN_VALID_EPOCH || deadline == 0) {
+    return false;
+  }
+
+  // If a timer has already lapsed, don't sleep — fire the alarm now.
+  if (deadline <= now) {
+    checkTimerExpiry();
+    return false;
+  }
+
+  const uint64_t sleepUs =
+      static_cast<uint64_t>(deadline - now) * 1000000ULL;
+
+  Serial.printf("[Power] Deep sleep %llu us until next timer\n",
+                static_cast<unsigned long long>(sleepUs));
+
+  _live.disconnect();
+  _wifi.disconnect();
+  _audio.stopPlayback();
+  M5.Display.setBrightness(0);
+  delay(100);
+
+  esp_sleep_enable_timer_wakeup(sleepUs);
+  // Wake on either button (active-low). Both pins are RTC-capable on ESP32-S3.
+  rtc_gpio_pullup_en(BUTTON_A_PIN);
+  rtc_gpio_pulldown_dis(BUTTON_A_PIN);
+  rtc_gpio_pullup_en(BUTTON_B_PIN);
+  rtc_gpio_pulldown_dis(BUTTON_B_PIN);
+  const uint64_t buttonMask =
+      (1ULL << BUTTON_A_PIN) | (1ULL << BUTTON_B_PIN);
+  esp_sleep_enable_ext1_wakeup(buttonMask, ESP_EXT1_WAKEUP_ANY_LOW);
+
+  esp_deep_sleep_start();
+  return true; // not reached
 }
 
 void AppController::clearToolText() {
@@ -447,6 +545,12 @@ void AppController::handleButtons() {
   const unsigned long now = millis();
   _buttonA.update(M5.BtnA.isPressed(), now);
   _buttonB.update(M5.BtnB.isPressed(), now);
+
+  if (_appState == AppState::Alarm) {
+    if (handleAlarmButtons()) {
+      return;
+    }
+  }
 
   if (_appState == AppState::ConfirmReset) {
     if (_buttonA.consumeClick()) {
@@ -954,6 +1058,13 @@ DisplayState AppController::buildDisplayState() const {
   DisplayState state;
   state.appState = _appState;
 
+  if (_appState == AppState::Alarm) {
+    state.alarmActive = true;
+    state.alarmTitle = _alarmTitle;
+    state.alarmDetail = _alarmDetail;
+    return state;
+  }
+
   const bool homeMenuVisible =
       _appRegion == AppRegion::Menu && _menuState == MenuState::Home;
   if (homeMenuVisible) {
@@ -1044,6 +1155,10 @@ String AppController::buildBodyText() const {
     default:
       return "Sorry, that didn't work.";
     }
+
+  case AppState::Alarm:
+    // Body text is unused — drawAlarm uses alarmTitle/alarmDetail directly.
+    return "";
   }
 
   return "";
@@ -1131,4 +1246,166 @@ const char *AppController::errorCategoryLabel() const {
   default:
     return "Error";
   }
+}
+
+void AppController::onTimersChanged() { _screenDirty = true; }
+
+void AppController::checkTimerExpiry() {
+  TimerRecord expired[kMaxExpiredPerWake];
+  const int n = _timers.harvestExpired(time(nullptr), expired, kMaxExpiredPerWake);
+  if (n <= 0) {
+    return;
+  }
+
+  // Detail line lists named timers only — for unnamed timers we just show the
+  // bell + "ALARM".
+  String namedDetail;
+  for (int i = 0; i < n; i++) {
+    if (expired[i].name.isEmpty()) continue;
+    if (!namedDetail.isEmpty()) namedDetail += ", ";
+    namedDetail += expired[i].name;
+  }
+  Serial.printf("[Timers] Expired count=%d names=\"%s\"\n", n, namedDetail.c_str());
+
+  if (_appState == AppState::Alarm) {
+    if (!namedDetail.isEmpty()) {
+      _alarmDetail = _alarmDetail.isEmpty()
+                         ? namedDetail
+                         : _alarmDetail + ", " + namedDetail;
+    }
+    _screenDirty = true;
+    return;
+  }
+  enterAlarmState(String("ALARM"), namedDetail);
+}
+
+void AppController::enterAlarmState(const String &title, const String &detail) {
+  _alarmReturnState =
+      _appState == AppState::Connecting ? AppState::Ready : _appState;
+  _alarmReturnStatus = _statusText;
+  _alarmTitle = title;
+  _alarmDetail = detail;
+  _alarmStepIndex = 0;
+  _alarmStepStartMs = millis();
+  _alarmStepInFlight = false;
+  _audio.stopPlayback();
+  if (_appState == AppState::Recording) {
+    _audio.stopRecording();
+    _live.sendStop();
+  }
+  // Bring display fully back if it had dimmed.
+  _powerManager.registerActivity();
+  M5.Display.setBrightness(_settings.brightness());
+
+  _appState = AppState::Alarm;
+  _appRegion = AppRegion::Chat;
+  _statusText = "Timer";
+  _errorText = "";
+  _startupChecklistVisible = false;
+  resetBodyPage();
+  _screenDirty = true;
+  Serial.printf("[Alarm] entered (%s)\n", detail.c_str());
+}
+
+void AppController::exitAlarmState() {
+  M5.Speaker.stop();
+  _alarmTitle = "";
+  _alarmDetail = "";
+  _alarmStepInFlight = false;
+  Serial.println("[Alarm] dismissed");
+
+  // If the alarm fired before we ever brought up the network (deep-sleep wake
+  // with an expired timer), start the network stack now.
+  if (!_networkStackStarted) {
+    _networkStackStarted = true;
+    setAppState(AppState::Connecting, "Starting...");
+    renderIfNeeded();
+    connectNetworkStack();
+    return;
+  }
+
+  setAppState(_alarmReturnState, _alarmReturnStatus);
+}
+
+void AppController::serviceAlarmTrill() {
+  if (_appState != AppState::Alarm) {
+    return;
+  }
+  const int patternLen = alarmPatternLen();
+  const AlarmStep *pattern = alarmPattern();
+  const unsigned long now = millis();
+  const AlarmStep &step = pattern[_alarmStepIndex];
+
+  if (!_alarmStepInFlight) {
+    if (step.freqHz > 0) {
+      M5.Speaker.tone(step.freqHz, step.durationMs);
+    }
+    _alarmStepStartMs = now;
+    _alarmStepInFlight = true;
+    return;
+  }
+
+  if (now - _alarmStepStartMs >= static_cast<unsigned long>(step.durationMs)) {
+    _alarmStepIndex = (_alarmStepIndex + 1) % patternLen;
+    _alarmStepInFlight = false;
+  }
+}
+
+bool AppController::handleAlarmButtons() {
+  if (_buttonA.consumePressed() || _buttonB.consumePressed()) {
+    _buttonA.clearEvents();
+    _buttonB.clearEvents();
+    exitAlarmState();
+    return true;
+  }
+  return false;
+}
+
+String AppController::handleSetTimerTool(int durationSeconds,
+                                         const String &name) {
+  TimerRecord created;
+  const TimerService::Result rc =
+      _timers.addTimer(static_cast<uint32_t>(max(0, durationSeconds)), name, created);
+  onTimersChanged();
+  return formatTimerSummary(time(nullptr)) +
+         (rc == TimerService::Result::Ok
+              ? String(" | started")
+              : String(" | error: ") + TimerService::describeResult(rc));
+}
+
+String AppController::handleListTimersTool() {
+  const time_t now = time(nullptr);
+  return _timers.describeAll(now);
+}
+
+String AppController::handleCancelTimerTool(const TimerRef &ref, bool all) {
+  if (all) {
+    const int n = _timers.cancelAll();
+    onTimersChanged();
+    return formatTimerSummary(time(nullptr)) + " | cancelled " + n + " timer(s)";
+  }
+  TimerRecord cancelled;
+  const TimerService::Result rc = _timers.cancel(ref, cancelled);
+  onTimersChanged();
+  return formatTimerSummary(time(nullptr)) +
+         (rc == TimerService::Result::Ok
+              ? String(" | cancelled ") +
+                    (cancelled.name.isEmpty() ? String("timer") : cancelled.name)
+              : String(" | error: ") + TimerService::describeResult(rc));
+}
+
+String AppController::handleExtendTimerTool(int deltaSeconds,
+                                            const TimerRef &ref) {
+  TimerRecord adjusted;
+  const TimerService::Result rc = _timers.extend(ref, deltaSeconds, adjusted);
+  onTimersChanged();
+  return formatTimerSummary(time(nullptr)) +
+         (rc == TimerService::Result::Ok
+              ? String(" | adjusted ") +
+                    (adjusted.name.isEmpty() ? String("timer") : adjusted.name)
+              : String(" | error: ") + TimerService::describeResult(rc));
+}
+
+String AppController::formatTimerSummary(time_t now) const {
+  return _timers.describeAll(now);
 }

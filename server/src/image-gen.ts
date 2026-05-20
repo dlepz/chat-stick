@@ -21,6 +21,8 @@ export interface ImageResult {
 	width: number
 	height: number
 	ditheredPng: ArrayBuffer // dithered PNG for storage (matches what device shows)
+	originalPng: ArrayBuffer // full-color Imagen PNG (pre-dither) for archival
+	enhancedPrompt: string // the prompt actually sent to Imagen (with style suffix)
 }
 
 /**
@@ -33,7 +35,8 @@ export async function generateAndProcessImage(
 ): Promise<ImageResult | null> {
 	try {
 		console.log(`[ImageGen] Generating image for: "${prompt}"`)
-		const imageBase64 = await generateImage(prompt, apiKey)
+		const enhancedPrompt = buildEnhancedPrompt(prompt)
+		const imageBase64 = await generateImage(enhancedPrompt, apiKey)
 		if (!imageBase64) return null
 
 		const pngBuffer = base64ToArrayBuffer(imageBase64)
@@ -75,6 +78,8 @@ export async function generateAndProcessImage(
 			width: TARGET_WIDTH,
 			height: TARGET_HEIGHT,
 			ditheredPng,
+			originalPng: pngBuffer,
+			enhancedPrompt,
 		}
 	} catch (error) {
 		console.error('[ImageGen] Error processing image:', error)
@@ -82,10 +87,12 @@ export async function generateAndProcessImage(
 	}
 }
 
-async function generateImage(prompt: string, apiKey: string): Promise<string | null> {
+function buildEnhancedPrompt(prompt: string): string {
 	// Tuned for monochrome dithered output: bright high-contrast subjects on black.
-	const enhancedPrompt = `${prompt}. Style: white artwork on solid black background, high contrast, simple composition, clear silhouettes, dark mode aesthetic with bright white elements against pure black.`
+	return `${prompt}. Style: white artwork on solid black background, high contrast, simple composition, clear silhouettes, dark mode aesthetic with bright white elements against pure black.`
+}
 
+async function generateImage(enhancedPrompt: string, apiKey: string): Promise<string | null> {
 	const controller = new AbortController()
 	const timeoutId = setTimeout(() => controller.abort(), IMAGEN_TIMEOUT_MS)
 

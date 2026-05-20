@@ -46,4 +46,6 @@ private:
   void drawPageIndicator(int pageIndex, int pageCount) const;
   void drawMenu(const DisplayState &state) const;
   void drawStoredImage() const;
+  void drawAlarm(const DisplayState &state) const;
+  void drawBellIcon(int cx, int cy, uint16_t color) const;
 };

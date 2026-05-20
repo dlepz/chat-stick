@@ -1,33 +1,61 @@
 # chat-stick
 
-A handheld chat interface for large language models, built on an [M5StickS3](https://docs.m5stack.com/en/core/M5StickS3) (ESP32-S3). Hold a button, talk, release to hear the AI respond. Powered by [Google's Gemini 3.1 Live API](https://ai.google.dev/gemini-api/docs/live) via a Cloudflare Worker relay.
+A handheld voice interface for large language models, built on an
+[M5StickS3](https://docs.m5stack.com/en/core/M5StickS3) ESP32-S3 device.
+Hold the A button, talk, release, and hear the model respond. A Cloudflare
+Worker relays device audio to Google's Gemini Live API and routes tool calls
+back to the device or to server-side services.
 
-## Introduction
+The project is currently configured for `models/gemini-3.1-flash-live-preview`.
+Image requests use Imagen, then the server converts the generated image into a
+1-bit dithered bitmap that fits the StickS3 display.
 
-This application uses a M5StickS3 as a user interface to chat with a large language model. The project is designed for Google's Gemini 3.1 Live API, which allows for low-latency conversational experience. The user communicates with the system by holding down the device's A button to record their voice; the recordings are sent via WiFi to a CloudFlare worker, which holds the conversation history for the device, passes the audio to the Gemini Live API, and then sends back the responses.
+## What It Does
 
-In addition to being able to respond in natural language, the model is also given various tool calls for accessing information or performing actions. It can access the internet via web fetch and web search, from a vector database of known information, as well as accessing information about the device, such as its settings and battery level. The model can perform actions on the device such as adjusting brightness, volume, or power, or displaying text and images, or playing sounds.
+- Speech-to-speech chat over WiFi/WebSocket.
+- Device controls for brightness, volume, voice, speaker output, sounds,
+  melodies, text display, image display, status, and power.
+- Countdown timers and alarms that persist across chat sessions and reboots.
+- Server-side tools for Google Search, URL fetches, docs search, persistent
+  device files, generated image history, and optional email notifications.
+- Conversation history and resume support per device.
+- Optional OTA firmware delivery from Cloudflare R2.
+
+## Controls
+
+- **Button A**: hold to record, release to send. In menus, press to select.
+- **Button B**: hold to open the menu or go back. Click to cycle menu items or
+  page through on-screen text/images.
+- **A + B hold**: factory reset prompt. This clears saved settings and WiFi
+  credentials, then restarts.
 
 ## Architecture
 
+```text
+M5StickS3 --WebSocket--> Cloudflare Worker / Durable Object --WebSocket--> Gemini Live API
+  mic/speaker/display       relay, history, tools, OTA                  speech-to-speech AI
 ```
-M5StickS3 ──WebSocket──▶ Cloudflare Worker (Durable Object) ──WebSocket──▶ Gemini Live API
-  mic/speaker               relay + tool handling                           speech-to-speech AI
-```
 
-**Firmware** (`firmware/`) — PlatformIO/Arduino project for the M5StickS3. Captures audio via push-to-talk (A button), streams it over WiFi/WebSocket to the server, and plays back AI audio responses through the speaker.
+**Firmware** (`firmware/`) is a PlatformIO/Arduino project for the M5StickS3.
+It captures 16 kHz PCM audio, streams it to the worker, plays 24 kHz PCM audio
+responses, manages the screen/menu/buttons, stores local settings in ESP32 NVS,
+and executes device-side tool calls.
 
-**Server** (`server/`) — Cloudflare Worker with a Durable Object (`LiveSession`) that bridges the device to Gemini's Live API. Holds conversation history in D1, routes tool calls (web fetch, web search, vector database lookups, device info and control), and manages session lifecycle.
-
-The device persists brightness, volume, and recently successful WiFi credentials in ESP32 NVS so those settings survive reboots. On boot, it starts a fresh chat, prefers saved WiFi networks, and connects directly to the server without fetching previous conversation text.
+**Server** (`server/`) is a Cloudflare Worker with a `LiveSession` Durable
+Object per device. It bridges the device and Gemini Live WebSockets, persists
+conversation/tool/file/image state in D1, uses Workers AI + Vectorize for docs
+search, and optionally uses R2 for OTA firmware and image PNG archival.
 
 ## Prerequisites
 
-- [PlatformIO](https://platformio.org/install) (firmware builds)
-- [Node.js](https://nodejs.org/) 18+ (server)
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) (`npm i -g wrangler`)
-- A [Google AI Studio](https://aistudio.google.com/) API key with Gemini Live API access
-- A Cloudflare account (for Workers, D1, Vectorize)
+- M5StickS3 and USB-C cable.
+- [PlatformIO](https://platformio.org/install) for firmware builds.
+- Node.js 18+ and npm for the server.
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/).
+- Google AI Studio API key with Gemini Live API access. Image generation also
+  requires access to `imagen-4.0-fast-generate-001`.
+- Cloudflare account with Workers, Durable Objects, D1, Workers AI, Vectorize,
+  and optionally R2 / Email Routing.
 
 ## Setup
 
@@ -37,26 +65,29 @@ The device persists brightness, volume, and recently successful WiFi credentials
 cd server
 npm install
 
-# Copy the example env file and add your API keys
 cp .dev.vars.example .dev.vars
-# Edit .dev.vars with your GEMINI_API_KEY
+# Edit .dev.vars:
+#   GEMINI_API_KEY=...
+#   HISTORY_API_TOKEN=...
+#   Optional: ADMIN_API_TOKEN, DEVICE_AUTH_TOKEN, EMAIL_SENDER, EMAIL_RECIPIENT
 
-# Copy the wrangler config template (wrangler.toml is gitignored —
-# it holds your Cloudflare account-specific bindings)
 cp wrangler.toml.example wrangler.toml
+# Edit wrangler.toml with your Cloudflare D1 database id and optional bindings.
 
-# Create the D1 database
 wrangler d1 create m5-live-conversations
-# Paste the returned database_id into wrangler.toml
+# Paste the returned database_id into wrangler.toml.
 
-# Apply migrations
-wrangler d1 migrations apply --local
-
-# Create the Vectorize index (768 dims for @cf/baai/bge-base-en-v1.5)
+wrangler d1 migrations apply DB --local
 wrangler vectorize create chat-stick-docs --dimensions=768 --metric=cosine
 
-# Run locally
 npm run dev
+```
+
+For production, also apply migrations remotely:
+
+```bash
+cd server
+wrangler d1 migrations apply DB --remote
 ```
 
 ### Firmware
@@ -64,105 +95,108 @@ npm run dev
 ```bash
 cd firmware
 
-# Copy the credentials template and fill in your values
 cp src/credentials.h.example src/credentials.h
 # Edit src/credentials.h:
-#   - DEVELOPMENT_SERVER_ADDRESS: LAN IP of your `wrangler dev` machine
-#   - PRODUCTION_SERVER_ADDRESS:  your deployed worker, e.g. m5-live.<you>.workers.dev
-#   - WIFI_NETWORKS: your WiFi SSIDs and passwords
+#   DEVELOPMENT_SERVER_ADDRESS: LAN IP of the machine running `wrangler dev`
+#   PRODUCTION_SERVER_ADDRESS: deployed worker hostname
+#   DEVICE_AUTH_TOKEN: only if the worker has DEVICE_AUTH_TOKEN configured
+#   WIFI_NETWORKS: known SSIDs/passwords for first boot
 
-# Update upload_port/monitor_port in platformio.ini to your device's serial port
+# Update upload_port/monitor_port in platformio.ini for your serial port.
 
-# Build and upload
 pio run -t upload
-
-# Monitor serial output
 pio device monitor
-# or: python monitor.py
 ```
+
+The device also has a captive WiFi setup flow. From the menu, use
+`Device -> Set up WiFi`, join the `chat-stick-setup` access point, and submit
+credentials in the browser form.
 
 ### Deploy
 
 ```bash
-# Deploy the worker
 cd server
 wrangler secret put GEMINI_API_KEY
 wrangler secret put HISTORY_API_TOKEN
-wrangler secret put ADMIN_API_TOKEN      # optional; falls back to HISTORY_API_TOKEN
-wrangler secret put DEVICE_AUTH_TOKEN    # optional; set matching firmware token first
+wrangler secret put ADMIN_API_TOKEN      # optional
+wrangler secret put DEVICE_AUTH_TOKEN    # optional; must match firmware
+wrangler d1 migrations apply DB --remote
 wrangler deploy
-
-# Update firmware to point at the deployed endpoint
-# Set PRODUCTION_SERVER_ADDRESS in firmware/src/credentials.h to your worker's hostname
 ```
 
-## Optional: Email Notifications
+After deploying, set `PRODUCTION_SERVER_ADDRESS` in
+`firmware/src/credentials.h`, rebuild, and flash the device.
 
-The model can be given an `email_me` tool that sends a short plain-text email through Cloudflare Email Routing. The tool is hidden from the model entirely unless you configure it, so this section is fully optional.
+## Optional Cloudflare Bindings
 
-Requires a domain on Cloudflare with [Email Routing](https://developers.cloudflare.com/email-routing/) enabled. Cloudflare only allows sending **to verified destination addresses**, so this is suited to self-notifications, not emailing arbitrary users.
+### R2 Storage
+
+R2 is optional for normal chat. It is required for OTA firmware delivery and is
+used to archive generated image PNGs when configured. Generated images are still
+recorded in D1 for recall even without R2.
+
+```bash
+cd server
+wrangler r2 bucket create your-bucket-name
+```
+
+Then uncomment the `[[r2_buckets]]` block in `wrangler.toml` with binding
+`STORAGE`. If you use `publish-ota-release.sh`, make sure its `BUCKET` value
+matches the bucket in `wrangler.toml`.
+
+### Email Notifications
+
+The model only receives the `email_me` tool when the Email Routing binding and
+email secrets are configured. Cloudflare Email Routing can send only to verified
+destination addresses, so this is for self-notifications.
 
 ```bash
 cd server
 
-# 1. In the Cloudflare dashboard, enable Email Routing on your domain and verify
-#    a destination address (e.g. you@your-domain.com).
+# Enable Email Routing for your domain in Cloudflare and verify a destination.
+# Uncomment [[send_email]] in wrangler.toml and set destination_address.
 
-# 2. Uncomment the [[send_email]] block in wrangler.toml and set
-#    destination_address to your verified address.
-
-# 3. Set the sender + recipient secrets. Sender must be on your Cloudflare
-#    domain; recipient must equal destination_address from wrangler.toml.
 wrangler secret put EMAIL_SENDER       # e.g. chat-stick@your-domain.com
-wrangler secret put EMAIL_RECIPIENT    # the verified destination address
-
+wrangler secret put EMAIL_RECIPIENT    # verified destination address
 wrangler deploy
 ```
 
-For local `wrangler dev`, also add `EMAIL_SENDER` and `EMAIL_RECIPIENT` to `server/.dev.vars`. Outbound email is not delivered in `wrangler dev` (the binding is a no-op locally), so test by deploying.
+For local development, add `EMAIL_SENDER` and `EMAIL_RECIPIENT` to
+`server/.dev.vars`. Mail is not delivered from `wrangler dev`; deploy to test.
 
-## History and Session APIs
+## Server APIs
 
-- `GET /history/:deviceId` — recent conversations for a device. Requires `X-History-Token`/`?token=...`, or authenticated firmware when `DEVICE_AUTH_TOKEN` is configured.
-- `GET /session/:chatId?device_id=...` — last saved assistant message for a chat. Requires the same auth as history.
+- `GET /health` - unauthenticated health check.
+- `GET /ping` - device connectivity check. Requires `DEVICE_AUTH_TOKEN` when configured.
+- `GET /history/:deviceId` - recent conversations for a device.
+- `GET /session/:chatId` - last saved assistant message for a chat.
+- `GET /firmware/check?version=<n>` - returns OTA availability for a device.
+- `GET /firmware/download` - downloads the latest firmware binary from R2.
+- `GET /admin/index` - indexes `src/docs-index.json` into Vectorize.
+- `GET /admin/search?q=...` - tests Vectorize search.
+- `GET /ws?device_id=...&chat_id=...` - device WebSocket endpoint.
 
-## Credentials
+History endpoints require `X-History-Token`, `Authorization: Bearer ...`, or
+`?token=...`. Admin endpoints use `X-Admin-Token` or fall back to the history
+token. Device endpoints use `X-Device-Token` or `?device_token=...` when
+`DEVICE_AUTH_TOKEN` is configured; if no device token is configured, device
+endpoints are open.
 
-All secrets are gitignored. You need to create these files locally:
+## Knowledge Base
 
-| File                         | Purpose                                    | Template                             |
-| ---------------------------- | ------------------------------------------ | ------------------------------------ |
-| `server/.dev.vars`           | Gemini API key, history/admin/device tokens | `server/.dev.vars.example`           |
-| `server/wrangler.toml`       | Cloudflare bindings (your D1 ID, optional email) | `server/wrangler.toml.example`       |
-| `firmware/src/credentials.h` | Server addresses + WiFi SSIDs/passwords    | `firmware/src/credentials.h.example` |
+The server can search a docs index through keyword search and Cloudflare
+Vectorize. Source content is expected to be `.mdx` files grouped by directory,
+where each directory becomes a section.
 
-Never commit credentials. The `.gitignore` is configured to exclude these files.
-
-## Hardware
-
-- **Device**: M5StickS3 (ESP32-S3, 135x240 LCD, MEMS mic, 1W speaker)
-- **Buttons**: A (GPIO 11) = push-to-talk, B (GPIO 12) = menu/control
-- **Audio**: 16kHz input / 24kHz output PCM
-
-## Adding Docs to the Knowledge Base
-
-The server includes a vector search knowledge base powered by Cloudflare Vectorize. You can populate it with `.mdx` content files so the model can answer questions about your docs.
-
-### 1. Organize your content
-
-Point `DOCS_PATH` at a directory of `.mdx` files organized into subdirectories. Each subdirectory becomes a **section** in the index.
-
-```
+```text
 my-docs/
   getting-started/
     installation.mdx
-    quick-start.mdx
   guides/
     configuration.mdx
-    advanced-usage.mdx
 ```
 
-Each `.mdx` file should have YAML frontmatter with at least a `title`. Optional fields: `keywords` (list) and `status` (only `published` entries are indexed).
+Each `.mdx` file should include YAML frontmatter:
 
 ```yaml
 ---
@@ -170,53 +204,53 @@ title: Installation
 keywords:
   - setup
   - install
-  - getting started
+status: published
 ---
-Your content here...
 ```
 
-### 2. Build the docs index
-
-This parses all `.mdx` files and writes a JSON index to `server/src/docs-index.json`.
+Build the committed JSON index:
 
 ```bash
 cd server
 DOCS_PATH=/path/to/my-docs npx tsx scripts/build-docs-index.ts
 ```
 
-### 3. Upload to Vectorize
+Index into Vectorize using the running worker:
 
-You can index the docs into Cloudflare Vectorize using the worker-based approach (recommended) or the standalone script.
+```bash
+curl -H "X-Admin-Token: $ADMIN_API_TOKEN" http://localhost:8787/admin/index
+curl -H "X-Admin-Token: $ADMIN_API_TOKEN" "http://localhost:8787/admin/search?q=setup"
+```
 
-**Worker approach** (uses Workers AI and Vectorize bindings directly):
+Or use the standalone indexing worker:
 
 ```bash
 cd server
 wrangler dev scripts/index-docs-worker.ts --port 8799
 curl http://localhost:8799/index
+curl "http://localhost:8799/search?q=setup"
 ```
 
-**Standalone script** (uses Cloudflare REST API):
-
-```bash
-cd server
-CLOUDFLARE_ACCOUNT_ID=xxx CLOUDFLARE_API_TOKEN=xxx npx tsx scripts/index-docs.ts
-```
-
-### 4. Test search
-
-Verify your docs are searchable with the keyword search test script:
+Local keyword search can be checked with:
 
 ```bash
 cd server
 npx tsx scripts/test-search.ts
 ```
 
-Or test vector search through the indexing worker:
+## Device Tools
 
-```bash
-curl "http://localhost:8799/search?q=your+query"
-```
+Gemini can call tools that the worker handles directly or forwards to the
+device.
+
+Server-side tools include `search_docs`, `web_fetch`, `list_files`,
+`read_file`, `write_file`, `append_to_file`, `search_files`,
+`new_conversation`, image history tools, and optional `email_me`.
+
+Device-side tools include `set_brightness`, `set_volume`, `set_speaker`,
+`set_external_speaker_gain`, `set_voice`, `show_text`, `show_image`,
+`set_timer`, `list_timers`, `cancel_timer`, `extend_timer`, `play_sound`,
+`play_melody`, `power_off`, and `get_device_status`.
 
 ## Test Data
 
@@ -224,28 +258,51 @@ curl "http://localhost:8799/search?q=your+query"
 
 ## Releases and OTA
 
-The repository is public and source-only. **Do not publish pre-built `.bin` files anywhere public.** `credentials.h` is compiled into the firmware, so any binary built locally embeds your WiFi SSIDs, passwords, and worker URL as plaintext — `strings firmware.bin` will surface them.
+This repository is source-only. Do not publish pre-built `.bin` firmware files
+publicly. `credentials.h` is compiled into the firmware, so local binaries
+contain WiFi SSIDs, passwords, device tokens, and server URLs in plaintext.
 
-OTA distribution is per-deployment: each user's binary lives in their own R2 bucket and is served by their own worker.
+OTA distribution is per deployment. Each user should serve their own firmware
+binary from their own R2 bucket through their own worker.
 
-### Convenience scripts (repo root)
+Convenience scripts:
 
-| Script                       | What it does                                                |
-| ---------------------------- | ----------------------------------------------------------- |
-| `./flash.sh [--monitor]`     | Build firmware and upload over USB to a connected device.   |
-| `./deploy.sh`                | Deploy the Cloudflare Worker.                               |
-| `./publish-ota-release.sh`   | Build firmware and upload it to R2 for OTA pickup.          |
-| `./publish.sh`               | Run `publish-ota-release.sh` then `deploy.sh`.              |
+| Script | What it does |
+| --- | --- |
+| `./flash.sh [--monitor]` | Build firmware and upload over USB. |
+| `./deploy.sh` | Deploy the Cloudflare Worker. |
+| `./publish-ota-release.sh` | Build firmware and upload `firmware-v<N>.bin` to R2. |
+| `./publish.sh` | Publish the OTA binary, then deploy the worker. |
 
-### Cutting a new firmware release
+To cut a firmware release:
 
 1. Bump `FIRMWARE_VERSION` in `firmware/src/Config.h`.
-2. `./publish-ota-release.sh` — builds and uploads `firmware-v<N>.bin` to your R2 bucket under `chat-stick/firmware/`.
-3. Devices on older versions will install it on next boot.
+2. Confirm `BUCKET` in `publish-ota-release.sh` matches your R2 bucket.
+3. Run `./publish-ota-release.sh`.
+4. Devices on older versions install the update on next boot, or from
+   `Device -> Check for updates`.
 
-The worker auto-detects the latest available version by listing the R2 prefix and picking the highest `firmware-v<N>.bin` — no version tracking secrets required.
+The worker finds the latest available firmware by listing
+`chat-stick/firmware/firmware-v<N>.bin` in R2 and choosing the highest version.
 
-If you want a public source tag for changelog purposes, `gh release create v<N> --title "Firmware v<N>" --notes "..."` with **no binary asset**. This is purely informational; the OTA path doesn't read GitHub.
+## Credentials
+
+All deployment-specific files are gitignored:
+
+| File | Purpose | Template |
+| --- | --- | --- |
+| `server/.dev.vars` | Local secrets for Wrangler dev. | `server/.dev.vars.example` |
+| `server/wrangler.toml` | Cloudflare bindings and account-specific ids. | `server/wrangler.toml.example` |
+| `firmware/src/credentials.h` | Server endpoints, device token, WiFi networks. | `firmware/src/credentials.h.example` |
+
+Never commit credentials or firmware binaries built with credentials embedded.
+
+## Hardware
+
+- **Device**: M5StickS3 (ESP32-S3, 135x240 LCD, MEMS mic, 1W speaker)
+- **Buttons**: A = GPIO 11, B = GPIO 12
+- **Audio**: 16-bit PCM, 16 kHz input, 24 kHz output
+- **Optional speaker**: M5Stack HAT SPK2 external speaker
 
 ## License
 

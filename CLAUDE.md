@@ -55,12 +55,13 @@ Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Up
 - **Entry point**: `server/src/index.ts` — HTTP router handling `/ws`, `/health`, `/history/:deviceId`, `/session/:chatId`, `/firmware/check`, `/firmware/download`, and admin endpoints
 - **`LiveSession` Durable Object** (`server/src/live-session.ts`) — one instance per device. Manages dual WebSocket connections (device ↔ Gemini), routes tool calls, tracks transcriptions, persists conversation history to D1. The full tool schema sent to Gemini lives here — when adding/renaming a tool, update both the declaration array and the `case` dispatch
 - **Tool call routing**:
-  - Server-side tools (handled in `live-session.ts`): `search_docs`, `web_fetch`, `new_conversation`, `new_chat`, the file-CRUD tools `list_files`, `read_file`, `write_file`, `append_to_file`, `search_files`, and `email_me` when email is configured
-  - Device-side tools (forwarded as JSON over the device WebSocket; response relayed back to Gemini): `set_brightness`, `set_volume`, `set_speaker`, `set_external_speaker_gain`, `set_voice`, `show_text`, `play_sound`, `play_melody`, `power_off`, `get_device_status`
+  - Server-side tools (handled in `live-session.ts`): `search_docs`, `web_fetch`, `new_conversation`, `new_chat`; file-CRUD `list_files`, `read_file`, `write_file`, `append_to_file`, `search_files`; image tools `show_image`, `list_recent_images`, `search_images`, `show_saved_image`; and `email_me` when email is configured
+  - Device-side tools (forwarded as JSON over the device WebSocket; response relayed back to Gemini): `set_brightness`, `set_volume`, `set_speaker`, `set_external_speaker_gain`, `set_voice`, `show_text`, `play_sound`, `play_melody`, `power_off`, `get_device_status`, and timer tools `set_timer`, `list_timers`, `cancel_timer`, `extend_timer`
+- **Image generation** (`server/src/image-gen.ts`, `server/src/images.ts`) — `show_image` calls Google Imagen, dithers to a 232×112 1-bit bitmap (chat text area, rows 1–7 of the 240×135 LCD — see `designs.md`), sends packed bits to the device, and stores both the dithered + original PNGs in R2 plus a record in the D1 `images` table. `list_recent_images` / `search_images` / `show_saved_image` recall by id without regeneration. While generation runs, the server sends `show_image_pending` / `show_image_failed` frames so the device can show a pulse animation
 - **Optional email** (`server/src/email.ts`) — `email_me` tool is only declared to Gemini when the `[[send_email]]` binding plus `EMAIL_SENDER`/`EMAIL_RECIPIENT` secrets are all present. Cloudflare Email Routing requires the recipient to be pre-verified, so this is for self-notifications only. See README "Optional: Email Notifications"
 - **Docs search** (`server/src/docs-search.ts`) — keyword search (in-memory JSON index) with vector search fallback (Cloudflare Vectorize + Workers AI embeddings)
 - **Device files** (`server/src/files.ts`) — device-scoped notes/files in D1, every query filtered by `device_id`. `MAX_FILE_BYTES = 100_000`. Append uses SQL concat for atomicity (no read-then-write)
-- **D1 schema** — authoritative source is `server/migrations/` (currently `0001_initial.sql` for `conversations`/`message_log`/`tool_log`, `0002_files.sql` for `files`). `server/schema.sql` is a snapshot reference. Apply with `wrangler d1 migrations apply --local` (or `--remote`)
+- **D1 schema** — authoritative source is `server/migrations/`: `0001_initial.sql` (`conversations`/`message_log`/`tool_log`), `0002_files.sql` (`files`), `0003_images.sql` (`images`). `server/schema.sql` is a snapshot reference. Apply with `wrangler d1 migrations apply --local` (or `--remote`)
 
 ### Firmware
 
@@ -71,6 +72,7 @@ Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Up
   - `AudioService` — mic capture (16kHz) and speaker playback (24kHz PCM)
   - `WiFiService` — multi-network connection with saved credential support
   - `SettingsStore` — NVS persistence for brightness, volume, voice, speaker settings, and legacy chat_id cleanup
+  - `TimerService` — countdown timers persisted in NVS, surviving reboots. Stable monotonic `id` per timer (never reused); `harvestExpired()` is polled by `AppController` so the device can chime + show a bell glyph when a timer fires. Tool dispatch happens device-side, not server-side
 - **`ButtonStateMachine`** (`input/`) — debounced press/long-press/release detection for A (push-to-talk) and B (menu) buttons
 - **`PowerManager`** (`power/`) — firmware-owned idle timeout cascade: dim → screen off → power off
 - **`TextDisplay`** (`ui/`) — 135×240 LCD rendering with header/body/footer layout, menus, and state-based coloring
@@ -94,3 +96,22 @@ All deployment-specific config is gitignored. Templates exist at:
 - Input (mic → Gemini): 16-bit PCM, 16kHz, mono
 - Output (Gemini → speaker): 16-bit PCM, 24kHz, mono
 - Short/silent clips are detected and ignored (MIN_TURN_BYTES, SILENCE_AVG_ABS_THRESHOLD)
+
+## Convenience Scripts (repo root)
+
+- `./flash.sh [--monitor]` — build firmware and upload over USB
+- `./deploy.sh` — `wrangler deploy` the Cloudflare Worker
+- `./publish-ota-release.sh` — build firmware and upload `firmware-v<N>.bin` to R2 under `chat-stick/firmware/`
+- `./publish.sh` — publish OTA + deploy worker (chains the two above)
+
+## Releasing Firmware (OTA)
+
+1. Bump `FIRMWARE_VERSION` in `firmware/src/Config.h`
+2. Run `./publish-ota-release.sh`
+3. Devices running an older version pick up the new binary on next boot via `/firmware/check` → `/firmware/download`
+
+The worker auto-detects the highest `firmware-v<N>.bin` in R2; there's no separate version registry. Because `credentials.h` is compiled into the binary, **never commit or publish built `.bin` files** — `strings` will surface WiFi creds and the worker URL.
+
+## Display Layout
+
+`designs.md` is the canonical reference for screen layout (header/body/footer rows, the 232×112 chat-area bounding box used for images, glyph metrics). Consult it before changing `TextDisplay` or anything that draws on the LCD — the image-generation pipeline depends on those exact dimensions.

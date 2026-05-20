@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Config.h"
+#include "TimerService.h"
 #include <ArduinoJson.h>
 #include <Arduino.h>
 #include <ArduinoWebsockets.h>
@@ -33,6 +34,10 @@ struct LiveSessionCallbacks {
   std::function<void()> onPowerOff;
   std::function<String()> getDeviceStatusJson;
   std::function<void(const String &)> onVoiceChanged;
+  std::function<String(int durationSeconds, const String &name)> onSetTimer;
+  std::function<String()> onListTimers;
+  std::function<String(const TimerRef &ref, bool all)> onCancelTimer;
+  std::function<String(int deltaSeconds, const TimerRef &ref)> onExtendTimer;
 };
 
 struct ConversationSummary {

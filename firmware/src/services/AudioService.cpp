@@ -7,6 +7,18 @@
 namespace {
 constexpr int kChunkSamples = MIC_SAMPLE_RATE * MIC_CHUNK_MS / 1000;
 
+// Small-speaker EQ for the 24 kHz internal cavity speaker.
+// One-pole HPF ~280 Hz strips bass the driver can't reproduce.
+// Peaking biquad at 2500 Hz, Q ≈ 0.8, +4 dB lifts the consonant band.
+// Coefficients derived from RBJ cookbook at fs = 24 kHz.
+// Bypassed when routing to the SPK2 HAT — it has the bottom end to play.
+constexpr float kHpAlpha = 0.927f;
+constexpr float kEqB0 = 1.1357f;
+constexpr float kEqB1 = -1.2185f;
+constexpr float kEqB2 = 0.4001f;
+constexpr float kEqA1 = -1.2185f;
+constexpr float kEqA2 = 0.5359f;
+
 int noteIndex(char note) {
   switch (toupper(note)) {
   case 'C':
@@ -164,6 +176,7 @@ void AudioService::resetPlayback() {
   _playReadPos = 0;
   _playbackStarted = false;
   _chunkInFlight = false;
+  resetEqState();
   M5.Speaker.stop();
 }
 
@@ -183,6 +196,11 @@ bool AudioService::queuePlayback(const uint8_t *data, size_t len) {
   }
 
   memcpy(_playBuffer + _playWritePos, data, len);
+  if (!_useExternalSpeaker) {
+    applyInternalSpeakerEq(
+        reinterpret_cast<int16_t *>(_playBuffer + _playWritePos),
+        static_cast<int>(len / sizeof(int16_t)));
+  }
   _playWritePos += static_cast<int>(len);
   return true;
 }
@@ -219,6 +237,7 @@ void AudioService::stopPlayback() {
   _playbackStarted = false;
   _playReadPos = 0;
   _playWritePos = 0;
+  resetEqState();
 }
 
 void AudioService::beginSpeaker() {
@@ -304,6 +323,36 @@ bool AudioService::playAvailableChunk() {
   _playReadPos = _playWritePos;
   _chunkInFlight = true;
   return true;
+}
+
+void AudioService::resetEqState() {
+  _hpPrevX = 0.0f;
+  _hpPrevY = 0.0f;
+  _eqX1 = 0.0f;
+  _eqX2 = 0.0f;
+  _eqY1 = 0.0f;
+  _eqY2 = 0.0f;
+}
+
+void AudioService::applyInternalSpeakerEq(int16_t *samples, int count) {
+  for (int i = 0; i < count; ++i) {
+    const float x = static_cast<float>(samples[i]);
+
+    const float hp = kHpAlpha * (_hpPrevY + x - _hpPrevX);
+    _hpPrevX = x;
+    _hpPrevY = hp;
+
+    float y = kEqB0 * hp + kEqB1 * _eqX1 + kEqB2 * _eqX2 -
+              kEqA1 * _eqY1 - kEqA2 * _eqY2;
+    _eqX2 = _eqX1;
+    _eqX1 = hp;
+    _eqY2 = _eqY1;
+    _eqY1 = y;
+
+    if (y > 32767.0f) y = 32767.0f;
+    else if (y < -32768.0f) y = -32768.0f;
+    samples[i] = static_cast<int16_t>(y);
+  }
 }
 
 bool AudioService::playToneSequence(const String &sequence) {

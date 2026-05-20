@@ -40,9 +40,9 @@ binding = "STORAGE"
 bucket_name = "m5-stick-assets"
 
 # Outbound email via Cloudflare Email Routing.
-# steve@teamldraw.com is verified as a destination on teamldraw.com.
-# wrangler secret put EMAIL_SENDER     # chat-stick@teamldraw.com
-# wrangler secret put EMAIL_RECIPIENT  # steve@teamldraw.com
+# steve@tldraw.com is verified as a destination.
+# wrangler secret put EMAIL_SENDER     # steve@teamldraw.com
+# wrangler secret put EMAIL_RECIPIENT  # steve@tldraw.com
 [[send_email]]
 name = "EMAIL"
-destination_address = "steve@teamldraw.com"
+destination_address = "steve@tldraw.com"

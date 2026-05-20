@@ -14,6 +14,17 @@ bool hasDeviceAuthToken() {
   return DEVICE_AUTH_TOKEN && DEVICE_AUTH_TOKEN[0];
 }
 
+TimerRef parseTimerRef(const JsonDocument &doc) {
+  TimerRef ref;
+  if (doc["args"]["id"].is<uint32_t>() || doc["args"]["id"].is<int>()) {
+    const int raw = doc["args"]["id"].as<int>();
+    if (raw > 0) ref.id = static_cast<uint32_t>(raw);
+  }
+  const char *timerName = doc["args"]["name"];
+  if (timerName) ref.name = String(timerName);
+  return ref;
+}
+
 void addDeviceAuthHeader(HTTPClient &http) {
   if (hasDeviceAuthToken()) {
     http.addHeader("X-Device-Token", DEVICE_AUTH_TOKEN);
@@ -829,6 +840,38 @@ void LiveSessionService::handleToolCall(const JsonDocument &doc) {
     delay(100);
     _callbacks.onPowerOff();
     return;
+  } else if (strcmp(name, "set_timer") == 0) {
+    if (!_callbacks.onSetTimer) {
+      result = "Timer control unavailable";
+    } else {
+      const int duration = doc["args"]["duration_seconds"].is<int>()
+                               ? doc["args"]["duration_seconds"].as<int>()
+                               : 0;
+      const char *timerName = doc["args"]["name"];
+      result = _callbacks.onSetTimer(duration, timerName ? String(timerName) : String(""));
+    }
+  } else if (strcmp(name, "list_timers") == 0) {
+    result = _callbacks.onListTimers ? _callbacks.onListTimers() : "{\"timers\":[]}";
+  } else if (strcmp(name, "cancel_timer") == 0) {
+    if (!_callbacks.onCancelTimer) {
+      result = "Timer control unavailable";
+    } else {
+      const TimerRef ref = parseTimerRef(doc);
+      const bool all = doc["args"]["all"].is<bool>()
+                          ? doc["args"]["all"].as<bool>()
+                          : false;
+      result = _callbacks.onCancelTimer(ref, all);
+    }
+  } else if (strcmp(name, "extend_timer") == 0) {
+    if (!_callbacks.onExtendTimer) {
+      result = "Timer control unavailable";
+    } else if (!doc["args"]["delta_seconds"].is<int>()) {
+      result = "Missing delta_seconds";
+    } else {
+      const int delta = doc["args"]["delta_seconds"].as<int>();
+      const TimerRef ref = parseTimerRef(doc);
+      result = _callbacks.onExtendTimer(delta, ref);
+    }
   }
 
   sendToolResponse(name, id, result);

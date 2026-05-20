@@ -8,6 +8,30 @@ constexpr uint16_t COLOR_BLACK = 0x0000;
 constexpr uint16_t COLOR_WHITE = 0xFFFF;
 constexpr uint16_t COLOR_GRAY = 0x7BEF;
 constexpr int LINE_HEIGHT = 16;
+
+// Tilted bell glyph for the alarm screen — 1-bit packed, MSB-first, row-major.
+// Generated from designs/bell-source.jpg at 16x16.
+constexpr int kBellW = 16;
+constexpr int kBellH = 16;
+constexpr int kBellRowBytes = 2;
+constexpr uint8_t kBellBits[] = {
+    0x38, 0x00,
+    0x28, 0x00,
+    0x3F, 0x00,
+    0x3F, 0x80,
+    0x3F, 0xC0,
+    0x7F, 0xC0,
+    0x7F, 0xE0,
+    0x7F, 0xC0,
+    0x3F, 0xFC,
+    0x3F, 0xC0,
+    0x3F, 0x00,
+    0x39, 0x80,
+    0x31, 0xC0,
+    0x21, 0xF0,
+    0x00, 0x00,
+    0x00, 0x00,
+};
 } // namespace
 
 void TextDisplay::init() {
@@ -33,6 +57,14 @@ void TextDisplay::render(const DisplayState &state) {
     M5.Display.fillScreen(COLOR_BLACK);
     M5.Display.setFont(&fonts::AsciiFont8x16);
     M5.Display.setTextSize(1);
+  }
+
+  if (state.alarmActive) {
+    drawAlarm(state);
+    if (_canvasReady) {
+      _canvas.pushSprite(&M5.Display, 0, 0);
+    }
+    return;
   }
 
   const bool hasHeader = !state.headerLeft.isEmpty() || !state.headerRight.isEmpty();
@@ -314,6 +346,71 @@ void TextDisplay::drawPageIndicator(int pageIndex, int pageCount) const {
   }
   const bool lastPage = pageIndex >= pageCount - 1;
   drawGlyphAtRight(kFooterRow, lastPage ? 'o' : 'v', COLOR_GRAY);
+}
+
+void TextDisplay::drawBellIcon(int cx, int cy, uint16_t color) const {
+  const int originX = cx - kBellW / 2;
+  const int originY = cy - kBellH / 2;
+  for (int y = 0; y < kBellH; y++) {
+    const uint8_t *row = kBellBits + y * kBellRowBytes;
+    for (int x = 0; x < kBellW; x++) {
+      const uint8_t byte = row[x >> 3];
+      if (!((byte >> (7 - (x & 7))) & 1)) continue;
+      if (_canvasReady) {
+        _canvas.drawPixel(originX + x, originY + y, color);
+      } else {
+        M5.Display.drawPixel(originX + x, originY + y, color);
+      }
+    }
+  }
+}
+
+void TextDisplay::drawAlarm(const DisplayState &state) const {
+  const String title = state.alarmTitle.isEmpty() ? String("ALARM") : state.alarmTitle;
+  const String safeTitle = fitLine(title);
+  const bool hasDetail = !state.alarmDetail.isEmpty();
+
+  // Bell + title share a row, vertically centered. Detail line sits below when
+  // present; when there's no detail, the whole composition sits dead-center.
+  const int titlePixelWidth = static_cast<int>(safeTitle.length()) * 16;
+  const int gap = 8;
+  const int rowWidth = kBellW + gap + titlePixelWidth;
+  const int rowX = max(0, (SCREEN_WIDTH_PX - rowWidth) / 2);
+  const int rowTopY = hasDetail ? 44 : 60;
+  const int bellCx = rowX + kBellW / 2;
+  const int bellCy = rowTopY + kBellH / 2;
+  drawBellIcon(bellCx, bellCy, COLOR_WHITE);
+
+  const int titleX = rowX + kBellW + gap;
+  const int titleY = rowTopY;
+  if (_canvasReady) {
+    _canvas.setTextColor(COLOR_WHITE);
+    _canvas.setTextSize(2);
+    _canvas.setCursor(titleX, titleY);
+    _canvas.print(safeTitle);
+    _canvas.setTextSize(1);
+  } else {
+    M5.Display.setTextColor(COLOR_WHITE);
+    M5.Display.setTextSize(2);
+    M5.Display.setCursor(titleX, titleY);
+    M5.Display.print(safeTitle);
+    M5.Display.setTextSize(1);
+  }
+
+  if (hasDetail) {
+    const String safeDetail = fitLine(state.alarmDetail);
+    const int detailX =
+        max(0, (SCREEN_WIDTH_PX - static_cast<int>(safeDetail.length()) * 8) / 2);
+    if (_canvasReady) {
+      _canvas.setTextColor(COLOR_GRAY);
+      _canvas.setCursor(detailX, 76);
+      _canvas.print(safeDetail);
+    } else {
+      M5.Display.setTextColor(COLOR_GRAY);
+      M5.Display.setCursor(detailX, 76);
+      M5.Display.print(safeDetail);
+    }
+  }
 }
 
 void TextDisplay::drawMenu(const DisplayState &state) const {

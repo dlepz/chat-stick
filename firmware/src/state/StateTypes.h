@@ -10,6 +10,7 @@ enum class AppState {
   Playing,
   ConfirmReset,
   Error,
+  Alarm,
 };
 
 constexpr int MAX_MENU_VISIBLE_ITEMS = 4;
@@ -33,4 +34,9 @@ struct DisplayState {
   // When true, page 0 of the body is the stored image and bodyText pages
   // start at page 1. The image bytes themselves live in TextDisplay.
   bool imagePresent = false;
+  // Set when AppState::Alarm — TextDisplay switches to the bell screen and
+  // ignores bodyText / menu / header fields.
+  bool alarmActive = false;
+  String alarmTitle;
+  String alarmDetail;
 };

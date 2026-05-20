@@ -6,13 +6,20 @@
 #include "../services/AudioService.h"
 #include "../services/LiveSessionService.h"
 #include "../services/SettingsStore.h"
+#include "../services/TimerService.h"
 #include "../services/WiFiService.h"
 #include "../state/StateTypes.h"
 #include "../ui/TextDisplay.h"
 #include <M5PM1.h>
+#include <time.h>
 
 class AppController {
 public:
+  struct AlarmStep {
+    int freqHz;
+    int durationMs;
+  };
+
   void setup();
   void loop();
 
@@ -34,6 +41,7 @@ private:
   static constexpr unsigned long kMaxRecordingMs = 30000;
   static constexpr unsigned long kResetHoldMs = 1500;
   static constexpr int kMaxConversationHistory = 10;
+  static constexpr int kMaxExpiredPerWake = MAX_TIMERS;
 
   AppRegion _appRegion = AppRegion::Initializing;
   AppState _appState = AppState::Connecting;
@@ -76,9 +84,21 @@ private:
   AudioService _audio;
   LiveSessionService _live;
   SettingsStore _settings;
+  TimerService _timers;
   M5PM1 _pm1;
   bool _pm1Ready = false;
   unsigned long _lastPm1PollMs = 0;
+
+  // Alarm runtime state — populated when AppState::Alarm is active.
+  AppState _alarmReturnState = AppState::Ready;
+  String _alarmReturnStatus;
+  String _alarmTitle;
+  String _alarmDetail;
+  int _alarmStepIndex = 0;
+  unsigned long _alarmStepStartMs = 0;
+  bool _alarmStepInFlight = false;
+  bool _networkStackStarted = false;
+  bool _bootHadExpiredAlarm = false;
 
   void configureCallbacks();
   void connectNetworkStack();
@@ -125,4 +145,21 @@ private:
   String buildStartupChecklistText() const;
   String deviceStatusJson() const;
   String currentTimeString() const;
+
+  // Timer / alarm
+  void onTimersChanged();
+  void checkTimerExpiry();
+  void enterAlarmState(const String &title, const String &detail);
+  void exitAlarmState();
+  void serviceAlarmTrill();
+  bool maybeDeepSleepUntilNextTimer();
+  bool handleAlarmButtons();
+  String handleSetTimerTool(int durationSeconds, const String &name);
+  String handleListTimersTool();
+  String handleCancelTimerTool(const TimerRef &ref, bool all);
+  String handleExtendTimerTool(int deltaSeconds, const TimerRef &ref);
+  String formatTimerSummary(time_t now) const;
+
+  static const AlarmStep *alarmPattern();
+  static int alarmPatternLen();
 };
