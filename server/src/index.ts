@@ -79,6 +79,18 @@ export default {
 			case '/health':
 				return new Response('ok')
 
+			case '/ping':
+				if (!isAuthorizedDeviceRequest(request, env)) {
+					return new Response('Unauthorized', { status: 401, headers: corsHeaders() })
+				}
+				return new Response('pong', {
+					headers: {
+						...corsHeaders(),
+						'Cache-Control': 'no-store',
+						'Content-Type': 'text/plain',
+					},
+				})
+
 			case '/firmware/check': {
 				if (!isAuthorizedDeviceRequest(request, env)) {
 					return new Response('Unauthorized', { status: 401, headers: corsHeaders() })

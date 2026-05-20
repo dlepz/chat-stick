@@ -47,6 +47,10 @@ private:
   bool _pendingTurnReset = false;
   bool _imagePresent = false;
   bool _screenDirty = true;
+  bool _startupChecklistVisible = true;
+  bool _startupPowerDone = false;
+  bool _startupWifiDone = false;
+  bool _startupInternetDone = false;
   unsigned long _thinkingStartMs = 0;
   unsigned long _recordingStartMs = 0;
   unsigned long _resetHoldStartMs = 0;
@@ -118,6 +122,7 @@ private:
 
   DisplayState buildDisplayState() const;
   String buildBodyText() const;
+  String buildStartupChecklistText() const;
   String deviceStatusJson() const;
   String currentTimeString() const;
 };

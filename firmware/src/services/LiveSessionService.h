@@ -11,6 +11,7 @@ struct LiveSessionCallbacks {
   std::function<void(const String &, const String &)> onError;
   std::function<void()> onActivity;
   std::function<void(const String &)> onStatus;
+  std::function<void()> onServerReady;
   std::function<void()> onReady;
   std::function<void()> onTurnComplete;
   std::function<void()> onDropAudio;
@@ -62,6 +63,7 @@ public:
   int activeServerIndex() const { return _activeServerIndex; }
   String activeEndpointLabel() const;
 
+  bool pingServer();
   bool sendStart();
   bool sendStop();
   bool sendAudio(const int16_t *data, size_t len);

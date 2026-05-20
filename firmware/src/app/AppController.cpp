@@ -40,6 +40,9 @@ void AppController::setup() {
 
   _display.init();
   _display.setBrightness(_settings.brightness());
+  _startupPowerDone = true;
+  _screenDirty = true;
+  renderIfNeeded();
 
   _powerManager.setSavedBrightness(_settings.brightness());
   configureCallbacks();
@@ -70,9 +73,19 @@ void AppController::setup() {
       setAppState(AppState::Connecting, status);
     }
   };
+  callbacks.onServerReady = [this]() {
+    if (_appState == AppState::Connecting) {
+      _startupChecklistVisible = false;
+      _appRegion = AppRegion::Chat;
+      setAppState(AppState::Ready, "Ready");
+    }
+  };
   callbacks.onReady = [this]() {
-    _appRegion = AppRegion::Chat;
-    setAppState(AppState::Ready, "Ready");
+    if (_appState == AppState::Connecting) {
+      _startupChecklistVisible = false;
+      _appRegion = AppRegion::Chat;
+      setAppState(AppState::Ready, "Ready");
+    }
   };
   callbacks.onTurnComplete = [this]() {
     // Ignore turnComplete signals that arrive before any audio for the current
@@ -317,16 +330,37 @@ void AppController::configureCallbacks() {
 
 void AppController::connectNetworkStack() {
   _appRegion = AppRegion::Chat;
-  setAppState(AppState::Connecting, "Connecting...");
+  _startupChecklistVisible = true;
+  _startupPowerDone = true;
+  _startupWifiDone = false;
+  _startupInternetDone = false;
+  setAppState(AppState::Connecting, "Starting...");
+  renderIfNeeded();
+
   if (!_wifi.connectKnownNetworks()) {
+    _startupChecklistVisible = false;
     setErrorState(ErrorCategory::WiFiTimeout, "WiFi failed",
                   "A retry  B hold menu");
     return;
   }
 
-  // Start the WebSocket as soon as WiFi is up. Boot starts with no chat_id, so
-  // the server creates a fresh conversation.
+  _startupWifiDone = true;
   _screenDirty = true;
+  renderIfNeeded();
+
+  if (!_live.pingServer()) {
+    _startupChecklistVisible = false;
+    setErrorState(ErrorCategory::ServerRefused, "Internet failed",
+                  "A retry  B hold menu");
+    return;
+  }
+
+  _startupInternetDone = true;
+  _screenDirty = true;
+  renderIfNeeded();
+
+  // Open only the lightweight device channel on boot. The server waits to open
+  // Gemini Live until the user's first recording starts.
   _live.connect();
 }
 
@@ -344,6 +378,9 @@ void AppController::setNetworkEnabled(bool enabled) {
 void AppController::setAppState(AppState state, const String &status,
                                 const String &error) {
   _appState = state;
+  if (state != AppState::Connecting) {
+    _startupChecklistVisible = false;
+  }
   if (state != AppState::Error) {
     _errorCategory = ErrorCategory::None;
   }
@@ -357,6 +394,7 @@ void AppController::setAppState(AppState state, const String &status,
 
 void AppController::setErrorState(ErrorCategory category, const String &status,
                                   const String &error) {
+  _startupChecklistVisible = false;
   _errorCategory = category;
   _appState = AppState::Error;
   _statusText = status;
@@ -719,6 +757,7 @@ void AppController::resumeConversation(int index) {
   resetBodyPage();
   closeMenu();
   _live.disconnect();
+  _startupChecklistVisible = false;
   setAppState(AppState::Connecting, "Restoring...");
   _live.connect();
 }
@@ -729,12 +768,14 @@ void AppController::startFreshConversation() {
   _live.setChatId("");
   clearToolText();
   _live.disconnect();
+  _startupChecklistVisible = false;
   setAppState(AppState::Connecting, "New chat...");
   _live.connect();
 }
 
 void AppController::startCaptivePortalFlow() {
   _live.disconnect();
+  _startupChecklistVisible = false;
   if (_wifi.startCaptivePortal()) {
     setAppState(AppState::Connecting, "WiFi setup");
     _toolText = "Join AP\n" + _wifi.captivePortalSsid() + "\nOpen " +
@@ -968,7 +1009,10 @@ String AppController::buildBodyText() const {
 
   switch (_appState) {
   case AppState::Connecting:
-    return "Starting...";
+    if (_startupChecklistVisible) {
+      return buildStartupChecklistText();
+    }
+    return _statusText.isEmpty() ? "Starting..." : _statusText;
 
   case AppState::Ready:
     return "Hi, how can I help? Hold the big button and speak to get a "
@@ -1003,6 +1047,16 @@ String AppController::buildBodyText() const {
   }
 
   return "";
+}
+
+String AppController::buildStartupChecklistText() const {
+  auto line = [](bool done, const char *label) {
+    return String(done ? "[x] " : "[ ] ") + label;
+  };
+
+  return String("Starting...\n") + line(_startupPowerDone, "Powering on") +
+         "\n" + line(_startupWifiDone, "WiFi") + "\n" +
+         line(_startupInternetDone, "Internet");
 }
 
 int AppController::currentBodyPageCount() const {

@@ -278,6 +278,63 @@ String LiveSessionService::activeEndpointLabel() const {
   return _activeServerIndex == 0 ? "dev" : "prod";
 }
 
+bool LiveSessionService::pingServer() {
+  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
+    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
+    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
+    const String url = endpointBaseUrl(endpoint) + "/ping?device_id=" + DEVICE_ID;
+
+    Serial.printf("[HTTP] Pinging server at %s\n", url.c_str());
+
+    int statusCode = -1;
+    String body;
+    {
+      HTTPClient http;
+      http.setTimeout(3000);
+      if (endpoint.port == 443) {
+        WiFiClientSecure client;
+        if (endpoint.ca_cert) {
+          client.setCACert(endpoint.ca_cert);
+        } else {
+          client.setInsecure();
+        }
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        addDeviceAuthHeader(http);
+        statusCode = http.GET();
+        if (statusCode > 0) {
+          body = http.getString();
+        }
+        http.end();
+      } else {
+        WiFiClient client;
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        addDeviceAuthHeader(http);
+        statusCode = http.GET();
+        if (statusCode > 0) {
+          body = http.getString();
+        }
+        http.end();
+      }
+    }
+
+    body.trim();
+    if (statusCode == 200 && body == "pong") {
+      Serial.printf("[HTTP] Server ping OK: %s\n", url.c_str());
+      rememberSuccessfulEndpoint(index);
+      return true;
+    }
+
+    Serial.printf("[HTTP] Server ping failed: status=%d body=%s\n", statusCode,
+                  body.c_str());
+  }
+
+  return false;
+}
+
 bool LiveSessionService::sendStart() { return _ws.send("{\"type\":\"start\"}"); }
 
 bool LiveSessionService::sendStop() { return _ws.send("{\"type\":\"stop\"}"); }
@@ -547,6 +604,14 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
 
   const char *type = doc["type"];
   if (!type) {
+    return;
+  }
+
+  if (strcmp(type, "server_ready") == 0) {
+    Serial.println("[Server] Device channel ready");
+    if (_callbacks.onServerReady) {
+      _callbacks.onServerReady();
+    }
     return;
   }
 
