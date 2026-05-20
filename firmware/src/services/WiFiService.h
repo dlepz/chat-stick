@@ -28,6 +28,9 @@ private:
     String ssid;
     String password;
     String label;
+    int32_t channel = 0;
+    uint8_t bssid[6] = {0};
+    bool hasBssid = false;
   };
 
   static constexpr int kMaxSavedNetworks = 5;
@@ -35,6 +38,11 @@ private:
   static constexpr const char *kCaptivePortalSsid = "chat-stick-setup";
   static constexpr byte kDnsPort = 53;
   static constexpr int kMaxScanResults = 8;
+  static constexpr size_t kBssidLength = 6;
+  static constexpr unsigned long kPrimaryConnectTimeoutMs = 8000;
+  static constexpr unsigned long kPrimaryHintConnectTimeoutMs = 4500;
+  static constexpr unsigned long kFallbackConnectTimeoutMs = 6000;
+  static constexpr unsigned long kUnavailableConnectTimeoutMs = 2000;
 
   Preferences _prefs;
   DNSServer _dnsServer;
@@ -54,7 +62,10 @@ private:
   void rememberNetwork(const String &ssid, const String &password,
                        const String &label);
   bool connectToNetwork(const String &ssid, const String &password,
-                        const String &label);
+                        const String &label, unsigned long timeoutMs,
+                        int32_t channel = 0, const uint8_t *bssid = nullptr);
+  bool hasSavedNetwork(const String &ssid) const;
+  bool isScannedSsid(const String &ssid) const;
   void configureCaptivePortalRoutes();
   void refreshScanResults();
   String portalHtml(const String &message = "") const;

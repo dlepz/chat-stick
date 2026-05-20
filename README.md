@@ -19,7 +19,7 @@ M5StickS3 ──WebSocket──▶ Cloudflare Worker (Durable Object) ──WebS
 
 **Server** (`server/`) — Cloudflare Worker with a Durable Object (`LiveSession`) that bridges the device to Gemini's Live API. Holds conversation history in D1, routes tool calls (web fetch, web search, vector database lookups, device info and control), and manages session lifecycle.
 
-The device persists brightness, volume, the current `chat_id`, and recently successful WiFi credentials in ESP32 NVS so those settings survive reboots. On boot, it reuses the saved chat session, prefers saved WiFi networks, and fetches the last assistant reply from the server before reconnecting.
+The device persists brightness, volume, and recently successful WiFi credentials in ESP32 NVS so those settings survive reboots. On boot, it starts a fresh chat, prefers saved WiFi networks, and connects directly to the server without fetching previous conversation text.
 
 ## Prerequisites
 
@@ -88,6 +88,8 @@ pio device monitor
 cd server
 wrangler secret put GEMINI_API_KEY
 wrangler secret put HISTORY_API_TOKEN
+wrangler secret put ADMIN_API_TOKEN      # optional; falls back to HISTORY_API_TOKEN
+wrangler secret put DEVICE_AUTH_TOKEN    # optional; set matching firmware token first
 wrangler deploy
 
 # Update firmware to point at the deployed endpoint
@@ -121,8 +123,8 @@ For local `wrangler dev`, also add `EMAIL_SENDER` and `EMAIL_RECIPIENT` to `serv
 
 ## History and Session APIs
 
-- `GET /history/:deviceId` — recent conversations for a device. Requires `X-History-Token` or `?token=...`.
-- `GET /session/:chatId?device_id=...` — last saved assistant message for a chat. The firmware uses this during boot restore.
+- `GET /history/:deviceId` — recent conversations for a device. Requires `X-History-Token`/`?token=...`, or authenticated firmware when `DEVICE_AUTH_TOKEN` is configured.
+- `GET /session/:chatId?device_id=...` — last saved assistant message for a chat. Requires the same auth as history.
 
 ## Credentials
 
@@ -130,7 +132,7 @@ All secrets are gitignored. You need to create these files locally:
 
 | File                         | Purpose                                    | Template                             |
 | ---------------------------- | ------------------------------------------ | ------------------------------------ |
-| `server/.dev.vars`           | Gemini API key, history token              | `server/.dev.vars.example`           |
+| `server/.dev.vars`           | Gemini API key, history/admin/device tokens | `server/.dev.vars.example`           |
 | `server/wrangler.toml`       | Cloudflare bindings (your D1 ID, optional email) | `server/wrangler.toml.example`       |
 | `firmware/src/credentials.h` | Server addresses + WiFi SSIDs/passwords    | `firmware/src/credentials.h.example` |
 

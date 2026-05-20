@@ -33,6 +33,8 @@ migrations_dir = "migrations"
 # Environment variables (set via wrangler secret)
 # wrangler secret put GEMINI_API_KEY
 # wrangler secret put HISTORY_API_TOKEN
+# wrangler secret put ADMIN_API_TOKEN
+# wrangler secret put DEVICE_AUTH_TOKEN
 
 # Optional R2 storage (OTA firmware + per-device assets).
 # Layout:

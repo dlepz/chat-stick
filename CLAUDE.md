@@ -67,12 +67,12 @@ Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Up
 - **`main.cpp`** — thin shell delegating to `AppController`
 - **`AppController`** (`app/`) — central coordinator. Owns all services, manages state machine (`AppState`: Connecting → Ready → Recording → Thinking → Playing), handles button input, menu navigation, and display updates
 - **Services** (`services/`):
-  - `LiveSessionService` — WebSocket client to the server; handles connection, audio streaming, tool call dispatch, session restore, firmware update checks
+  - `LiveSessionService` — WebSocket client to the server; handles connection, audio streaming, tool call dispatch, history fetches, firmware update checks
   - `AudioService` — mic capture (16kHz) and speaker playback (24kHz PCM)
   - `WiFiService` — multi-network connection with saved credential support
-  - `SettingsStore` — NVS persistence for brightness, volume, chat_id, WiFi credentials
+  - `SettingsStore` — NVS persistence for brightness, volume, voice, speaker settings, and legacy chat_id cleanup
 - **`ButtonStateMachine`** (`input/`) — debounced press/long-press/release detection for A (push-to-talk) and B (menu) buttons
-- **`PowerManager`** (`power/`) — idle timeout cascade: dim → screen off → light sleep → power off
+- **`PowerManager`** (`power/`) — firmware-owned idle timeout cascade: dim → screen off → power off
 - **`TextDisplay`** (`ui/`) — 135×240 LCD rendering with header/body/footer layout, menus, and state-based coloring
 - **`Config.h`** — all hardware constants, server endpoints, audio rates, pin assignments, power timeouts
 
@@ -80,12 +80,12 @@ Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Up
 
 1. **Voice exchange**: Button A press → mic capture at 16kHz → PCM chunks over WebSocket → server base64-encodes → Gemini `realtimeInput` → Gemini responds with audio parts → server decodes base64 → raw PCM binary frames back to device → speaker playback at 24kHz
 2. **Tool calls**: Gemini emits `toolCall` → server handles server-side tools directly, forwards device-side tools as JSON → device executes and sends `tool_response` → server relays `toolResponse` to Gemini
-3. **Session restore**: On boot, device sends saved `chat_id` → server fetches `last_message` from D1 → device displays previous conversation context
+3. **Startup session**: On boot, device starts with no `chat_id` so the server creates a fresh conversation. Previous conversations remain available through the Resume chat menu.
 
 ## Credentials
 
 All deployment-specific config is gitignored. Templates exist at:
-- `server/.dev.vars.example` → `server/.dev.vars` (GEMINI_API_KEY, HISTORY_API_TOKEN, optional EMAIL_SENDER/EMAIL_RECIPIENT)
+- `server/.dev.vars.example` → `server/.dev.vars` (GEMINI_API_KEY, HISTORY_API_TOKEN, optional ADMIN_API_TOKEN, DEVICE_AUTH_TOKEN, EMAIL_SENDER/EMAIL_RECIPIENT)
 - `server/wrangler.toml.example` → `server/wrangler.toml` (Cloudflare bindings — D1 database_id, optional `[[send_email]]` and `[[r2_buckets]]` blocks). The committed `wrangler.toml.example` is the canonical structure; do not edit `wrangler.toml` expecting forks to inherit it
 - `firmware/src/credentials.h.example` → `firmware/src/credentials.h` (WiFi networks)
 

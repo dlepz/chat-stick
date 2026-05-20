@@ -56,8 +56,11 @@ void AppController::setup() {
   }
 
   _audio.setVolume(_settings.volume());
-  _chatId = _settings.chatId();
-  _live.setChatId(_chatId);
+  if (!_settings.chatId().isEmpty()) {
+    _settings.clearChatId();
+  }
+  _chatId = "";
+  _live.setChatId("");
   _live.setVoice(_settings.voice());
 
   LiveSessionCallbacks callbacks;
@@ -88,7 +91,6 @@ void AppController::setup() {
   };
   callbacks.onChatId = [this](const String &chatId) {
     _chatId = chatId;
-    _settings.setChatId(chatId);
     _live.setChatId(chatId);
     _screenDirty = true;
   };
@@ -218,14 +220,6 @@ void AppController::setup() {
     return _audio.playMelody(notes);
   };
   callbacks.onPowerOff = [this]() { performPowerOff(); };
-  callbacks.onPowerTimeouts =
-      [this](unsigned long dimMs, unsigned long screenOffMs,
-             unsigned long lightSleepMs, unsigned long powerOffMs) {
-        _powerManager.setTimeouts({.dimMs = dimMs,
-                                   .screenOffMs = screenOffMs,
-                                   .lightSleepMs = lightSleepMs,
-                                   .powerOffMs = powerOffMs});
-      };
   callbacks.getDeviceStatusJson = [this]() { return deviceStatusJson(); };
   callbacks.onVoiceChanged = [this](const String &voice) {
     _settings.setVoice(voice);
@@ -243,7 +237,7 @@ void AppController::setup() {
   connectNetworkStack();
   renderIfNeeded();
 
-  setCpuFrequencyMhz(80);
+  setCpuFrequencyMhz(CPU_ACTIVE_MHZ);
   Serial.printf("[Setup] CPU clock set to %lu MHz\n", getCpuFrequencyMhz());
 }
 
@@ -278,10 +272,9 @@ void AppController::loop() {
 
   if (millis() - _lastHeartbeatMs > 3000) {
     _lastHeartbeatMs = millis();
-    Serial.printf("[Loop] state=%d region=%d power=%s ws=%d sleep=%d\n",
+    Serial.printf("[Loop] state=%d region=%d power=%s ws=%d\n",
                   static_cast<int>(_appState), static_cast<int>(_appRegion),
-                  powerStateName(_powerManager.getState()), _live.isConnected(),
-                  _powerManager.getState() == PowerState::LightSleep);
+                  powerStateName(_powerManager.getState()), _live.isConnected());
   }
 
   if (millis() - _lastHeaderRefreshMs > 30000) {
@@ -292,7 +285,6 @@ void AppController::loop() {
   _wifi.poll();
   _live.poll();
   _live.reconnectIfNeeded(_wifi.isConnected() &&
-                          _powerManager.getState() != PowerState::LightSleep &&
                           _appState != AppState::Error);
 
   handleButtons();
@@ -312,6 +304,14 @@ void AppController::configureCallbacks() {
   _powerManager.onWiFiStateChange(
       [this](bool enabled) { setNetworkEnabled(enabled); });
 
+  _powerManager.onCpuFrequencyChange([](int mhz) {
+    if (static_cast<int>(getCpuFrequencyMhz()) == mhz) {
+      return;
+    }
+    setCpuFrequencyMhz(mhz);
+    Serial.printf("[Power] CPU clock set to %lu MHz\n", getCpuFrequencyMhz());
+  });
+
   _powerManager.onPowerOff([this]() { performPowerOff(); });
 }
 
@@ -324,7 +324,8 @@ void AppController::connectNetworkStack() {
     return;
   }
 
-  restoreSessionPreview();
+  // Start the WebSocket as soon as WiFi is up. Boot starts with no chat_id, so
+  // the server creates a fresh conversation.
   _screenDirty = true;
   _live.connect();
 }
@@ -403,20 +404,6 @@ void AppController::clearToolText() {
 }
 
 void AppController::resetBodyPage() { _bodyPageIndex = 0; }
-
-void AppController::restoreSessionPreview() {
-  if (_chatId.isEmpty()) {
-    return;
-  }
-
-  String lastMessage;
-  if (_live.fetchLastAssistantMessage(lastMessage) && !lastMessage.isEmpty()) {
-    _toolText = lastMessage;
-    _statusText = "Restored";
-    resetBodyPage();
-    _screenDirty = true;
-  }
-}
 
 void AppController::handleButtons() {
   const unsigned long now = millis();
@@ -723,7 +710,6 @@ void AppController::resumeConversation(int index) {
 
   const ConversationSummary &entry = _history[index];
   _chatId = entry.chatId;
-  _settings.setChatId(_chatId);
   _live.setChatId(_chatId);
   _toolText = entry.lastMessage;
   if (_imagePresent) {
@@ -1056,11 +1042,10 @@ String AppController::deviceStatusJson() const {
   status["voice"] = _settings.voice();
   status["wifi_network"] = _wifi.isConnected() ? _wifi.ssid() : "disconnected";
   status["uptime_seconds"] = millis() / 1000;
+  status["cpu_mhz"] = getCpuFrequencyMhz();
   status["power_timeouts"]["dim_ms"] = _powerManager.timeouts().dimMs;
   status["power_timeouts"]["screen_off_ms"] =
       _powerManager.timeouts().screenOffMs;
-  status["power_timeouts"]["light_sleep_ms"] =
-      _powerManager.timeouts().lightSleepMs;
   status["power_timeouts"]["power_off_ms"] =
       _powerManager.timeouts().powerOffMs;
 

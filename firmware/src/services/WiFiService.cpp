@@ -3,6 +3,7 @@
 #include "../Config.h"
 #include "../credentials.h"
 #include <WiFi.h>
+#include <string.h>
 #include <time.h>
 
 void WiFiService::init() {
@@ -25,25 +26,98 @@ void WiFiService::poll() {
 
 bool WiFiService::connectKnownNetworks() {
   stopCaptivePortal();
+  WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  const unsigned long startMs = millis();
 
-  for (int i = 0; i < _savedNetworkCount; i++) {
-    const SavedNetwork &network = _savedNetworks[i];
-    if (connectToNetwork(network.ssid, network.password, network.label)) {
+  bool retryPrimaryBySsid = false;
+  bool skipFirstConfiguredNetwork = false;
+  if (_savedNetworkCount > 0) {
+    const SavedNetwork network = _savedNetworks[0];
+    const bool hasFastHints = network.hasBssid && network.channel > 0;
+    Serial.printf("[WiFi] Primary saved network %s fast_hints=%d channel=%ld\n",
+                  network.ssid.c_str(), hasFastHints ? 1 : 0,
+                  static_cast<long>(network.channel));
+    const unsigned long timeoutMs =
+        hasFastHints ? kPrimaryHintConnectTimeoutMs : kPrimaryConnectTimeoutMs;
+    if (connectToNetwork(network.ssid, network.password, network.label,
+                         timeoutMs, hasFastHints ? network.channel : 0,
+                         hasFastHints ? network.bssid : nullptr)) {
+      rememberNetwork(network.ssid, network.password, network.label);
+      Serial.printf("[WiFi] Connected in %lums\n", millis() - startMs);
       return true;
+    }
+    retryPrimaryBySsid = hasFastHints;
+  } else if (WIFI_NETWORK_COUNT > 0) {
+    if (connectToNetwork(WIFI_NETWORKS[0].ssid, WIFI_NETWORKS[0].password,
+                         WIFI_NETWORKS[0].label, kPrimaryConnectTimeoutMs)) {
+      rememberNetwork(WIFI_NETWORKS[0].ssid, WIFI_NETWORKS[0].password,
+                      WIFI_NETWORKS[0].label);
+      Serial.printf("[WiFi] Connected in %lums\n", millis() - startMs);
+      return true;
+    }
+    skipFirstConfiguredNetwork = true;
+  }
+
+  const unsigned long scanStartMs = millis();
+  refreshScanResults();
+  Serial.printf("[WiFi] Scan found %d network(s) in %lums\n", _scanResultCount,
+                millis() - scanStartMs);
+  const bool hasScanResults = _scanResultCount > 0;
+  const int passCount = hasScanResults ? 2 : 1;
+
+  for (int pass = 0; pass < passCount; pass++) {
+    const bool visiblePass = pass == 0;
+
+    for (int i = 0; i < _savedNetworkCount; i++) {
+      if (i == 0 && !retryPrimaryBySsid) {
+        continue;
+      }
+
+      const SavedNetwork network = _savedNetworks[i];
+      const bool visible = !hasScanResults || isScannedSsid(network.ssid);
+      if (hasScanResults && visible != visiblePass) {
+        continue;
+      }
+
+      const unsigned long timeoutMs =
+          visible ? kFallbackConnectTimeoutMs : kUnavailableConnectTimeoutMs;
+      if (connectToNetwork(network.ssid, network.password, network.label,
+                           timeoutMs)) {
+        rememberNetwork(network.ssid, network.password, network.label);
+        Serial.printf("[WiFi] Connected in %lums\n", millis() - startMs);
+        return true;
+      }
+    }
+
+    for (int i = 0; i < WIFI_NETWORK_COUNT; i++) {
+      if (i == 0 && skipFirstConfiguredNetwork) {
+        continue;
+      }
+
+      if (hasSavedNetwork(WIFI_NETWORKS[i].ssid)) {
+        continue;
+      }
+
+      const bool visible = !hasScanResults || isScannedSsid(WIFI_NETWORKS[i].ssid);
+      if (hasScanResults && visible != visiblePass) {
+        continue;
+      }
+
+      const unsigned long timeoutMs =
+          visible ? kFallbackConnectTimeoutMs : kUnavailableConnectTimeoutMs;
+      if (connectToNetwork(WIFI_NETWORKS[i].ssid, WIFI_NETWORKS[i].password,
+                           WIFI_NETWORKS[i].label, timeoutMs)) {
+        rememberNetwork(WIFI_NETWORKS[i].ssid, WIFI_NETWORKS[i].password,
+                        WIFI_NETWORKS[i].label);
+        Serial.printf("[WiFi] Connected in %lums\n", millis() - startMs);
+        return true;
+      }
     }
   }
 
-  for (int i = 0; i < WIFI_NETWORK_COUNT; i++) {
-    if (connectToNetwork(WIFI_NETWORKS[i].ssid, WIFI_NETWORKS[i].password,
-                         WIFI_NETWORKS[i].label)) {
-      rememberNetwork(WIFI_NETWORKS[i].ssid, WIFI_NETWORKS[i].password,
-                      WIFI_NETWORKS[i].label);
-      return true;
-    }
-  }
-
-  Serial.println("[WiFi] All networks failed");
+  Serial.printf("[WiFi] All networks failed after %lums\n", millis() - startMs);
   return false;
 }
 
@@ -135,6 +209,15 @@ void WiFiService::loadSavedNetworks() {
         _prefs.getString(("pass_" + suffix).c_str(), "");
     _savedNetworks[i].label =
         _prefs.getString(("label_" + suffix).c_str(), "");
+    _savedNetworks[i].channel =
+        _prefs.getInt(("chan_" + suffix).c_str(), 0);
+    const String bssidKey = "bssid_" + suffix;
+    _savedNetworks[i].hasBssid =
+        _prefs.getBytesLength(bssidKey.c_str()) == kBssidLength;
+    if (_savedNetworks[i].hasBssid) {
+      _prefs.getBytes(bssidKey.c_str(), _savedNetworks[i].bssid,
+                      kBssidLength);
+    }
 
     if (_savedNetworks[i].label.isEmpty()) {
       _savedNetworks[i].label = "Saved";
@@ -155,15 +238,26 @@ void WiFiService::writeSavedNetworks() {
     const String ssidKey = "ssid_" + suffix;
     const String passKey = "pass_" + suffix;
     const String labelKey = "label_" + suffix;
+    const String channelKey = "chan_" + suffix;
+    const String bssidKey = "bssid_" + suffix;
 
     if (i < _savedNetworkCount) {
       _prefs.putString(ssidKey.c_str(), _savedNetworks[i].ssid);
       _prefs.putString(passKey.c_str(), _savedNetworks[i].password);
       _prefs.putString(labelKey.c_str(), _savedNetworks[i].label);
+      _prefs.putInt(channelKey.c_str(), _savedNetworks[i].channel);
+      if (_savedNetworks[i].hasBssid) {
+        _prefs.putBytes(bssidKey.c_str(), _savedNetworks[i].bssid,
+                        kBssidLength);
+      } else {
+        _prefs.remove(bssidKey.c_str());
+      }
     } else {
       _prefs.remove(ssidKey.c_str());
       _prefs.remove(passKey.c_str());
       _prefs.remove(labelKey.c_str());
+      _prefs.remove(channelKey.c_str());
+      _prefs.remove(bssidKey.c_str());
     }
   }
 }
@@ -186,6 +280,14 @@ void WiFiService::rememberNetwork(const String &ssid, const String &password,
   if (network.label.isEmpty()) {
     network.label = "Saved";
   }
+  if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == ssid) {
+    network.channel = WiFi.channel();
+    uint8_t *connectedBssid = WiFi.BSSID();
+    if (connectedBssid) {
+      memcpy(network.bssid, connectedBssid, kBssidLength);
+      network.hasBssid = true;
+    }
+  }
 
   if (existingIndex > 0) {
     for (int i = existingIndex; i > 0; i--) {
@@ -193,6 +295,14 @@ void WiFiService::rememberNetwork(const String &ssid, const String &password,
     }
     _savedNetworks[0] = network;
   } else if (existingIndex == 0) {
+    const SavedNetwork &current = _savedNetworks[0];
+    if (current.password == network.password && current.label == network.label &&
+        current.channel == network.channel &&
+        current.hasBssid == network.hasBssid &&
+        (!network.hasBssid ||
+         memcmp(current.bssid, network.bssid, kBssidLength) == 0)) {
+      return;
+    }
     _savedNetworks[0] = network;
   } else {
     const int limit = min(_savedNetworkCount, kMaxSavedNetworks - 1);
@@ -210,32 +320,57 @@ void WiFiService::rememberNetwork(const String &ssid, const String &password,
 }
 
 bool WiFiService::connectToNetwork(const String &ssid, const String &password,
-                                   const String &label) {
+                                   const String &label,
+                                   unsigned long timeoutMs, int32_t channel,
+                                   const uint8_t *bssid) {
   if (ssid.isEmpty()) {
     return false;
   }
 
-  Serial.printf("[WiFi] Trying %s (%s)...\n", ssid.c_str(),
-                label.isEmpty() ? "Saved" : label.c_str());
+  Serial.printf("[WiFi] Trying %s (%s, timeout=%lums, channel=%ld, bssid=%d)...\n",
+                ssid.c_str(), label.isEmpty() ? "Saved" : label.c_str(),
+                timeoutMs, static_cast<long>(channel), bssid ? 1 : 0);
 
-  WiFi.begin(ssid.c_str(), password.c_str());
+  const unsigned long startMs = millis();
+  if (bssid && channel > 0) {
+    WiFi.begin(ssid.c_str(), password.c_str(), channel, bssid);
+  } else {
+    WiFi.begin(ssid.c_str(), password.c_str());
+  }
 
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED &&
-         attempts < WIFI_CONNECT_TIMEOUT_SEC * 4) {
-    delay(250);
-    attempts++;
+  while (WiFi.status() != WL_CONNECTED && millis() - startMs < timeoutMs) {
+    delay(100);
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("[WiFi] Connected to %s — %s\n", ssid.c_str(),
-                  WiFi.localIP().toString().c_str());
+    Serial.printf("[WiFi] Connected to %s in %lums — %s\n", ssid.c_str(),
+                  millis() - startMs, WiFi.localIP().toString().c_str());
     WiFi.setSleep(WIFI_PS_MIN_MODEM);
     configTime(0, 0, NTP_SERVER);
     return true;
   }
 
+  Serial.printf("[WiFi] Failed %s after %lums status=%d\n", ssid.c_str(),
+                millis() - startMs, static_cast<int>(WiFi.status()));
   WiFi.disconnect();
+  return false;
+}
+
+bool WiFiService::hasSavedNetwork(const String &ssid) const {
+  for (int i = 0; i < _savedNetworkCount; i++) {
+    if (_savedNetworks[i].ssid == ssid) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool WiFiService::isScannedSsid(const String &ssid) const {
+  for (int i = 0; i < _scanResultCount; i++) {
+    if (_scanResults[i] == ssid) {
+      return true;
+    }
+  }
   return false;
 }
 

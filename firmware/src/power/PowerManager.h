@@ -8,7 +8,6 @@ enum class PowerState {
   Dimmed,
   ScreenOff,
   Waking,
-  LightSleep,
   PowerOff,
 };
 
@@ -17,7 +16,6 @@ const char *powerStateName(PowerState state);
 struct PowerTimeouts {
   unsigned long dimMs;
   unsigned long screenOffMs;
-  unsigned long lightSleepMs;
   unsigned long powerOffMs;
 };
 
@@ -27,15 +25,13 @@ public:
 
   void update();
   void registerActivity();
-  void setTimeouts(const PowerTimeouts &timeouts);
   const PowerTimeouts &timeouts() const { return _timeouts; }
 
   PowerState getState() const { return _state; }
   unsigned long getIdleTime() const;
 
   bool isInterruptible() const {
-    return _state == PowerState::Dimmed || _state == PowerState::ScreenOff ||
-           _state == PowerState::LightSleep;
+    return _state == PowerState::Dimmed || _state == PowerState::ScreenOff;
   }
 
   bool isWaking() const { return _state == PowerState::Waking; }
@@ -54,6 +50,10 @@ public:
     _wifiCallback = callback;
   }
 
+  void onCpuFrequencyChange(std::function<void(int)> callback) {
+    _cpuFrequencyCallback = callback;
+  }
+
   void onPowerOff(std::function<void()> callback) { _powerOffCallback = callback; }
 
 private:
@@ -64,8 +64,9 @@ private:
 
   std::function<void(int)> _brightnessCallback;
   std::function<void(bool)> _wifiCallback;
+  std::function<void(int)> _cpuFrequencyCallback;
   std::function<void()> _powerOffCallback;
 
+  void applyCpuFrequency(int mhz);
   void transitionTo(PowerState newState);
-  void enterLightSleep();
 };

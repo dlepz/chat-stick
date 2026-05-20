@@ -1116,21 +1116,19 @@ Power management dims or disables the display based on idle time. Power timers o
 | Active     | User activity | Full brightness         | On   |
 | Dimmed     | 60s idle      | Reduced brightness (48) | On   |
 | ScreenOff  | 2 min idle    | Display off (0)         | On   |
-| LightSleep | 5 min idle    | Display off             | Off  |
-| PowerOff   | 10 min idle   | Device off              | Off  |
+| PowerOff   | 5 min idle    | Device off              | Off  |
 
-Waking from Dimmed/ScreenOff/LightSleep:
+Waking from Dimmed/ScreenOff:
 
 - Any button press begins waking (transitional Waking state)
 - Button release finishes waking, restores Active state and full brightness
-- If waking from LightSleep, WiFi reconnects and WebSocket re-establishes
 
 ## Controls
 
 - **Button A**: Start recording (or resume during grace); interrupt generation/playback and start recording; select in menus.
 - **Button B** (click): Paginate tool text and WiFi/Resume lists; cycle menu items; dismiss tool text.
 - **Button B** (hold): Open menu from chat; go back/close menu.
-- **During power-save** (Dimmed, ScreenOff, LightSleep): Either button press begins waking; release finishes.
+- **During power-save** (Dimmed, ScreenOff): Either button press begins waking; release finishes.
 
 ## Copy Reference
 

@@ -46,7 +46,7 @@ constexpr int WIFI_CONNECT_TIMEOUT_SEC = 10;
 
 // ============= Device =============
 constexpr const char *DEVICE_ID = "m5s3-live";
-constexpr int FIRMWARE_VERSION = 4;
+constexpr int FIRMWARE_VERSION = 8;
 
 // ============= Audio =============
 constexpr int MIC_SAMPLE_RATE = 16000;  // 16 kHz input (Gemini Live API)
@@ -70,10 +70,10 @@ constexpr const char *NTP_SERVER = "pool.ntp.org";
 constexpr const char *LOCAL_TZ = "PST8PDT,M3.2.0,M11.1.0";
 
 // ============= Power Management =============
+constexpr int CPU_ACTIVE_MHZ = 160;
+constexpr int CPU_IDLE_MHZ = 80;
 constexpr unsigned long IDLE_DIM_MS = 60 * 1000;
 constexpr unsigned long IDLE_SCREEN_OFF_MS = 2 * 60 * 1000;
-constexpr unsigned long IDLE_LIGHT_SLEEP_MS = 5 * 60 * 1000;
-constexpr unsigned long IDLE_POWER_OFF_MS = 10 * 60 * 1000;
-constexpr unsigned long LIGHT_SLEEP_WAKE_INTERVAL_MS = 60 * 1000;
+constexpr unsigned long IDLE_POWER_OFF_MS = 5 * 60 * 1000;
 constexpr int BRIGHTNESS_DIM = 48;
 constexpr int BRIGHTNESS_OFF = 0;

@@ -10,6 +10,16 @@
 using namespace websockets;
 
 namespace {
+bool hasDeviceAuthToken() {
+  return DEVICE_AUTH_TOKEN && DEVICE_AUTH_TOKEN[0];
+}
+
+void addDeviceAuthHeader(HTTPClient &http) {
+  if (hasDeviceAuthToken()) {
+    http.addHeader("X-Device-Token", DEVICE_AUTH_TOKEN);
+  }
+}
+
 // Decode a standard base64 string into `out`. Returns the decoded byte count,
 // or -1 if the input is malformed. Tolerates whitespace in the input.
 int decodeBase64(const char *in, size_t inLen, uint8_t *out, size_t outCap) {
@@ -175,6 +185,21 @@ bool runFirmwareUpdateDownload(HTTPClient &http, String &outError) {
 
 void LiveSessionService::init(const LiveSessionCallbacks &callbacks) {
   _callbacks = callbacks;
+  _prefsReady = _prefs.begin(kPrefsNamespace, false);
+  if (_prefsReady) {
+    const int savedIndex = _prefs.getInt(kLastServerIndexKey, 0);
+    if (savedIndex >= 0 && savedIndex < SERVER_ENDPOINT_COUNT) {
+      _nextServerIndex = savedIndex;
+      Serial.printf("[WS] Loaded preferred server index %d\n", _nextServerIndex);
+    }
+  } else {
+    Serial.println("[WS] Preferences init failed; server preference disabled");
+  }
+
+  if (hasDeviceAuthToken()) {
+    _ws.addHeader("X-Device-Token", DEVICE_AUTH_TOKEN);
+  }
+
   _ws.onMessage([this](WebsocketsMessage msg) { handleMessage(msg); });
   _ws.onEvent(
       [this](WebsocketsEvent event, String data) { handleEvent(event, data); });
@@ -261,79 +286,6 @@ bool LiveSessionService::sendAudio(const int16_t *data, size_t len) {
   return _ws.sendBinary(reinterpret_cast<const char *>(data), len);
 }
 
-bool LiveSessionService::fetchLastAssistantMessage(String &outMessage) {
-  outMessage = "";
-  if (_chatId.isEmpty()) {
-    return false;
-  }
-
-  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
-    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
-    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
-    const String url = endpointBaseUrl(endpoint) + "/session/" + _chatId +
-                       "?device_id=" + DEVICE_ID;
-
-    Serial.printf("[HTTP] Restoring session from %s\n", url.c_str());
-
-    int statusCode = -1;
-    String body;
-    {
-      HTTPClient http;
-      if (endpoint.port == 443) {
-        WiFiClientSecure client;
-        if (endpoint.ca_cert) {
-          client.setCACert(endpoint.ca_cert);
-        } else {
-          client.setInsecure();
-        }
-        if (!http.begin(client, url)) {
-          continue;
-        }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
-        }
-        http.end();
-      } else {
-        WiFiClient client;
-        if (!http.begin(client, url)) {
-          continue;
-        }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
-        }
-        http.end();
-      }
-    }
-
-    if (statusCode == 404) {
-      return false;
-    }
-
-    if (statusCode != 200 || body.isEmpty()) {
-      Serial.printf("[HTTP] Session restore failed: status=%d\n", statusCode);
-      continue;
-    }
-
-    JsonDocument doc;
-    if (deserializeJson(doc, body)) {
-      Serial.println("[HTTP] Session restore returned invalid JSON");
-      continue;
-    }
-
-    const char *lastMessage = doc["last_message"];
-    if (!lastMessage || !lastMessage[0]) {
-      return false;
-    }
-
-    outMessage = lastMessage;
-    return true;
-  }
-
-  return false;
-}
-
 bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries[],
                                                   int maxEntries,
                                                   int &outCount) {
@@ -364,6 +316,7 @@ bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries
         if (!http.begin(client, url)) {
           continue;
         }
+        addDeviceAuthHeader(http);
         statusCode = http.GET();
         if (statusCode > 0) {
           body = http.getString();
@@ -374,6 +327,7 @@ bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries
         if (!http.begin(client, url)) {
           continue;
         }
+        addDeviceAuthHeader(http);
         statusCode = http.GET();
         if (statusCode > 0) {
           body = http.getString();
@@ -386,6 +340,7 @@ bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries
       Serial.printf("[HTTP] History fetch failed: status=%d\n", statusCode);
       continue;
     }
+    rememberSuccessfulEndpoint(index);
 
     JsonDocument doc;
     if (deserializeJson(doc, body) || !doc.is<JsonArray>()) {
@@ -440,6 +395,7 @@ bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
         if (!http.begin(client, url)) {
           continue;
         }
+        addDeviceAuthHeader(http);
         statusCode = http.GET();
         if (statusCode > 0) {
           body = http.getString();
@@ -450,6 +406,7 @@ bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
         if (!http.begin(client, url)) {
           continue;
         }
+        addDeviceAuthHeader(http);
         statusCode = http.GET();
         if (statusCode > 0) {
           body = http.getString();
@@ -459,6 +416,7 @@ bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
     }
 
     if (statusCode == 404) {
+      rememberSuccessfulEndpoint(index);
       continue;
     }
 
@@ -466,6 +424,7 @@ bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
       Serial.printf("[HTTP] Firmware check failed: status=%d\n", statusCode);
       continue;
     }
+    rememberSuccessfulEndpoint(index);
 
     JsonDocument doc;
     if (deserializeJson(doc, body)) {
@@ -535,6 +494,7 @@ void LiveSessionService::handleEvent(WebsocketsEvent event, String data) {
   case WebsocketsEvent::ConnectionOpened:
     Serial.println("[WS] Opened");
     _connected = true;
+    rememberSuccessfulEndpoint(_activeServerIndex);
     if (_callbacks.onStatus) {
       _callbacks.onStatus("Waiting for AI...");
     }
@@ -551,6 +511,18 @@ void LiveSessionService::handleEvent(WebsocketsEvent event, String data) {
   case WebsocketsEvent::GotPing:
   case WebsocketsEvent::GotPong:
     break;
+  }
+}
+
+void LiveSessionService::rememberSuccessfulEndpoint(int index) {
+  if (index < 0 || index >= SERVER_ENDPOINT_COUNT) {
+    return;
+  }
+
+  _nextServerIndex = index;
+  if (_prefsReady && _prefs.getInt(kLastServerIndexKey, -1) != index) {
+    _prefs.putInt(kLastServerIndexKey, index);
+    Serial.printf("[WS] Saved preferred server index %d\n", index);
   }
 }
 
@@ -614,15 +586,6 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 
   if (strcmp(type, "settings") == 0) {
-    if (_callbacks.onPowerTimeouts) {
-      _callbacks.onPowerTimeouts(doc["power"]["dim_ms"] | IDLE_DIM_MS,
-                                 doc["power"]["screen_off_ms"] |
-                                     IDLE_SCREEN_OFF_MS,
-                                 doc["power"]["light_sleep_ms"] |
-                                     IDLE_LIGHT_SLEEP_MS,
-                                 doc["power"]["power_off_ms"] |
-                                     IDLE_POWER_OFF_MS);
-    }
     return;
   }
 

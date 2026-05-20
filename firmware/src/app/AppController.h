@@ -87,7 +87,6 @@ private:
   void performPowerOff();
   void clearToolText();
   void resetBodyPage();
-  void restoreSessionPreview();
   void beginFactoryReset();
   const char *errorCategoryLabel() const;
 

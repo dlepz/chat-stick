@@ -10,6 +10,8 @@ export interface Env {
 	VECTORIZE: VectorizeIndex
 	DB: D1Database
 	HISTORY_API_TOKEN: string
+	ADMIN_API_TOKEN?: string
+	DEVICE_AUTH_TOKEN?: string
 	STORAGE?: R2Bucket
 }
 
@@ -46,6 +48,9 @@ export default {
 				if (upgrade !== 'websocket') {
 					return new Response('Expected WebSocket', { status: 426 })
 				}
+				if (!isAuthorizedDeviceRequest(request, env)) {
+					return new Response('Unauthorized', { status: 401 })
+				}
 
 				// Route to DO by device_id (one session per device)
 				const deviceId = url.searchParams.get('device_id') || 'unknown'
@@ -57,10 +62,16 @@ export default {
 
 			// Admin: index docs into Vectorize
 			case '/admin/index':
+				if (!isAuthorizedAdminRequest(request, env)) {
+					return new Response('Unauthorized', { status: 401, headers: corsHeaders() })
+				}
 				return indexDocs(env)
 
 			// Admin: test vector search
 			case '/admin/search': {
+				if (!isAuthorizedAdminRequest(request, env)) {
+					return new Response('Unauthorized', { status: 401, headers: corsHeaders() })
+				}
 				const q = url.searchParams.get('q') || 'hello'
 				return vectorSearch(q, env)
 			}
@@ -69,6 +80,9 @@ export default {
 				return new Response('ok')
 
 			case '/firmware/check': {
+				if (!isAuthorizedDeviceRequest(request, env)) {
+					return new Response('Unauthorized', { status: 401, headers: corsHeaders() })
+				}
 				const currentVersion = Number(url.searchParams.get('version') || '0')
 				const latest = await findLatestFirmware(env)
 				const updateAvailable = !!latest && latest.version > currentVersion
@@ -108,10 +122,9 @@ export default {
 				const historyMatch = url.pathname.match(/^\/history\/(.+)$/)
 				if (historyMatch) {
 					const deviceId = decodeURIComponent(historyMatch[1])
-					const requestedDeviceId = url.searchParams.get('device_id') ?? ''
 					const authorized =
 						isAuthorizedHistoryRequest(request, env) ||
-						(!!requestedDeviceId && requestedDeviceId === deviceId)
+						isAuthenticatedDeviceRequest(request, env)
 					if (!authorized) {
 						return new Response('Unauthorized', { status: 401, headers: corsHeaders() })
 					}
@@ -133,7 +146,6 @@ export default {
 				const sessionMatch = url.pathname.match(/^\/session\/(.+)$/)
 				if (sessionMatch) {
 					const chatId = decodeURIComponent(sessionMatch[1])
-					const requestedDeviceId = url.searchParams.get('device_id') ?? ''
 					const row = await env.DB.prepare(
 						`SELECT chat_id, device_id, last_message, updated_at
 						 FROM conversations
@@ -154,7 +166,7 @@ export default {
 
 					const authorized =
 						isAuthorizedHistoryRequest(request, env) ||
-						(!!requestedDeviceId && requestedDeviceId === row.device_id)
+						isAuthenticatedDeviceRequest(request, env)
 					if (!authorized) {
 						return new Response('Unauthorized', { status: 401, headers: corsHeaders() })
 					}
@@ -181,7 +193,7 @@ function corsHeaders(): HeadersInit {
 	return {
 		'Access-Control-Allow-Origin': '*',
 		'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-		'Access-Control-Allow-Headers': 'Content-Type, X-History-Token',
+		'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Admin-Token, X-Device-Token, X-History-Token',
 	}
 }
 
@@ -200,11 +212,70 @@ function isAuthorizedHistoryRequest(request: Request, env: Env): boolean {
 	const configuredToken = env.HISTORY_API_TOKEN?.trim()
 	if (!configuredToken) return false
 
-	const url = new URL(request.url)
-	const providedToken =
-		request.headers.get('X-History-Token') ??
-		url.searchParams.get('token') ??
-		''
+	const providedToken = getRequestToken(request, {
+		headerNames: ['X-History-Token'],
+		queryNames: ['token'],
+	})
 
-	return providedToken === configuredToken
+	return secureTokenEquals(providedToken, configuredToken)
+}
+
+function isAuthorizedAdminRequest(request: Request, env: Env): boolean {
+	const configuredToken = (env.ADMIN_API_TOKEN || env.HISTORY_API_TOKEN || '').trim()
+	if (!configuredToken) return false
+
+	const providedToken = getRequestToken(request, {
+		headerNames: ['X-Admin-Token', 'X-History-Token'],
+		queryNames: ['admin_token', 'token'],
+	})
+
+	return secureTokenEquals(providedToken, configuredToken)
+}
+
+function isAuthorizedDeviceRequest(request: Request, env: Env): boolean {
+	const configuredToken = env.DEVICE_AUTH_TOKEN?.trim()
+	if (!configuredToken) return true
+
+	const providedToken = getRequestToken(request, {
+		headerNames: ['X-Device-Token'],
+		queryNames: ['device_token'],
+	})
+
+	return secureTokenEquals(providedToken, configuredToken)
+}
+
+function isAuthenticatedDeviceRequest(request: Request, env: Env): boolean {
+	return Boolean(env.DEVICE_AUTH_TOKEN?.trim()) && isAuthorizedDeviceRequest(request, env)
+}
+
+function getRequestToken(
+	request: Request,
+	options: { headerNames: string[]; queryNames: string[] }
+): string {
+	for (const headerName of options.headerNames) {
+		const value = request.headers.get(headerName)
+		if (value) return value.trim()
+	}
+
+	const auth = request.headers.get('Authorization') || ''
+	const bearer = auth.match(/^Bearer\s+(.+)$/i)?.[1]
+	if (bearer) return bearer.trim()
+
+	const url = new URL(request.url)
+	for (const queryName of options.queryNames) {
+		const value = url.searchParams.get(queryName)
+		if (value) return value.trim()
+	}
+
+	return ''
+}
+
+function secureTokenEquals(providedToken: string, configuredToken: string): boolean {
+	if (!providedToken || providedToken.length !== configuredToken.length) return false
+
+	let diff = 0
+	for (let i = 0; i < configuredToken.length; i++) {
+		diff |= configuredToken.charCodeAt(i) ^ providedToken.charCodeAt(i)
+	}
+	return diff === 0
 }

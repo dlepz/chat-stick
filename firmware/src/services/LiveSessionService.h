@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <Arduino.h>
 #include <ArduinoWebsockets.h>
+#include <Preferences.h>
 #include <functional>
 
 struct LiveSessionCallbacks {
@@ -29,9 +30,6 @@ struct LiveSessionCallbacks {
   std::function<bool(const String &)> onPlaySound;
   std::function<bool(const String &)> onPlayMelody;
   std::function<void()> onPowerOff;
-  std::function<void(unsigned long, unsigned long, unsigned long,
-                     unsigned long)>
-      onPowerTimeouts;
   std::function<String()> getDeviceStatusJson;
   std::function<void(const String &)> onVoiceChanged;
 };
@@ -67,7 +65,6 @@ public:
   bool sendStart();
   bool sendStop();
   bool sendAudio(const int16_t *data, size_t len);
-  bool fetchLastAssistantMessage(String &outMessage);
   bool fetchConversationHistory(ConversationSummary outEntries[], int maxEntries,
                                 int &outCount);
   bool checkFirmwareUpdate(FirmwareUpdateInfo &outInfo);
@@ -76,19 +73,24 @@ public:
 
 private:
   websockets::WebsocketsClient _ws;
+  Preferences _prefs;
   LiveSessionCallbacks _callbacks;
   String _chatId;
   String _voice;
   bool _connected = false;
+  bool _prefsReady = false;
   unsigned long _lastReconnectMs = 0;
   int _nextServerIndex = 0;
   int _activeServerIndex = -1;
 
   static constexpr unsigned long kReconnectMs = 5000;
+  static constexpr const char *kPrefsNamespace = "live";
+  static constexpr const char *kLastServerIndexKey = "server";
 
   void handleMessage(websockets::WebsocketsMessage msg);
   void handleEvent(websockets::WebsocketsEvent event, String data);
   void handleToolCall(const ArduinoJson::JsonDocument &doc);
   void sendToolResponse(const char *name, const char *id, const String &result);
   String endpointBaseUrl(const ServerEndpoint &endpoint) const;
+  void rememberSuccessfulEndpoint(int index);
 };

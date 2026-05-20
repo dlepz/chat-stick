@@ -1,6 +1,12 @@
 GEMINI_API_KEY=your-gemini-api-key-here
 HISTORY_API_TOKEN=your-history-api-token-here
 
+# Optional but recommended for deployed devices/admin endpoints.
+# If DEVICE_AUTH_TOKEN is set on the worker, set the same value in
+# firmware/src/credentials.h before flashing or publishing OTA.
+# ADMIN_API_TOKEN=your-admin-api-token-here
+# DEVICE_AUTH_TOKEN=your-device-auth-token-here
+
 # Optional: outbound email via Cloudflare Email Routing.
 # Required only if you uncommented the [[send_email]] block in wrangler.toml.
 # Note: wrangler dev does not actually deliver mail; deploy to test.
