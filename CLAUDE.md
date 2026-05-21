@@ -101,14 +101,13 @@ All deployment-specific config is gitignored. Templates exist at:
 
 - `./flash.sh [--monitor]` — build firmware and upload over USB
 - `./deploy.sh` — `wrangler deploy` the Cloudflare Worker
-- `./publish-ota-release.sh` — build firmware and upload `firmware-v<N>.bin` to R2 under `chat-stick/firmware/`
+- `./publish-ota-release.sh` — bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2 under `chat-stick/firmware/`
 - `./publish.sh` — publish OTA + deploy worker (chains the two above)
 
 ## Releasing Firmware (OTA)
 
-1. Bump `FIRMWARE_VERSION` in `firmware/src/Config.h`
-2. Run `./publish-ota-release.sh`
-3. Devices running an older version pick up the new binary on next boot via `/firmware/check` → `/firmware/download`
+1. Run `./publish-ota-release.sh`
+2. Devices running an older version pick up the new binary on next boot via `/firmware/check` → `/firmware/download`
 
 The worker auto-detects the highest `firmware-v<N>.bin` in R2; there's no separate version registry. Because `credentials.h` is compiled into the binary, **never commit or publish built `.bin` files** — `strings` will surface WiFi creds and the worker URL.
 

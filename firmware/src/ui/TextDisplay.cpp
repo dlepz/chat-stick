@@ -32,6 +32,36 @@ constexpr uint8_t kBellBits[] = {
     0x00, 0x00,
     0x00, 0x00,
 };
+
+// Custom 8x16 glyphs grafted onto AsciiFont8x16 at unused control codepoints.
+// Each row is a single byte, MSB = leftmost pixel. The glyph occupies one
+// 8x16 character cell so it flows through the normal text layout.
+constexpr uint8_t kGlyphTriangleDownBits[16] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xFE, // X X X X X X X .
+    0x7C, // . X X X X X . .
+    0x38, // . . X X X . . .
+    0x10, // . . . X . . . .
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+constexpr uint8_t kGlyphBulletFilledBits[16] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x38, // . . X X X . . .
+    0x7C, // . X X X X X . .
+    0x7C, // . X X X X X . .
+    0x7C, // . X X X X X . .
+    0x38, // . . X X X . . .
+    0x00, 0x00, 0x00, 0x00, 0x00,
+};
+constexpr uint8_t kGlyphBulletHollowBits[16] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x38, // . . X X X . . .
+    0x44, // . X . . . X . .
+    0x44, // . X . . . X . .
+    0x44, // . X . . . X . .
+    0x38, // . . X X X . . .
+    0x00, 0x00, 0x00, 0x00, 0x00,
+};
 } // namespace
 
 void TextDisplay::init() {
@@ -183,6 +213,21 @@ int TextDisplay::pageCountForText(const String &text) const {
   return max(1, (wrappedCount + kBodyRows - 1) / kBodyRows);
 }
 
+String TextDisplay::layoutTextForReveal(const String &text) const {
+  String wrapped[32];
+  const int wrappedCount = wrapBodyText(text, wrapped, 32);
+  String out;
+
+  for (int i = 0; i < wrappedCount; i++) {
+    if (i > 0) {
+      out += '\n';
+    }
+    out += wrapped[i];
+  }
+
+  return out;
+}
+
 String TextDisplay::fitLine(const String &text) const {
   String out;
   out.reserve(kCharsPerLine);
@@ -190,7 +235,12 @@ String TextDisplay::fitLine(const String &text) const {
   for (int i = 0; i < static_cast<int>(text.length()) && out.length() < kCharsPerLine;
        i++) {
     const char c = text[i];
-    out += (c >= 32 && c <= 126) ? c : ' ';
+    if ((c >= 32 && c <= 126) || c == kGlyphTriangleDown ||
+        c == kGlyphBulletFilled || c == kGlyphBulletHollow) {
+      out += c;
+    } else {
+      out += ' ';
+    }
   }
 
   return out;
@@ -297,7 +347,8 @@ int TextDisplay::wrapBodyText(const String &text, String out[], int maxRows) con
       continue;
     }
 
-    if (c >= 32 && c <= 126) {
+    if ((c >= 32 && c <= 126) || c == kGlyphTriangleDown ||
+        c == kGlyphBulletFilled || c == kGlyphBulletHollow) {
       word += c;
     }
   }
@@ -314,38 +365,92 @@ int TextDisplay::wrapBodyText(const String &text, String out[], int maxRows) con
 }
 
 void TextDisplay::drawLine(int row, const String &text, uint16_t color) const {
-  if (_canvasReady) {
-    _canvas.setTextColor(color);
-    _canvas.setCursor(4, row * LINE_HEIGHT);
-    _canvas.print(fitLine(text));
+  const String fitted = fitLine(text);
+  const int yTop = row * LINE_HEIGHT;
+  int x = 4;
+  for (int i = 0; i < static_cast<int>(fitted.length()); i++) {
+    drawCharCell(x, yTop, fitted[i], color);
+    x += 8;
+  }
+}
+
+void TextDisplay::drawCharCell(int x, int yTop, char c, uint16_t color) const {
+  if (c == kGlyphTriangleDown) {
+    drawBitmapGlyph(x, yTop, kGlyphTriangleDownBits, color);
     return;
   }
-
+  if (c == kGlyphBulletFilled) {
+    drawBitmapGlyph(x, yTop, kGlyphBulletFilledBits, color);
+    return;
+  }
+  if (c == kGlyphBulletHollow) {
+    drawBitmapGlyph(x, yTop, kGlyphBulletHollowBits, color);
+    return;
+  }
+  if (_canvasReady) {
+    _canvas.setTextColor(color);
+    _canvas.setCursor(x, yTop);
+    _canvas.print(c);
+    return;
+  }
   M5.Display.setTextColor(color);
-  M5.Display.setCursor(4, row * LINE_HEIGHT);
-  M5.Display.print(fitLine(text));
+  M5.Display.setCursor(x, yTop);
+  M5.Display.print(c);
+}
+
+void TextDisplay::drawBitmapGlyph(int x, int yTop, const uint8_t *bits,
+                                  uint16_t color) const {
+  for (int row = 0; row < LINE_HEIGHT; row++) {
+    const uint8_t byte = bits[row];
+    if (byte == 0) continue;
+    for (int col = 0; col < 8; col++) {
+      if (!((byte >> (7 - col)) & 1)) continue;
+      if (_canvasReady) {
+        _canvas.drawPixel(x + col, yTop + row, color);
+      } else {
+        M5.Display.drawPixel(x + col, yTop + row, color);
+      }
+    }
+  }
 }
 
 void TextDisplay::drawGlyphAtRight(int row, char glyph, uint16_t color) const {
   const int x = 4 + (kCharsPerLine - 1) * 8;
   const int y = row * LINE_HEIGHT;
-  if (_canvasReady) {
-    _canvas.setTextColor(color);
-    _canvas.setCursor(x, y);
-    _canvas.print(glyph);
-    return;
-  }
-  M5.Display.setTextColor(color);
-  M5.Display.setCursor(x, y);
-  M5.Display.print(glyph);
+  drawCharCell(x, y, glyph, color);
 }
 
 void TextDisplay::drawPageIndicator(int pageIndex, int pageCount) const {
   if (pageCount <= 1) {
     return;
   }
-  const bool lastPage = pageIndex >= pageCount - 1;
-  drawGlyphAtRight(kFooterRow, lastPage ? 'o' : 'v', COLOR_GRAY);
+  // Up to 8 dots — solid for current page, hollow for the rest. Past that,
+  // fall back to a single down-triangle (more) or hollow bullet (last).
+  constexpr int kMaxDots = 8;
+  String indicator;
+  if (pageCount <= kMaxDots) {
+    for (int i = 0; i < pageCount; i++) {
+      indicator += (i == pageIndex) ? kGlyphBulletFilled : kGlyphBulletHollow;
+    }
+  } else {
+    indicator += (pageIndex >= pageCount - 1) ? kGlyphBulletHollow
+                                              : kGlyphTriangleDown;
+  }
+  const int charCount = static_cast<int>(indicator.length());
+  const int yTop = kFooterRow * LINE_HEIGHT;
+  const int xStart = 4 + (kCharsPerLine - charCount) * 8;
+  // Footer text was already drawn; clear behind the indicator so multi-dot
+  // rows don't overlap with footerLeft / footerRight.
+  if (_canvasReady) {
+    _canvas.fillRect(xStart, yTop, charCount * 8, LINE_HEIGHT, COLOR_BLACK);
+  } else {
+    M5.Display.fillRect(xStart, yTop, charCount * 8, LINE_HEIGHT, COLOR_BLACK);
+  }
+  int x = xStart;
+  for (int i = 0; i < charCount; i++) {
+    drawCharCell(x, yTop, indicator[i], COLOR_GRAY);
+    x += 8;
+  }
 }
 
 void TextDisplay::drawBellIcon(int cx, int cy, uint16_t color) const {

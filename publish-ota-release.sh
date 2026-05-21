@@ -3,13 +3,13 @@
 # Devices on an older version will pick this up on next boot.
 #
 # Releasing a new version:
-#   1. Bump FIRMWARE_VERSION in firmware/src/Config.h
-#   2. ./publish-ota-release.sh
+#   1. ./publish-ota-release.sh
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 CONFIG_H="firmware/src/Config.h"
+CREDENTIALS_H="firmware/src/credentials.h"
 FIRMWARE_BIN="firmware/.pio/build/m5stick-s3/firmware.bin"
 BUCKET="m5-stick-assets"
 KEY_PREFIX="chat-stick/firmware"
@@ -20,12 +20,73 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
+CHECK_URL="${OTA_CHECK_URL:-}"
+if [[ -z "$CHECK_URL" && -f "$CREDENTIALS_H" ]]; then
+  PRODUCTION_HOST=$(
+    grep -A1 -E "PRODUCTION_SERVER_ADDRESS" "$CREDENTIALS_H" \
+      | grep -oE '"[^"]+"' \
+      | head -1 \
+      | tr -d '"' \
+      || true
+  )
+  if [[ -n "$PRODUCTION_HOST" ]]; then
+    CHECK_URL="https://$PRODUCTION_HOST/firmware/check?version=0"
+  fi
+fi
+
+if [[ -z "$CHECK_URL" ]]; then
+  echo "Error: could not determine firmware check URL." >&2
+  echo "Set OTA_CHECK_URL or create $CREDENTIALS_H with PRODUCTION_SERVER_ADDRESS." >&2
+  exit 1
+fi
+
+DEVICE_TOKEN="${DEVICE_AUTH_TOKEN:-}"
+if [[ -z "$DEVICE_TOKEN" && -f "$CREDENTIALS_H" ]]; then
+  DEVICE_TOKEN=$(
+    grep -E "DEVICE_AUTH_TOKEN" "$CREDENTIALS_H" \
+      | grep -oE '"[^"]*"' \
+      | head -1 \
+      | tr -d '"' \
+      || true
+  )
+fi
+
+echo "[1/3] Checking latest published firmware..."
+if [[ -n "$DEVICE_TOKEN" ]]; then
+  CHECK_RESPONSE=$(curl -fsS -H "X-Device-Token: $DEVICE_TOKEN" "$CHECK_URL")
+else
+  CHECK_RESPONSE=$(curl -fsS "$CHECK_URL")
+fi
+
+LATEST_VERSION=$(
+  printf "%s" "$CHECK_RESPONSE" \
+    | grep -oE '"latest_version"[[:space:]]*:[[:space:]]*[0-9]+' \
+    | grep -oE '[0-9]+' \
+    | head -1 \
+    || true
+)
+
+if [[ -z "$LATEST_VERSION" ]]; then
+  echo "Error: could not parse latest_version from firmware check response." >&2
+  exit 1
+fi
+
+echo "Latest published firmware: v$LATEST_VERSION"
+
+if (( VERSION <= LATEST_VERSION )); then
+  VERSION=$((LATEST_VERSION + 1))
+  perl -0pi -e "s/(constexpr int FIRMWARE_VERSION = )\\d+;/\${1}$VERSION;/" "$CONFIG_H"
+  echo "Bumped FIRMWARE_VERSION to v$VERSION"
+else
+  echo "Local FIRMWARE_VERSION v$VERSION is already ahead"
+fi
+
 KEY="$KEY_PREFIX/firmware-v$VERSION.bin"
 
 echo "Publishing firmware v$VERSION → $BUCKET/$KEY"
 echo
 
-echo "[1/2] Building firmware..."
+echo "[2/3] Building firmware..."
 (cd firmware && pio run)
 
 if [[ ! -f "$FIRMWARE_BIN" ]]; then
@@ -36,7 +97,7 @@ fi
 SIZE=$(wc -c < "$FIRMWARE_BIN" | tr -d ' ')
 
 echo
-echo "[2/2] Uploading $SIZE bytes to R2..."
+echo "[3/3] Uploading $SIZE bytes to R2..."
 (cd server && npx wrangler r2 object put "$BUCKET/$KEY" --file="../$FIRMWARE_BIN" --remote)
 
 echo

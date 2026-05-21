@@ -135,7 +135,7 @@ void AppController::setup() {
   };
   callbacks.onConversationReset = [this]() {
     _audio.stopPlayback();
-    _toolText = "";
+    setToolTextImmediate("");
     if (_imagePresent) {
       _display.clearImage();
       _imagePresent = false;
@@ -149,15 +149,13 @@ void AppController::setup() {
   };
   callbacks.onShowText = [this](const String &text) {
     _pendingTurnReset = false;
-    _toolText = text;
-    resetBodyPage();
-    _screenDirty = true;
+    startToolTextReveal(text);
   };
   auto applyPendingTurnReset = [this]() {
     if (!_pendingTurnReset) {
       return;
     }
-    _toolText = "";
+    setToolTextImmediate("");
     if (_imagePresent) {
       _display.clearImage();
       _imagePresent = false;
@@ -192,9 +190,7 @@ void AppController::setup() {
       return;
     }
     applyPendingTurnReset();
-    _toolText += text;
-    resetBodyPage();
-    _screenDirty = true;
+    appendToolTextReveal(text);
   };
   callbacks.onError = [this](const String &category, const String &error) {
     const ErrorCategory mapped = category == "gemini_unavailable"
@@ -352,6 +348,7 @@ void AppController::loop() {
     processRecording();
     processPlayback();
     processThinkingTimeout();
+    processTextReveal();
     processPower();
     processCaptivePortal();
   } else {
@@ -531,12 +528,71 @@ bool AppController::maybeDeepSleepUntilNextTimer() {
 }
 
 void AppController::clearToolText() {
-  _toolText = "";
+  setToolTextImmediate("");
   if (_imagePresent) {
     _display.clearImage();
     _imagePresent = false;
   }
   resetBodyPage();
+}
+
+void AppController::setToolTextImmediate(const String &text) {
+  cancelToolTextReveal();
+  _toolText = text;
+  _toolTextRevealTarget = text;
+  _toolTextRevealLayout = _display.layoutTextForReveal(text);
+  _toolTextRevealIndex = static_cast<int>(_toolTextRevealLayout.length());
+  resetBodyPage();
+  _screenDirty = true;
+}
+
+void AppController::startToolTextReveal(const String &text) {
+  _toolTextRevealTarget = text;
+  rebuildToolTextRevealLayout();
+  _toolText = "";
+  _toolTextRevealIndex = 0;
+  _lastTextRevealMs = 0;
+  resetBodyPage();
+  _screenDirty = true;
+}
+
+void AppController::appendToolTextReveal(const String &text) {
+  if (text.isEmpty()) {
+    return;
+  }
+
+  if (_toolTextRevealTarget.isEmpty() && !_toolText.isEmpty()) {
+    _toolTextRevealTarget = _toolText;
+  }
+  _toolTextRevealTarget += text;
+  rebuildToolTextRevealLayout();
+  resetBodyPage();
+  _screenDirty = true;
+}
+
+void AppController::rebuildToolTextRevealLayout() {
+  _toolTextRevealLayout = _display.layoutTextForReveal(_toolTextRevealTarget);
+  const int targetLen = static_cast<int>(_toolTextRevealLayout.length());
+  _toolTextRevealIndex = constrain(_toolTextRevealIndex, 0, targetLen);
+  _toolText = _toolTextRevealLayout.substring(0, _toolTextRevealIndex);
+  _lastTextRevealMs = 0;
+}
+
+void AppController::completeToolTextReveal() {
+  if (_toolTextRevealIndex >= static_cast<int>(_toolTextRevealLayout.length())) {
+    return;
+  }
+
+  _toolTextRevealIndex = static_cast<int>(_toolTextRevealLayout.length());
+  _toolText = _toolTextRevealLayout;
+  _screenDirty = true;
+}
+
+void AppController::cancelToolTextReveal() {
+  _toolTextRevealTarget = "";
+  _toolTextRevealLayout = "";
+  _toolTextRevealIndex = 0;
+  _lastTextRevealMs = 0;
 }
 
 void AppController::resetBodyPage() { _bodyPageIndex = 0; }
@@ -590,6 +646,7 @@ void AppController::handleButtons() {
 
   if (_powerManager.isInterruptible() &&
       (_buttonA.consumePressed() || _buttonB.consumePressed())) {
+    completeToolTextReveal();
     _powerManager.beginWaking();
     _screenDirty = true;
   }
@@ -619,12 +676,14 @@ void AppController::handleChatButtons() {
   }
 
   if (_buttonB.consumeHoldStart() && _appState != AppState::Recording) {
+    completeToolTextReveal();
     openMenu(_appState == AppState::Error ? MenuState::Device : MenuState::Home);
     return;
   }
 
   if (_buttonB.consumeClick()) {
     _powerManager.registerActivity();
+    completeToolTextReveal();
     const int pageCount = currentBodyPageCount();
     if (pageCount > 1) {
       _bodyPageIndex = (_bodyPageIndex + 1) % pageCount;
@@ -637,6 +696,7 @@ void AppController::handleChatButtons() {
   if (_buttonA.consumePressed() &&
       (_appState == AppState::Ready || _appState == AppState::Playing ||
        _appState == AppState::Thinking)) {
+    completeToolTextReveal();
     startRecording();
     return;
   }
@@ -666,6 +726,7 @@ void AppController::handleMenuButtons() {
 }
 
 void AppController::openMenu(MenuState state) {
+  completeToolTextReveal();
   _appRegion = AppRegion::Menu;
   _menuState = state;
   _menuSelection = 0;
@@ -827,21 +888,18 @@ String AppController::menuItemLabel(int index) const {
 void AppController::loadConversationHistory() {
   _historyCount = 0;
   if (!_wifi.isConnected()) {
-    _toolText = "Connect WiFi first";
-    resetBodyPage();
+    setToolTextImmediate("Connect WiFi first");
     return;
   }
 
   if (!_live.fetchConversationHistory(_history, kMaxConversationHistory,
                                       _historyCount)) {
-    _toolText = "History unavailable";
-    resetBodyPage();
+    setToolTextImmediate("History unavailable");
     return;
   }
 
   if (_historyCount == 0) {
-    _toolText = "No saved chats";
-    resetBodyPage();
+    setToolTextImmediate("No saved chats");
   }
 }
 
@@ -853,7 +911,7 @@ void AppController::resumeConversation(int index) {
   const ConversationSummary &entry = _history[index];
   _chatId = entry.chatId;
   _live.setChatId(_chatId);
-  _toolText = entry.lastMessage;
+  setToolTextImmediate(entry.lastMessage);
   if (_imagePresent) {
     _display.clearImage();
     _imagePresent = false;
@@ -882,8 +940,8 @@ void AppController::startCaptivePortalFlow() {
   _startupChecklistVisible = false;
   if (_wifi.startCaptivePortal()) {
     setAppState(AppState::Connecting, "WiFi setup");
-    _toolText = "Join AP\n" + _wifi.captivePortalSsid() + "\nOpen " +
-                _wifi.captivePortalIp() + "\nSubmit WiFi form";
+    setToolTextImmediate("Join AP\n" + _wifi.captivePortalSsid() + "\nOpen " +
+                         _wifi.captivePortalIp() + "\nSubmit WiFi form");
   } else {
     setErrorState(ErrorCategory::WiFiTimeout, "Portal failed",
                   "Could not start setup AP");
@@ -895,37 +953,33 @@ void AppController::startCaptivePortalFlow() {
 void AppController::checkForUpdates() {
   FirmwareUpdateInfo info;
   if (!_wifi.isConnected()) {
-    _toolText = "Offline\nCannot check updates";
+    setToolTextImmediate("Offline\nCannot check updates");
   } else if (_live.checkFirmwareUpdate(info)) {
     if (info.available) {
       if (info.downloadUrl.isEmpty()) {
-        _toolText = "Update unavailable\nNo download URL";
+        setToolTextImmediate("Update unavailable\nNo download URL");
       } else {
         setAppState(AppState::Connecting, "Updating...");
-        _toolText =
-            "Downloading update\nv" + String(info.latestVersion) + "\nPlease wait";
-        resetBodyPage();
-        _screenDirty = true;
+        setToolTextImmediate("Downloading update\nv" +
+                             String(info.latestVersion) + "\nPlease wait");
         renderIfNeeded();
 
         String error;
         if (_live.downloadAndApplyFirmwareUpdate(info.downloadUrl, error)) {
-          _toolText = "Update installed\nRestarting...";
-          resetBodyPage();
-          _screenDirty = true;
+          setToolTextImmediate("Update installed\nRestarting...");
           renderIfNeeded();
           delay(500);
           ESP.restart();
         }
 
-        _toolText = "Update failed\n" + error;
+        setToolTextImmediate("Update failed\n" + error);
         setAppState(AppState::Ready, "Ready");
       }
     } else {
-      _toolText = "Up to date\nv" + String(FIRMWARE_VERSION);
+      setToolTextImmediate("Up to date\nv" + String(FIRMWARE_VERSION));
     }
   } else {
-    _toolText = "Update check failed";
+    setToolTextImmediate("Update check failed");
   }
   resetBodyPage();
   _screenDirty = true;
@@ -1023,6 +1077,33 @@ void AppController::processThinkingTimeout() {
   }
 }
 
+void AppController::processTextReveal() {
+  const int targetLen = static_cast<int>(_toolTextRevealLayout.length());
+  if (_toolTextRevealIndex >= targetLen) {
+    return;
+  }
+
+  const bool canReveal =
+      _appRegion == AppRegion::Chat &&
+      (_appState == AppState::Ready || _appState == AppState::Thinking ||
+       _appState == AppState::Playing);
+  if (!canReveal) {
+    completeToolTextReveal();
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (_lastTextRevealMs != 0 &&
+      now - _lastTextRevealMs < kTextRevealFrameMs) {
+    return;
+  }
+
+  _lastTextRevealMs = now;
+  _toolTextRevealIndex++;
+  _toolText = _toolTextRevealLayout.substring(0, _toolTextRevealIndex);
+  _screenDirty = true;
+}
+
 void AppController::processPower() {
   if (_appRegion != AppRegion::Menu && _appState == AppState::Ready) {
     _powerManager.update();
@@ -1039,9 +1120,7 @@ void AppController::processCaptivePortal() {
     return;
   }
 
-  _toolText = "Saved WiFi\n" + ssid + "\nReconnecting...";
-  resetBodyPage();
-  _screenDirty = true;
+  setToolTextImmediate("Saved WiFi\n" + ssid + "\nReconnecting...");
   connectNetworkStack();
 }
 

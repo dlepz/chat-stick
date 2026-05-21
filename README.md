@@ -271,19 +271,21 @@ Convenience scripts:
 | --- | --- |
 | `./flash.sh [--monitor]` | Build firmware and upload over USB. |
 | `./deploy.sh` | Deploy the Cloudflare Worker. |
-| `./publish-ota-release.sh` | Build firmware and upload `firmware-v<N>.bin` to R2. |
+| `./publish-ota-release.sh` | Bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2. |
 | `./publish.sh` | Publish the OTA binary, then deploy the worker. |
 
 To cut a firmware release:
 
-1. Bump `FIRMWARE_VERSION` in `firmware/src/Config.h`.
-2. Confirm `BUCKET` in `publish-ota-release.sh` matches your R2 bucket.
-3. Run `./publish-ota-release.sh`.
-4. Devices on older versions install the update on next boot, or from
+1. Confirm `BUCKET` in `publish-ota-release.sh` matches your R2 bucket.
+2. Run `./publish-ota-release.sh`.
+3. Devices on older versions install the update on next boot, or from
    `Device -> Check for updates`.
 
 The worker finds the latest available firmware by listing
 `chat-stick/firmware/firmware-v<N>.bin` in R2 and choosing the highest version.
+`publish-ota-release.sh` asks the deployed worker for that latest version before
+building; set `OTA_CHECK_URL` to override the default URL derived from
+`firmware/src/credentials.h`.
 
 ## Credentials
 

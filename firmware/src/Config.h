@@ -46,7 +46,7 @@ constexpr int WIFI_CONNECT_TIMEOUT_SEC = 10;
 
 // ============= Device =============
 constexpr const char *DEVICE_ID = "m5s3-live";
-constexpr int FIRMWARE_VERSION = 9;
+constexpr int FIRMWARE_VERSION = 11;
 
 // ============= Audio =============
 constexpr int MIC_SAMPLE_RATE = 16000;  // 16 kHz input (Gemini Live API)

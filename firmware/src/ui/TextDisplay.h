@@ -14,10 +14,18 @@ public:
   static constexpr int kImageW = 232;
   static constexpr int kImageH = 112;
 
+  // Custom 8x16 glyphs grafted onto the ASCII font. These codepoints are
+  // unused control characters in normal text, so we repurpose them as
+  // printable iconography and pass them through fitLine / wrapBodyText.
+  static constexpr char kGlyphTriangleDown = '\x01';
+  static constexpr char kGlyphBulletFilled = '\x02';
+  static constexpr char kGlyphBulletHollow = '\x03';
+
   void init();
   void setBrightness(uint8_t brightness);
   void render(const DisplayState &state);
   int pageCountForText(const String &text) const;
+  String layoutTextForReveal(const String &text) const;
 
   // Store a 1-bit packed bitmap (MSB first) for the body image area. Pixel
   // dimensions must match kImageW x kImageH; mismatches return false.
@@ -26,7 +34,7 @@ public:
   bool hasImage() const { return _imageBuffer != nullptr; }
 
 private:
-  static constexpr int kBodyRows = 6;
+  static constexpr int kBodyRows = 7;
   static constexpr int kFooterRow = 7;
 
   mutable M5Canvas _canvas;
@@ -42,6 +50,9 @@ private:
   String spaces(int count) const;
   int wrapBodyText(const String &text, String out[], int maxRows) const;
   void drawLine(int row, const String &text, uint16_t color) const;
+  void drawCharCell(int x, int yTop, char c, uint16_t color) const;
+  void drawBitmapGlyph(int x, int yTop, const uint8_t *bits,
+                       uint16_t color) const;
   void drawGlyphAtRight(int row, char glyph, uint16_t color) const;
   void drawPageIndicator(int pageIndex, int pageCount) const;
   void drawMenu(const DisplayState &state) const;

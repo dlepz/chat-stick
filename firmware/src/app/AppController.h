@@ -42,6 +42,7 @@ private:
   static constexpr unsigned long kResetHoldMs = 1500;
   static constexpr int kMaxConversationHistory = 10;
   static constexpr int kMaxExpiredPerWake = MAX_TIMERS;
+  static constexpr unsigned long kTextRevealFrameMs = 18;
 
   AppRegion _appRegion = AppRegion::Initializing;
   AppState _appState = AppState::Connecting;
@@ -50,6 +51,8 @@ private:
   String _errorText;
   String _chatId;
   String _toolText;
+  String _toolTextRevealTarget;
+  String _toolTextRevealLayout;
   bool _turnComplete = false;
   bool _turnHasAudio = false;
   bool _pendingTurnReset = false;
@@ -61,11 +64,13 @@ private:
   bool _startupInternetDone = false;
   unsigned long _thinkingStartMs = 0;
   unsigned long _recordingStartMs = 0;
+  unsigned long _lastTextRevealMs = 0;
   unsigned long _resetHoldStartMs = 0;
   unsigned long _lastHeartbeatMs = 0;
   unsigned long _lastHeaderRefreshMs = 0;
   int _audioChunksSent = 0;
   int _bodyPageIndex = 0;
+  int _toolTextRevealIndex = 0;
   int _menuSelection = 0;
   int _historyCount = 0;
   ErrorCategory _errorCategory = ErrorCategory::None;
@@ -110,6 +115,12 @@ private:
   void retryAfterError();
   void performPowerOff();
   void clearToolText();
+  void setToolTextImmediate(const String &text);
+  void startToolTextReveal(const String &text);
+  void appendToolTextReveal(const String &text);
+  void rebuildToolTextRevealLayout();
+  void completeToolTextReveal();
+  void cancelToolTextReveal();
   void resetBodyPage();
   void beginFactoryReset();
   const char *errorCategoryLabel() const;
@@ -122,6 +133,7 @@ private:
   void processRecording();
   void processPlayback();
   void processThinkingTimeout();
+  void processTextReveal();
   void processPower();
   void processCaptivePortal();
   void renderIfNeeded();

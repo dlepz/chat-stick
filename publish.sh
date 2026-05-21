@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Publish a new firmware release: build + upload the OTA binary, then deploy
-# the Cloudflare Worker. Run after bumping FIRMWARE_VERSION in
-# firmware/src/Config.h.
+# Publish a new firmware release: bump if needed, build + upload the OTA binary,
+# then deploy the Cloudflare Worker.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
