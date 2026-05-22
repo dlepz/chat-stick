@@ -46,7 +46,7 @@ constexpr int WIFI_CONNECT_TIMEOUT_SEC = 10;
 
 // ============= Device =============
 constexpr const char *DEVICE_ID = "m5s3-live";
-constexpr int FIRMWARE_VERSION = 11;
+constexpr int FIRMWARE_VERSION = 12;
 
 // ============= Audio =============
 constexpr int MIC_SAMPLE_RATE = 16000;  // 16 kHz input (Gemini Live API)
@@ -84,5 +84,8 @@ constexpr int CPU_IDLE_MHZ = 80;
 constexpr unsigned long IDLE_DIM_MS = 60 * 1000;
 constexpr unsigned long IDLE_SCREEN_OFF_MS = 2 * 60 * 1000;
 constexpr unsigned long IDLE_POWER_OFF_MS = 5 * 60 * 1000;
+constexpr uint32_t IDLE_FULL_POWER_OFF_SEC = 12 * 60 * 60;
+constexpr uint32_t IDLE_DEEP_SLEEP_SHUTDOWN_SEC =
+    IDLE_FULL_POWER_OFF_SEC - (IDLE_POWER_OFF_MS / 1000);
 constexpr int BRIGHTNESS_DIM = 48;
 constexpr int BRIGHTNESS_OFF = 0;

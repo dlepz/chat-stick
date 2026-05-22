@@ -64,6 +64,14 @@ void AppController::setup() {
     Serial.printf("[PM1] init failed rc=%d\n", static_cast<int>(pm1BeginRc));
   }
 
+  if (shouldPowerOffAfterIdleDeepSleep(wakeCause)) {
+    Serial.println("[Power] Idle deep sleep window elapsed; powering off");
+    shutdownHardware();
+    while (true) {
+      delay(1000);
+    }
+  }
+
   _display.init();
   _display.setBrightness(_settings.brightness());
   _startupPowerDone = true;
@@ -373,7 +381,7 @@ void AppController::configureCallbacks() {
     Serial.printf("[Power] CPU clock set to %lu MHz\n", getCpuFrequencyMhz());
   });
 
-  _powerManager.onPowerOff([this]() { performPowerOff(); });
+  _powerManager.onPowerOff([this]() { performPowerOff(true); });
 }
 
 void AppController::connectNetworkStack() {
@@ -467,14 +475,19 @@ void AppController::retryAfterError() {
   }
 }
 
-void AppController::performPowerOff() {
-  if (maybeDeepSleepUntilNextTimer()) {
-    return; // doesn't return — device deep-sleeps until next deadline
+void AppController::performPowerOff(bool allowIdleDeepSleep) {
+  if (enterDeepSleepForTimerOrIdle(allowIdleDeepSleep)) {
+    return; // doesn't return unless an already-expired timer became an alarm
   }
 
+  shutdownHardware();
+}
+
+void AppController::shutdownHardware() {
   Serial.println("[Power] Powering off");
   _live.disconnect();
   _wifi.disconnect();
+  _audio.stopPlayback();
   delay(100);
   if (_pm1Ready) {
     const m5pm1_err_t rc = _pm1.shutdown();
@@ -484,28 +497,50 @@ void AppController::performPowerOff() {
   M5.Power.powerOff();
 }
 
-bool AppController::maybeDeepSleepUntilNextTimer() {
+bool AppController::shouldPowerOffAfterIdleDeepSleep(
+    esp_sleep_wakeup_cause_t wakeCause) const {
+  return wakeCause == ESP_SLEEP_WAKEUP_TIMER && _timers.count() == 0;
+}
+
+bool AppController::enterDeepSleepForTimerOrIdle(
+    bool includeIdleShutdownDeadline) {
+  uint64_t sleepUs = 0;
+  const char *reason = nullptr;
+
   if (_timers.count() == 0) {
+    if (!includeIdleShutdownDeadline) {
+      return false;
+    }
+    sleepUs =
+        static_cast<uint64_t>(IDLE_DEEP_SLEEP_SHUTDOWN_SEC) * 1000000ULL;
+    reason = "idle shutdown window";
+  } else {
+    const time_t now = time(nullptr);
+    const time_t deadline = _timers.nextDeadline();
+    if (now < TIMER_MIN_VALID_EPOCH || deadline == 0) {
+      return false;
+    }
+
+    // If a timer has already lapsed, don't sleep or shut down — fire it now.
+    if (deadline <= now) {
+      checkTimerExpiry();
+      if (_appState == AppState::Alarm) {
+        _powerManager.restoreActive();
+        return true;
+      }
+      return false;
+    }
+
+    sleepUs = static_cast<uint64_t>(deadline - now) * 1000000ULL;
+    reason = "next timer";
+  }
+
+  if (sleepUs == 0) {
     return false;
   }
 
-  const time_t now = time(nullptr);
-  const time_t deadline = _timers.nextDeadline();
-  if (now < TIMER_MIN_VALID_EPOCH || deadline == 0) {
-    return false;
-  }
-
-  // If a timer has already lapsed, don't sleep — fire the alarm now.
-  if (deadline <= now) {
-    checkTimerExpiry();
-    return false;
-  }
-
-  const uint64_t sleepUs =
-      static_cast<uint64_t>(deadline - now) * 1000000ULL;
-
-  Serial.printf("[Power] Deep sleep %llu us until next timer\n",
-                static_cast<unsigned long long>(sleepUs));
+  Serial.printf("[Power] Deep sleep %llu us until %s\n",
+                static_cast<unsigned long long>(sleepUs), reason);
 
   _live.disconnect();
   _wifi.disconnect();

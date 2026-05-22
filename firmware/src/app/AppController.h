@@ -11,6 +11,7 @@
 #include "../state/StateTypes.h"
 #include "../ui/TextDisplay.h"
 #include <M5PM1.h>
+#include <esp_sleep.h>
 #include <time.h>
 
 class AppController {
@@ -113,7 +114,10 @@ private:
   void setErrorState(ErrorCategory category, const String &status,
                      const String &error);
   void retryAfterError();
-  void performPowerOff();
+  void performPowerOff(bool allowIdleDeepSleep = false);
+  void shutdownHardware();
+  bool shouldPowerOffAfterIdleDeepSleep(
+      esp_sleep_wakeup_cause_t wakeCause) const;
   void clearToolText();
   void setToolTextImmediate(const String &text);
   void startToolTextReveal(const String &text);
@@ -164,7 +168,7 @@ private:
   void enterAlarmState(const String &title, const String &detail);
   void exitAlarmState();
   void serviceAlarmTrill();
-  bool maybeDeepSleepUntilNextTimer();
+  bool enterDeepSleepForTimerOrIdle(bool includeIdleShutdownDeadline);
   bool handleAlarmButtons();
   String handleSetTimerTool(int durationSeconds, const String &name);
   String handleListTimersTool();
