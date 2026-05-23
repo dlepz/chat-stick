@@ -143,7 +143,24 @@ void AudioService::stopRecording() {
 }
 
 bool AudioService::captureChunk() {
-  return M5.Mic.record(_captureChunk, kChunkSamples, MIC_SAMPLE_RATE);
+  if (!M5.Mic.record(_captureChunk, kChunkSamples, MIC_SAMPLE_RATE)) {
+    return false;
+  }
+
+  int64_t totalAbs = 0;
+  int peak = 0;
+  for (int i = 0; i < kChunkSamples; i++) {
+    const int magnitude = abs(static_cast<int>(_captureChunk[i]));
+    totalAbs += magnitude;
+    peak = max(peak, magnitude);
+  }
+
+  _lastCaptureAverageAbs = static_cast<int>(totalAbs / kChunkSamples);
+  _lastCapturePeak = peak;
+  _lastCaptureChannel = 0;
+  _lastCaptureLeftAverageAbs = _lastCaptureAverageAbs;
+  _lastCaptureRightAverageAbs = 0;
+  return true;
 }
 
 bool AudioService::playNamedSound(const String &name) {

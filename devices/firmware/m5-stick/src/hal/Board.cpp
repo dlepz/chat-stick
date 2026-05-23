@@ -2,6 +2,8 @@
 
 #include "../Config.h"
 #include <M5PM1.h>
+#include <driver/rtc_io.h>
+#include <esp_sleep.h>
 #include <time.h>
 
 namespace {
@@ -32,6 +34,22 @@ const char *sourceLabel(m5pm1_pwr_src_t source) {
   default:
     return "?";
   }
+}
+
+uint64_t gpioWakeMask(gpio_num_t pin) {
+  const int value = static_cast<int>(pin);
+  if (value < 0 || value >= 64) {
+    return 0;
+  }
+  return 1ULL << static_cast<unsigned>(value);
+}
+
+void configureRtcPullup(gpio_num_t pin) {
+  if (static_cast<int>(pin) < 0) {
+    return;
+  }
+  rtc_gpio_pullup_en(pin);
+  rtc_gpio_pulldown_dis(pin);
 }
 } // namespace
 
@@ -149,6 +167,32 @@ const char *powerSourceLabel() {
 LightSleepWakeReason enterLightSleep(unsigned long wakeIntervalMs) {
   delay(wakeIntervalMs);
   return LightSleepWakeReason::Unsupported;
+}
+
+DeepSleepWakeReason deepSleepWakeReason() {
+  const esp_sleep_wakeup_cause_t reason = esp_sleep_get_wakeup_cause();
+  if (reason == ESP_SLEEP_WAKEUP_TIMER) {
+    return DeepSleepWakeReason::Timer;
+  }
+  if (reason == ESP_SLEEP_WAKEUP_EXT1 || reason == ESP_SLEEP_WAKEUP_GPIO) {
+    return DeepSleepWakeReason::Button;
+  }
+  if (reason == ESP_SLEEP_WAKEUP_UNDEFINED) {
+    return DeepSleepWakeReason::None;
+  }
+  return DeepSleepWakeReason::Other;
+}
+
+void enterDeepSleep(uint64_t sleepUs) {
+  esp_sleep_enable_timer_wakeup(sleepUs);
+  configureRtcPullup(BUTTON_A_PIN);
+  configureRtcPullup(BUTTON_B_PIN);
+  const uint64_t buttonMask =
+      gpioWakeMask(BUTTON_A_PIN) | gpioWakeMask(BUTTON_B_PIN);
+  if (buttonMask != 0) {
+    esp_sleep_enable_ext1_wakeup(buttonMask, ESP_EXT1_WAKEUP_ANY_LOW);
+  }
+  esp_deep_sleep_start();
 }
 
 void powerOff() {

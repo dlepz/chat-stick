@@ -248,6 +248,38 @@ LightSleepWakeReason enterLightSleep(unsigned long wakeIntervalMs) {
 }
 
 /**
+ * @brief Report why this boot resumed from deep sleep.
+ * @return Deep sleep wake reason used by the shared controller.
+ */
+DeepSleepWakeReason deepSleepWakeReason() {
+  const esp_sleep_wakeup_cause_t reason = esp_sleep_get_wakeup_cause();
+  if (reason == ESP_SLEEP_WAKEUP_TIMER) {
+    return DeepSleepWakeReason::Timer;
+  }
+  if (reason == ESP_SLEEP_WAKEUP_EXT1 || reason == ESP_SLEEP_WAKEUP_GPIO) {
+    return DeepSleepWakeReason::Button;
+  }
+  if (reason == ESP_SLEEP_WAKEUP_UNDEFINED) {
+    return DeepSleepWakeReason::None;
+  }
+  return DeepSleepWakeReason::Other;
+}
+
+/**
+ * @brief Enter deep sleep until the timer or wake-capable button fires.
+ * @param sleepUs Timer wake interval in microseconds.
+ */
+void enterDeepSleep(uint64_t sleepUs) {
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  esp_sleep_enable_timer_wakeup(sleepUs);
+  if (BUTTON_A_PIN != GPIO_NUM_NC) {
+    esp_sleep_enable_ext1_wakeup(1ULL << static_cast<unsigned>(BUTTON_A_PIN),
+                                 ESP_EXT1_WAKEUP_ANY_LOW);
+  }
+  esp_deep_sleep_start();
+}
+
+/**
  * @brief Shut down display and audio, then enter deep sleep.
  */
 void powerOff() {

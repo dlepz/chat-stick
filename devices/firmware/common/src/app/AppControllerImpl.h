@@ -5,14 +5,33 @@
 #include "hal/Board.h"
 #include <ArduinoJson.h>
 #include <WiFi.h>
-#include <driver/rtc_io.h>
-#include <esp_sleep.h>
 #include <string.h>
 #include <time.h>
 
+namespace {
+/**
+ * @brief Human-readable label for a deep-sleep wake reason.
+ * @param reason Wake reason to describe.
+ * @return Static wake reason name.
+ */
+const char *deepSleepWakeReasonName(DeepSleepWakeReason reason) {
+  switch (reason) {
+  case DeepSleepWakeReason::None:
+    return "none";
+  case DeepSleepWakeReason::Button:
+    return "button";
+  case DeepSleepWakeReason::Timer:
+    return "timer";
+  case DeepSleepWakeReason::Other:
+  default:
+    return "other";
+  }
+}
+} // namespace
+
 void AppController::setup() {
   Serial.begin(115200);
-  if (SHOW_BOOT_LOG_ON_DISPLAY) {
+  if (Board::capabilities().bootDisplay) {
     Log::setSink(&AppController::bootLogTrampoline, this);
   }
   Log::client("Boot", "%s Live Voice Assistant", FIRMWARE_DEVICE);
@@ -29,12 +48,12 @@ void AppController::setup() {
   _pendingFirmwareUpdateAtBoot = _settings.pendingFirmwareUpdate();
   _timers.init();
 
-  const esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
-  if (wakeCause == ESP_SLEEP_WAKEUP_TIMER || wakeCause == ESP_SLEEP_WAKEUP_EXT1) {
-    Log::client("Boot", "wake from deep sleep cause=%d",
-                static_cast<int>(wakeCause));
+  const DeepSleepWakeReason wakeReason = Board::deepSleepWakeReason();
+  if (wakeReason != DeepSleepWakeReason::None) {
+    Log::client("Boot", "wake from deep sleep cause=%s",
+                deepSleepWakeReasonName(wakeReason));
   }
-  if (shouldPowerOffAfterIdleDeepSleep(wakeCause)) {
+  if (shouldPowerOffAfterIdleDeepSleep(wakeReason)) {
     Log::client("Power", "idle deep sleep window elapsed; powering off");
     shutdownHardware();
     while (true) {
@@ -54,8 +73,12 @@ void AppController::setup() {
 
   _wifi.init();
 
-  _audio.setExternalSpeakerGain(_settings.externalSpeakerGain());
-  _audio.setUseExternalSpeaker(_settings.useExternalSpeaker());
+  if (Board::capabilities().externalSpeakerGain) {
+    _audio.setExternalSpeakerGain(_settings.externalSpeakerGain());
+  }
+  if (Board::capabilities().externalSpeakerSwitch) {
+    _audio.setUseExternalSpeaker(_settings.useExternalSpeaker());
+  }
   if (!_audio.init()) {
     setErrorState(ErrorCategory::Startup, "Startup failed",
                   "Audio buffer unavailable");
@@ -70,7 +93,9 @@ void AppController::setup() {
   _chatId = "";
   _live.setChatId("");
   _live.setVoice(_settings.voice());
-  _live.setPreferredEndpointIndex(_settings.serverEndpointIndex());
+  if (Board::capabilities().endpointPreference) {
+    _live.setPreferredEndpointIndex(_settings.serverEndpointIndex());
+  }
   _wifi.onLog([](const char *topic, const char *message) {
     Log::client(topic, "%s", message);
   });
@@ -221,6 +246,34 @@ void AppController::setup() {
     _audio.setVolume(level);
     _settings.setVolume(level);
   };
+  callbacks.onSetSpeaker = [this](const String &mode) {
+    if (!Board::capabilities().externalSpeakerSwitch) {
+      return false;
+    }
+    if (mode.equalsIgnoreCase("internal")) {
+      _settings.setUseExternalSpeaker(false);
+      _audio.setUseExternalSpeaker(false);
+      _screenDirty = true;
+      return true;
+    }
+    if (mode.equalsIgnoreCase("external")) {
+      _settings.setUseExternalSpeaker(true);
+      _audio.setUseExternalSpeaker(true);
+      _screenDirty = true;
+      return true;
+    }
+    return false;
+  };
+  callbacks.onSetExternalGain = [this](int gain) {
+    if (!Board::capabilities().externalSpeakerGain ||
+        gain < SettingsStore::kMinExternalGain ||
+        gain > SettingsStore::kMaxExternalGain) {
+      return false;
+    }
+    _settings.setExternalSpeakerGain(gain);
+    _audio.setExternalSpeakerGain(gain);
+    return true;
+  };
   callbacks.onPlaySound = [this](const String &sound) {
     _powerManager.registerActivity();
     return _audio.playNamedSound(sound);
@@ -243,7 +296,9 @@ void AppController::setup() {
     _settings.setVoice(voice);
   };
   callbacks.onEndpointIndexChanged = [this](int endpointIndex) {
-    _settings.setServerEndpointIndex(endpointIndex);
+    if (Board::capabilities().endpointPreference) {
+      _settings.setServerEndpointIndex(endpointIndex);
+    }
   };
   callbacks.onSetTimer = [this](int duration, const String &name) {
     return handleSetTimerTool(duration, name);
@@ -475,8 +530,8 @@ void AppController::shutdownHardware() {
 }
 
 bool AppController::shouldPowerOffAfterIdleDeepSleep(
-    esp_sleep_wakeup_cause_t wakeCause) const {
-  return IDLE_DEEP_SLEEP_ENABLED && wakeCause == ESP_SLEEP_WAKEUP_TIMER &&
+    DeepSleepWakeReason wakeReason) const {
+  return IDLE_DEEP_SLEEP_ENABLED && wakeReason == DeepSleepWakeReason::Timer &&
          _timers.count() == 0;
 }
 
@@ -529,27 +584,7 @@ bool AppController::enterDeepSleepForTimerOrIdle(
   Board::setDisplayBrightness(BRIGHTNESS_OFF);
   delay(100);
 
-  auto gpioWakeMask = [](gpio_num_t pin) -> uint64_t {
-    const int value = static_cast<int>(pin);
-    if (value < 0 || value >= 64) {
-      return 0;
-    }
-    return 1ULL << static_cast<unsigned>(value);
-  };
-
-  esp_sleep_enable_timer_wakeup(sleepUs);
-  rtc_gpio_pullup_en(BUTTON_A_PIN);
-  rtc_gpio_pulldown_dis(BUTTON_A_PIN);
-  const int buttonBPin = static_cast<int>(BUTTON_B_PIN);
-  if (buttonBPin >= 0) {
-    rtc_gpio_pullup_en(BUTTON_B_PIN);
-    rtc_gpio_pulldown_dis(BUTTON_B_PIN);
-  }
-  const uint64_t buttonMask = gpioWakeMask(BUTTON_A_PIN) |
-                              gpioWakeMask(BUTTON_B_PIN);
-  esp_sleep_enable_ext1_wakeup(buttonMask, ESP_EXT1_WAKEUP_ANY_LOW);
-
-  esp_deep_sleep_start();
+  Board::enterDeepSleep(sleepUs);
   return true;
 }
 
@@ -1750,7 +1785,7 @@ DisplayState AppController::buildDisplayState() const {
   state.imagePresent = _imagePresent;
   state.pageIndex = _bodyPageIndex;
   state.pageCount = currentBodyPageCount();
-  if (SHOW_DEBUG_TEXT_ON_DISPLAY && !_debugText.isEmpty() &&
+  if (Board::capabilities().debugDisplay && !_debugText.isEmpty() &&
       _appRegion == AppRegion::Chat) {
     state.footerLeft = _debugText;
     if (state.pageCount > 1) {
@@ -1779,7 +1814,7 @@ DisplayState AppController::buildDisplayState() const {
 }
 
 String AppController::buildBodyText() const {
-  if (SHOW_BOOT_LOG_ON_DISPLAY && _bootMode) {
+  if (Board::capabilities().bootDisplay && _bootMode) {
     return _bootLog.isEmpty() ? String("Starting...") : _bootLog;
   }
 

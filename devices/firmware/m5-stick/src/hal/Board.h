@@ -20,5 +20,7 @@ uint16_t vbusVoltageMv();
 bool usbConnected();
 const char *powerSourceLabel();
 LightSleepWakeReason enterLightSleep(unsigned long wakeIntervalMs);
+DeepSleepWakeReason deepSleepWakeReason();
+void enterDeepSleep(uint64_t sleepUs);
 void powerOff();
 } // namespace Board

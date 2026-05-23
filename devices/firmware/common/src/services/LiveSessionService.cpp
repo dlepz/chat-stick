@@ -12,6 +12,7 @@
 using namespace websockets;
 
 namespace {
+/// Timeout for short HTTP metadata requests.
 constexpr uint16_t kHttpGetTimeoutMs = 3000;
 
 /**

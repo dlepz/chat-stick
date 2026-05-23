@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Config.h"
+#include "hal/DeviceCapabilities.h"
 #include "input/ButtonStateMachine.h"
 #include "services/AudioService.h"
 #include "services/LiveSessionService.h"
@@ -11,7 +12,6 @@
 #include "state/StateTypes.h"
 #include "ui/TextDisplay.h"
 #include "app/TurnController.h"
-#include <esp_sleep.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -377,8 +377,7 @@ private:
   void shutdownHardware();
 
   /// Whether a deep-sleep timer wake has elapsed past the idle shutdown window.
-  bool shouldPowerOffAfterIdleDeepSleep(
-      esp_sleep_wakeup_cause_t wakeCause) const;
+  bool shouldPowerOffAfterIdleDeepSleep(DeepSleepWakeReason wakeReason) const;
 
   /// Enter deep sleep until the next timer or idle shutdown deadline.
   bool enterDeepSleepForTimerOrIdle(bool includeIdleShutdownDeadline);

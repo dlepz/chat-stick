@@ -1,6 +1,11 @@
 #include "ButtonStateMachine.h"
 
 namespace {
+/**
+ * @brief Return a latched flag value and clear it.
+ * @param flag Mutable latched event flag.
+ * @return Previous flag value.
+ */
 bool consumeFlag(bool &flag) {
   const bool value = flag;
   flag = false;

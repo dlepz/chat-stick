@@ -1,6 +1,13 @@
 #include "TurnController.h"
 
 namespace {
+/**
+ * @brief Check whether the current text ends with a prefix of incoming text.
+ * @param current Text already shown.
+ * @param incoming Newly received text.
+ * @param prefixLen Prefix length from @p incoming to compare.
+ * @return True when the suffix/prefix overlap matches.
+ */
 bool endsWithIncomingPrefix(const String &current, const String &incoming,
                             int prefixLen) {
   if (prefixLen <= 0 || prefixLen > current.length() ||

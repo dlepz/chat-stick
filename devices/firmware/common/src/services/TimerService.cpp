@@ -4,9 +4,18 @@
 #include <ArduinoJson.h>
 
 namespace {
+/// Preferences namespace for persisted timers.
 constexpr const char *kNamespace = "timers";
+
+/// Preferences key for the serialized timer list.
 constexpr const char *kBlobKey = "list";
 
+/**
+ * @brief Compare two timer names after trimming and lowercasing.
+ * @param a First name.
+ * @param b Second name.
+ * @return True when the normalized names match.
+ */
 bool equalsIgnoreCaseTrim(const String &a, const String &b) {
   String aa = a;
   String bb = b;

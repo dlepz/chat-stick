@@ -59,6 +59,15 @@ const char *powerSourceLabel();
 /// Enter one light-sleep interval and report what woke the board.
 LightSleepWakeReason enterLightSleep(unsigned long wakeIntervalMs);
 
+/// Report why this boot resumed from deep sleep.
+DeepSleepWakeReason deepSleepWakeReason();
+
+/**
+ * @brief Enter deep sleep with board-specific wake sources configured.
+ * @param sleepUs Timer wake interval in microseconds.
+ */
+void enterDeepSleep(uint64_t sleepUs);
+
 /// Power down the board.
 void powerOff();
 } // namespace Board

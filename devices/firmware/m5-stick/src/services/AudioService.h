@@ -26,11 +26,11 @@ public:
 
   const int16_t *captureData() const { return _captureChunk; }
   size_t captureBytes() const { return _chunkBytes; }
-  int lastCaptureAverageAbs() const { return 0; }
-  int lastCapturePeak() const { return 0; }
-  int lastCaptureChannel() const { return 0; }
-  int lastCaptureLeftAverageAbs() const { return 0; }
-  int lastCaptureRightAverageAbs() const { return 0; }
+  int lastCaptureAverageAbs() const { return _lastCaptureAverageAbs; }
+  int lastCapturePeak() const { return _lastCapturePeak; }
+  int lastCaptureChannel() const { return _lastCaptureChannel; }
+  int lastCaptureLeftAverageAbs() const { return _lastCaptureLeftAverageAbs; }
+  int lastCaptureRightAverageAbs() const { return _lastCaptureRightAverageAbs; }
 
   void resetPlayback();
   bool queuePlayback(const uint8_t *data, size_t len);
@@ -59,6 +59,11 @@ private:
   bool _useExternalSpeaker = false;
   int _externalSpeakerGain = 24;
   int _volume = DEFAULT_VOLUME;
+  int _lastCaptureAverageAbs = 0;
+  int _lastCapturePeak = 0;
+  int _lastCaptureChannel = 0;
+  int _lastCaptureLeftAverageAbs = 0;
+  int _lastCaptureRightAverageAbs = 0;
 
   float _hpPrevX = 0.0f;
   float _hpPrevY = 0.0f;
