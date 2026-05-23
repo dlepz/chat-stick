@@ -90,6 +90,13 @@ public:
   int pageCountForText(const String &text) const;
 
   /**
+   * @brief Wrap text into the exact line breaks used by the reveal animation.
+   * @param text Body text to wrap.
+   * @return Text with explicit newline breaks matching display layout.
+   */
+  String layoutTextForReveal(const String &text) const;
+
+  /**
    * @brief Count wrapped rows required to render a block of text.
    * @param text Body text to measure.
    * @return Number of wrapped rows.

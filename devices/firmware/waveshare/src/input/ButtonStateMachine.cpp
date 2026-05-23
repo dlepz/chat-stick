@@ -11,6 +11,7 @@ bool consumeFlag(bool &flag) {
 void ButtonStateMachine::update(bool pressed, unsigned long nowMs) {
   if (_awaitingSecondClick &&
       nowMs - _lastReleaseMs > _config.doubleClickMs) {
+    _clickEvent = true;
     _awaitingSecondClick = false;
   }
 
@@ -30,11 +31,9 @@ void ButtonStateMachine::update(bool pressed, unsigned long nowMs) {
       _awaitingSecondClick = false;
     } else if (_awaitingSecondClick &&
                nowMs - _lastReleaseMs <= _config.doubleClickMs) {
-      _clickEvent = true;
       _doubleClickEvent = true;
       _awaitingSecondClick = false;
     } else {
-      _clickEvent = true;
       _awaitingSecondClick = true;
       _lastReleaseMs = nowMs;
     }
@@ -55,7 +54,6 @@ void ButtonStateMachine::clearEvents() {
   _doubleClickEvent = false;
   _holdStartEvent = false;
   _holdReleaseEvent = false;
-  _awaitingSecondClick = false;
 }
 
 bool ButtonStateMachine::consumePressed() { return consumeFlag(_pressedEvent); }

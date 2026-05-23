@@ -78,6 +78,9 @@ private:
   /// Refresh cadence for the on-screen wait indicator.
   static constexpr unsigned long kWaitingIndicatorRefreshMs = 500;
 
+  /// Cadence for the M5-style tool text reveal animation.
+  static constexpr unsigned long kTextRevealFrameMs = 18;
+
   /// Samples captured in one microphone chunk.
   static constexpr int kCaptureChunkSamples =
       MIC_SAMPLE_RATE * MIC_CHUNK_MS / 1000;
@@ -119,6 +122,12 @@ private:
   /// Most recent tool-generated body text.
   String _toolText;
 
+  /// Full target text currently being revealed.
+  String _toolTextRevealTarget;
+
+  /// Wrapped text layout used by the reveal animation.
+  String _toolTextRevealLayout;
+
   /// Auxiliary debug text shown in the UI.
   String _debugText;
 
@@ -136,6 +145,18 @@ private:
 
   /// Whether the current recording has been committed to the server.
   bool _recordingCommitted = false;
+
+  /// Whether the startup checklist should be shown in Connecting state.
+  bool _startupChecklistVisible = true;
+
+  /// Startup checklist item: local power/display setup complete.
+  bool _startupPowerDone = false;
+
+  /// Startup checklist item: WiFi connected.
+  bool _startupWifiDone = false;
+
+  /// Startup checklist item: server/session channel connected.
+  bool _startupInternetDone = false;
 
   /// Whether an image is currently available for the body area.
   bool _imagePresent = false;
@@ -155,6 +176,9 @@ private:
   /// Timestamp of the last animated wait-indicator refresh.
   unsigned long _lastWaitingIndicatorRefreshMs = 0;
 
+  /// Timestamp of the last text reveal frame.
+  unsigned long _lastTextRevealMs = 0;
+
   /// Current animated wait-indicator frame.
   int _waitingIndicatorFrame = 0;
 
@@ -166,6 +190,9 @@ private:
 
   /// Current body page index.
   int _bodyPageIndex = 0;
+
+  /// Current reveal index inside _toolTextRevealLayout.
+  int _toolTextRevealIndex = 0;
 
   /// Current selected menu index.
   int _menuSelection = 0;
@@ -316,6 +343,24 @@ private:
   /// Clear transient tool text from the UI.
   void clearToolText();
 
+  /// Replace tool text immediately, bypassing reveal.
+  void setToolTextImmediate(const String &text);
+
+  /// Start revealing a new tool text block.
+  void startToolTextReveal(const String &text);
+
+  /// Append text to the current reveal target.
+  void appendToolTextReveal(const String &text);
+
+  /// Rebuild wrapped reveal layout after target text changes.
+  void rebuildToolTextRevealLayout();
+
+  /// Complete the current reveal animation immediately.
+  void completeToolTextReveal();
+
+  /// Cancel any in-progress reveal animation.
+  void cancelToolTextReveal();
+
   /// Update transient debug text shown in the UI.
   void setDebugText(const String &text);
 
@@ -385,6 +430,9 @@ private:
 
   /// Detect and handle prolonged Thinking timeouts.
   void processThinkingTimeout();
+
+  /// Advance M5-style tool text reveal animation.
+  void processTextReveal();
 
   /// Animate the visible indicator while waiting for a response.
   void processWaitingIndicator();
@@ -472,6 +520,9 @@ private:
 
   /// Build the body text shown in the chat region.
   String buildBodyText() const;
+
+  /// Build the M5-style startup checklist body text.
+  String buildStartupChecklistText() const;
 
   /// Build footer text shown while waiting for a response.
   String waitingIndicatorText() const;

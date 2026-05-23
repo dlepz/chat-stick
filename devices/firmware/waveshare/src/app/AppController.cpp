@@ -29,6 +29,7 @@ void AppController::setup() {
   _display.init();
   _display.setBrightness(_settings.brightness());
   _displayReady = true;
+  _startupPowerDone = true;
   _screenDirty = true;
   renderIfNeeded();
 
@@ -45,8 +46,11 @@ void AppController::setup() {
   }
 
   _audio.setVolume(_settings.volume());
-  _chatId = _settings.chatId();
-  _live.setChatId(_chatId);
+  if (!_settings.chatId().isEmpty()) {
+    _settings.clearChatId();
+  }
+  _chatId = "";
+  _live.setChatId("");
   _live.setVoice(_settings.voice());
   _live.setPreferredEndpointIndex(_settings.serverEndpointIndex());
 
@@ -60,6 +64,8 @@ void AppController::setup() {
   callbacks.onServerReady = [this]() {
     exitBootMode();
     if (_appState == AppState::Connecting) {
+      _startupInternetDone = true;
+      _startupChecklistVisible = false;
       _appRegion = AppRegion::Chat;
       setAppState(AppState::Ready, "Ready");
     }
@@ -67,6 +73,8 @@ void AppController::setup() {
   callbacks.onReady = [this]() {
     exitBootMode();
     if (_appState == AppState::Connecting) {
+      _startupInternetDone = true;
+      _startupChecklistVisible = false;
       _appRegion = AppRegion::Chat;
       setAppState(AppState::Ready, "Ready");
     }
@@ -91,7 +99,7 @@ void AppController::setup() {
   };
   callbacks.onConversationReset = [this]() {
     _audio.stopPlayback();
-    _toolText = "";
+    setToolTextImmediate("");
     if (_imagePresent) {
       _display.clearImage();
       _imagePresent = false;
@@ -104,15 +112,13 @@ void AppController::setup() {
   };
   callbacks.onShowText = [this](const String &text) {
     _turn.clearPendingReset();
-    _toolText = text;
-    resetBodyPage();
-    _screenDirty = true;
+    startToolTextReveal(text);
   };
   auto applyPendingTurnReset = [this]() {
     if (!_turn.pendingReset()) {
       return;
     }
-    _toolText = "";
+    setToolTextImmediate("");
     if (_imagePresent) {
       _display.clearImage();
       _imagePresent = false;
@@ -147,13 +153,13 @@ void AppController::setup() {
       return;
     }
     applyPendingTurnReset();
-    const String delta = _turn.transcriptDelta(_toolText, text);
+    const String basis =
+        _toolTextRevealTarget.isEmpty() ? _toolText : _toolTextRevealTarget;
+    const String delta = _turn.transcriptDelta(basis, text);
     if (delta.isEmpty()) {
       return;
     }
-    _toolText += delta;
-    resetBodyPage();
-    _screenDirty = true;
+    appendToolTextReveal(delta);
   };
   callbacks.onError = [this](const String &category, const String &error) {
     const ErrorCategory mapped = category == "gemini_unavailable"
@@ -181,9 +187,6 @@ void AppController::setup() {
       clearDebugText();
       _audio.queuePlayback(data, len);
       _turn.noteAudioReceived();
-      if (_appState == AppState::Thinking) {
-        setAppState(AppState::Playing, "Speaking...");
-      }
     }
   };
   callbacks.onBrightness = [this](int level) {
@@ -297,7 +300,7 @@ void AppController::loop() {
   }
   processRecording();
   processThinkingTimeout();
-  processWaitingIndicator();
+  processTextReveal();
   processConnectingTimeout();
   processMenuFetches();
   processPower();
@@ -320,15 +323,24 @@ void AppController::configureCallbacks() {
 
 void AppController::connectNetworkStack() {
   _appRegion = AppRegion::Chat;
-  setAppState(AppState::Connecting, "Connecting...");
+  _startupChecklistVisible = true;
+  _startupPowerDone = true;
+  _startupWifiDone = false;
+  _startupInternetDone = false;
+  setAppState(AppState::Connecting, "Starting...");
+  renderIfNeeded();
+
   if (!_wifi.connectKnownNetworks()) {
+    _startupChecklistVisible = false;
     setErrorState(ErrorCategory::WiFiTimeout, "WiFi failed",
                   "A retry  B hold menu");
     return;
   }
 
-  restoreSessionPreview();
+  _startupWifiDone = true;
   _screenDirty = true;
+  renderIfNeeded();
+
   _live.connect();
 }
 
@@ -348,6 +360,9 @@ void AppController::setAppState(AppState state, const String &status,
   const unsigned long now = millis();
   _appState = state;
   _connectingSinceMs = state == AppState::Connecting ? now : 0;
+  if (state != AppState::Connecting) {
+    _startupChecklistVisible = false;
+  }
   if (state == AppState::Thinking) {
     _lastWaitingIndicatorRefreshMs = now;
     _waitingIndicatorFrame = 0;
@@ -368,6 +383,7 @@ void AppController::setAppState(AppState state, const String &status,
 
 void AppController::setErrorState(ErrorCategory category, const String &status,
                                   const String &error) {
+  _startupChecklistVisible = false;
   _errorCategory = category;
   _appState = AppState::Error;
   _connectingSinceMs = 0;
@@ -402,12 +418,71 @@ void AppController::performPowerOff() {
 }
 
 void AppController::clearToolText() {
-  _toolText = "";
+  setToolTextImmediate("");
   if (_imagePresent) {
     _display.clearImage();
     _imagePresent = false;
   }
   resetBodyPage();
+}
+
+void AppController::setToolTextImmediate(const String &text) {
+  cancelToolTextReveal();
+  _toolText = text;
+  _toolTextRevealTarget = text;
+  _toolTextRevealLayout = _display.layoutTextForReveal(text);
+  _toolTextRevealIndex = static_cast<int>(_toolTextRevealLayout.length());
+  resetBodyPage();
+  _screenDirty = true;
+}
+
+void AppController::startToolTextReveal(const String &text) {
+  _toolTextRevealTarget = text;
+  rebuildToolTextRevealLayout();
+  _toolText = "";
+  _toolTextRevealIndex = 0;
+  _lastTextRevealMs = 0;
+  resetBodyPage();
+  _screenDirty = true;
+}
+
+void AppController::appendToolTextReveal(const String &text) {
+  if (text.isEmpty()) {
+    return;
+  }
+
+  if (_toolTextRevealTarget.isEmpty() && !_toolText.isEmpty()) {
+    _toolTextRevealTarget = _toolText;
+  }
+  _toolTextRevealTarget += text;
+  rebuildToolTextRevealLayout();
+  resetBodyPage();
+  _screenDirty = true;
+}
+
+void AppController::rebuildToolTextRevealLayout() {
+  _toolTextRevealLayout = _display.layoutTextForReveal(_toolTextRevealTarget);
+  const int targetLen = static_cast<int>(_toolTextRevealLayout.length());
+  _toolTextRevealIndex = constrain(_toolTextRevealIndex, 0, targetLen);
+  _toolText = _toolTextRevealLayout.substring(0, _toolTextRevealIndex);
+  _lastTextRevealMs = 0;
+}
+
+void AppController::completeToolTextReveal() {
+  if (_toolTextRevealIndex >= static_cast<int>(_toolTextRevealLayout.length())) {
+    return;
+  }
+
+  _toolTextRevealIndex = static_cast<int>(_toolTextRevealLayout.length());
+  _toolText = _toolTextRevealLayout;
+  _screenDirty = true;
+}
+
+void AppController::cancelToolTextReveal() {
+  _toolTextRevealTarget = "";
+  _toolTextRevealLayout = "";
+  _toolTextRevealIndex = 0;
+  _lastTextRevealMs = 0;
 }
 
 void AppController::setDebugText(const String &text) {
@@ -481,7 +556,7 @@ void AppController::restoreSessionPreview() {
 
   String lastMessage;
   if (_live.fetchLastAssistantMessage(lastMessage) && !lastMessage.isEmpty()) {
-    _toolText = lastMessage;
+    setToolTextImmediate(lastMessage);
     _statusText = "Restored";
     resetBodyPage();
     _screenDirty = true;
@@ -541,6 +616,7 @@ void AppController::handleButtons() {
 
   if (_powerManager.isInterruptible() &&
       (_buttonA.consumePressed() || _buttonB.consumePressed())) {
+    completeToolTextReveal();
     _powerManager.beginWaking();
     _screenDirty = true;
   }
@@ -581,12 +657,14 @@ void AppController::handleChatButtons() {
   }
 
   if (_buttonB.consumeHoldStart() && _appState != AppState::Recording) {
+    completeToolTextReveal();
     openMenu(_appState == AppState::Error ? MenuState::Device : MenuState::Home);
     return;
   }
 
   if (_buttonB.consumeClick()) {
     _powerManager.registerActivity();
+    completeToolTextReveal();
     const int pageCount = currentBodyPageCount();
     if (pageCount > 1) {
       _bodyPageIndex = (_bodyPageIndex + 1) % pageCount;
@@ -599,6 +677,7 @@ void AppController::handleChatButtons() {
   if (_buttonA.consumePressed() &&
       (_appState == AppState::Ready || _appState == AppState::Playing ||
        _appState == AppState::Thinking)) {
+    completeToolTextReveal();
     startRecording();
     return;
   }
@@ -628,6 +707,7 @@ void AppController::handleMenuButtons() {
 }
 
 void AppController::openMenu(MenuState state) {
+  completeToolTextReveal();
   if (_appState == AppState::Recording) {
     _audio.stopRecording();
     if (_live.isConnected() && _recordingCommitted) {
@@ -943,7 +1023,7 @@ void AppController::resumeConversation(int index) {
   _chatId = entry.chatId;
   _settings.setChatId(_chatId);
   _live.setChatId(_chatId);
-  _toolText = entry.lastMessage;
+  setToolTextImmediate(entry.lastMessage);
   if (_imagePresent) {
     _display.clearImage();
     _imagePresent = false;
@@ -969,8 +1049,8 @@ void AppController::startCaptivePortalFlow() {
   _live.disconnect();
   if (_wifi.startCaptivePortal()) {
     setAppState(AppState::Connecting, "WiFi setup");
-    _toolText = "Join AP\n" + _wifi.captivePortalSsid() + "\nOpen " +
-                _wifi.captivePortalIp() + "\nSubmit WiFi form";
+    setToolTextImmediate("Join AP\n" + _wifi.captivePortalSsid() + "\nOpen " +
+                         _wifi.captivePortalIp() + "\nSubmit WiFi form");
   } else {
     setErrorState(ErrorCategory::WiFiTimeout, "Portal failed",
                   "Could not start setup AP");
@@ -1051,23 +1131,19 @@ void AppController::installFirmwareUpdate() {
   const FirmwareUpdateInfo info = _firmwareInfo;
   closeMenu();
   setAppState(AppState::Connecting, "Updating...");
-  _toolText =
-      "Downloading update\nv" + String(info.latestVersion) + "\nPlease wait";
-  resetBodyPage();
-  _screenDirty = true;
+  setToolTextImmediate("Downloading update\nv" + String(info.latestVersion) +
+                       "\nPlease wait");
   renderIfNeeded();
 
   String error;
   if (_live.downloadAndApplyFirmwareUpdate(info.downloadUrl, error)) {
-    _toolText = "Update installed\nRestarting...";
-    resetBodyPage();
-    _screenDirty = true;
+    setToolTextImmediate("Update installed\nRestarting...");
     renderIfNeeded();
     delay(500);
     ESP.restart();
   }
 
-  _toolText = "Update failed\n" + error;
+  setToolTextImmediate("Update failed\n" + error);
   setAppState(AppState::Ready, "Ready");
   _screenDirty = true;
 }
@@ -1305,6 +1381,33 @@ void AppController::processThinkingTimeout() {
   }
 }
 
+void AppController::processTextReveal() {
+  const int targetLen = static_cast<int>(_toolTextRevealLayout.length());
+  if (_toolTextRevealIndex >= targetLen) {
+    return;
+  }
+
+  const bool canReveal =
+      _appRegion == AppRegion::Chat &&
+      (_appState == AppState::Ready || _appState == AppState::Thinking ||
+       _appState == AppState::Playing);
+  if (!canReveal) {
+    completeToolTextReveal();
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (_lastTextRevealMs != 0 &&
+      now - _lastTextRevealMs < kTextRevealFrameMs) {
+    return;
+  }
+
+  _lastTextRevealMs = now;
+  _toolTextRevealIndex++;
+  _toolText = _toolTextRevealLayout.substring(0, _toolTextRevealIndex);
+  _screenDirty = true;
+}
+
 void AppController::processWaitingIndicator() {
   if (_appState != AppState::Thinking || _appRegion != AppRegion::Chat) {
     return;
@@ -1369,9 +1472,7 @@ void AppController::processCaptivePortal() {
     return;
   }
 
-  _toolText = "Saved WiFi\n" + ssid + "\nReconnecting...";
-  resetBodyPage();
-  _screenDirty = true;
+  setToolTextImmediate("Saved WiFi\n" + ssid + "\nReconnecting...");
   connectNetworkStack();
 }
 
@@ -1402,29 +1503,24 @@ DisplayState AppController::buildDisplayState() const {
     return state;
   }
 
-  if (_appRegion == AppRegion::Menu) {
-    state.headerLeft = "< Back";
-    state.headerRight = menuTitle();
+  const bool homeMenuVisible =
+      _appRegion == AppRegion::Menu && _menuState == MenuState::Home;
+  if (homeMenuVisible) {
+    state.headerLeft = currentTimeString();
+    const int battery = Board::batteryLevel();
+    if (battery >= 0 && battery <= 100) {
+      state.headerRight = String(battery) + "%";
+    }
   }
 
   state.bodyText = buildBodyText();
   state.bodyDim = _appState == AppState::Recording ||
-                  (_appState == AppState::Thinking && _toolText.isEmpty());
+                  _appState == AppState::Thinking;
   state.imagePresent = _imagePresent;
   state.pageIndex = _bodyPageIndex;
   state.pageCount = currentBodyPageCount();
-  const bool showWaitingFooter =
-      _appRegion == AppRegion::Chat && _appState == AppState::Thinking &&
-      (!_toolText.isEmpty() || _imagePresent);
-  if (showWaitingFooter) {
-    state.footerLeft = waitingIndicatorText();
-    if (state.pageCount > 1) {
-      state.footerRight =
-          String(constrain(state.pageIndex + 1, 1, state.pageCount)) + "/" +
-          String(state.pageCount);
-    }
-  } else if (SHOW_DEBUG_TEXT_ON_DISPLAY && !_debugText.isEmpty() &&
-             _appRegion == AppRegion::Chat) {
+  if (SHOW_DEBUG_TEXT_ON_DISPLAY && !_debugText.isEmpty() &&
+      _appRegion == AppRegion::Chat) {
     state.footerLeft = _debugText;
     if (state.pageCount > 1) {
       state.footerRight =
@@ -1475,16 +1571,21 @@ String AppController::buildBodyText() const {
 
   switch (_appState) {
   case AppState::Connecting:
+    if (_startupChecklistVisible) {
+      return buildStartupChecklistText();
+    }
     return _statusText.isEmpty() ? String("Starting...") : _statusText;
 
   case AppState::Ready:
-    return "Hi, how can I help? Hold the button and speak to get a response.";
+    return "Hi, how can I help? Hold the big button and speak to get a "
+           "response.";
 
   case AppState::Recording:
-    return "Hi, how can I help? Hold the button and speak to get a response.";
+    return "Hi, how can I help? Hold the big button and speak to get a "
+           "response.";
 
   case AppState::Thinking:
-    return waitingIndicatorText();
+    return "Thinking...";
 
   case AppState::Playing:
     return "";
@@ -1511,6 +1612,16 @@ String AppController::buildBodyText() const {
   }
 
   return "";
+}
+
+String AppController::buildStartupChecklistText() const {
+  auto line = [](bool done, const char *label) {
+    return String(done ? "[x] " : "[ ] ") + label;
+  };
+
+  return String("Starting...\n") + line(_startupPowerDone, "Powering on") +
+         "\n" + line(_startupWifiDone, "WiFi") + "\n" +
+         line(_startupInternetDone, "Internet");
 }
 
 String AppController::waitingIndicatorText() const {

@@ -406,6 +406,21 @@ int TextDisplay::pageCountForText(const String &text) const {
   return max(1, (wrappedCount + kChatRows - 1) / kChatRows);
 }
 
+String TextDisplay::layoutTextForReveal(const String &text) const {
+  String wrapped[128];
+  const int wrappedCount = wrapBodyText(text, wrapped, 128);
+  String out;
+
+  for (int i = 0; i < wrappedCount; i++) {
+    if (i > 0) {
+      out += '\n';
+    }
+    out += wrapped[i];
+  }
+
+  return out;
+}
+
 int TextDisplay::wrappedRowCount(const String &text) const {
   if (text.isEmpty()) {
     return 0;
@@ -598,25 +613,21 @@ void TextDisplay::drawPageIndicator(int pageIndex, int pageCount) const {
 }
 
 void TextDisplay::drawMenu(const DisplayState &state) const {
+  const int startRow = max(0, kChatRows - state.menuItemCount);
   for (int i = 0; i < state.menuItemCount; i++) {
+    const int row = startRow + i;
     const bool selected = i == state.menuSelectedIndex;
-    const int textY = kMenuBodyY + i * kMenuRowH + kMenuRowTextYOffset;
-    const int touchY = textY - ((kMenuRowH - kCellH) / 2);
-    const uint16_t color = selected ? COLOR_WHITE : COLOR_GRAY;
-
-    if (selected) {
-      fillRect(0, touchY + 6, 4, kMenuRowH - 12, COLOR_GRAY);
-      drawText(SCREEN_WIDTH_PX - kInsetX - kCellW, textY, ">", COLOR_WHITE, 1);
-    }
-    drawText(kInsetX, textY, fitLine(state.menuItems[i]), color);
+    const String prefix = selected ? "> " : "  ";
+    drawLine(row, prefix + state.menuItems[i],
+             selected ? COLOR_WHITE : COLOR_GRAY);
   }
 
   const int glyphX = SCREEN_WIDTH_PX - kInsetX - kCellW;
   if (state.menuHasMoreAbove) {
-    drawText(glyphX, kMenuBodyY - kCellH, "^", COLOR_GRAY, 1);
+    const int row = max(1, startRow - 1);
+    drawText(glyphX, kInsetY + row * kCellH, "v", COLOR_GRAY, 1);
   }
   if (state.menuHasMoreBelow) {
-    drawText(glyphX, kMenuBodyY + MAX_MENU_VISIBLE_ITEMS * kMenuRowH, "v",
-             COLOR_GRAY, 1);
+    drawText(glyphX, kInsetY + (kChatRows - 1) * kCellH, "v", COLOR_GRAY, 1);
   }
 }
