@@ -62,7 +62,7 @@ constexpr int WIFI_CONNECT_TIMEOUT_SEC = 10;
 
 // ============= Device =============
 constexpr const char *DEVICE_ID = "waveshare-amoled18-live";
-constexpr int FIRMWARE_VERSION = 8;
+constexpr int FIRMWARE_VERSION = 9;
 
 // ============= Audio =============
 constexpr int MIC_SAMPLE_RATE = 16000;  // 16 kHz input (Gemini Live API)
@@ -76,6 +76,8 @@ constexpr int SCREEN_HEIGHT_PX = 448;
 constexpr int DEFAULT_BRIGHTNESS =
     80; // lower = longer battery; plenty readable indoors
 constexpr int DEFAULT_VOLUME = 180;
+constexpr bool SHOW_BOOT_LOG_ON_DISPLAY = false;
+constexpr bool SHOW_DEBUG_TEXT_ON_DISPLAY = false;
 
 // ============= Hardware (Waveshare ESP32-S3-Touch-AMOLED-1.8) =============
 constexpr int LCD_SDIO0_PIN = 4;

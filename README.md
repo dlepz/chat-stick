@@ -91,13 +91,17 @@ If firmware editor diagnostics complain that `Arduino.h` or STL types like `std:
 ```bash
 # Deploy the worker
 cd server
-wrangler secret put GEMINI_API_KEY
-wrangler secret put HISTORY_API_TOKEN
-wrangler deploy
+WORKER_NAME=$(node scripts/worker-name.mjs)
+wrangler secret put GEMINI_API_KEY --name "$WORKER_NAME"
+wrangler secret put HISTORY_API_TOKEN --name "$WORKER_NAME"
+npm run deploy
 
 # Update firmware to point at the deployed endpoint
 # Set PRODUCTION_SERVER_ADDRESS in firmware/src/credentials.h to your worker's hostname
 ```
+
+`npm run deploy` is branch-aware: `main`/`master` deploys `m5-live`,
+while other branches deploy to `m5-live-<branch>`.
 
 ## Optional: Email Notifications
 
@@ -116,10 +120,11 @@ cd server
 
 # 3. Set the sender + recipient secrets. Sender must be on your Cloudflare
 #    domain; recipient must equal destination_address from wrangler.toml.
-wrangler secret put EMAIL_SENDER       # e.g. chat-stick@your-domain.com
-wrangler secret put EMAIL_RECIPIENT    # the verified destination address
+WORKER_NAME=$(node scripts/worker-name.mjs)
+wrangler secret put EMAIL_SENDER --name "$WORKER_NAME"       # e.g. chat-stick@your-domain.com
+wrangler secret put EMAIL_RECIPIENT --name "$WORKER_NAME"    # the verified destination address
 
-wrangler deploy
+npm run deploy
 ```
 
 For local `wrangler dev`, also add `EMAIL_SENDER` and `EMAIL_RECIPIENT` to `server/.dev.vars`. Outbound email is not delivered in `wrangler dev` (the binding is a no-op locally), so test by deploying.
@@ -236,7 +241,7 @@ OTA distribution is per-deployment: each user's binary lives in their own R2 buc
 | Script                     | What it does                                              |
 | -------------------------- | --------------------------------------------------------- |
 | `./flash.sh [--monitor]`   | Build firmware and upload over USB to a connected device. |
-| `./deploy.sh`              | Deploy the Cloudflare Worker.                             |
+| `./deploy.sh`              | Deploy the Cloudflare Worker with branch-aware naming.    |
 | `./publish-ota-release.sh` | Build firmware and upload it to R2 for OTA pickup.        |
 | `./publish.sh`             | Run `publish-ota-release.sh` then `deploy.sh`.            |
 

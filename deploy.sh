@@ -4,4 +4,4 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-(cd server && npx wrangler deploy "$@")
+(cd server && npm run deploy -- "$@")

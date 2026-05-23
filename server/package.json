@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "node scripts/deploy-worker.mjs",
+    "worker:name": "node scripts/worker-name.mjs"
   },
   "dependencies": {
     "mimetext": "^3.0.28",

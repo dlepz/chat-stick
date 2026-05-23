@@ -40,7 +40,11 @@ bool WiFiService::connectKnownNetworks() {
 
   for (int i = 0; i < _savedNetworkCount; i++) {
     const SavedNetwork &network = _savedNetworks[i];
-    if (connectToNetwork(network.ssid, network.password, network.label)) {
+    const String ssid = network.ssid;
+    const String password = network.password;
+    const String label = network.label;
+    if (connectToNetwork(ssid, password, label)) {
+      rememberNetwork(ssid, password, label);
       return true;
     }
   }

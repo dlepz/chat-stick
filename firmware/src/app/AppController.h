@@ -59,14 +59,31 @@ private:
   /// Maximum time to wait in Thinking before surfacing a timeout.
   static constexpr unsigned long kThinkingTimeoutMs = 15000;
 
+  /// Maximum time to wait for the server to report a ready AI session.
+  static constexpr unsigned long kConnectingReadyTimeoutMs = 20000;
+
   /// Maximum continuous recording duration.
   static constexpr unsigned long kMaxRecordingMs = 30000;
+
+  /// Minimum press duration before a local recording becomes a server turn.
+  static constexpr unsigned long kRecordingCommitMs = 150;
 
   /// Hold duration required to trigger a reset flow.
   static constexpr unsigned long kResetHoldMs = 1500;
 
   /// Rate limit for repeated capture-failure logs.
   static constexpr unsigned long kCaptureFailureLogIntervalMs = 1000;
+
+  /// Refresh cadence for the on-screen wait indicator.
+  static constexpr unsigned long kWaitingIndicatorRefreshMs = 500;
+
+  /// Samples captured in one microphone chunk.
+  static constexpr int kCaptureChunkSamples =
+      MIC_SAMPLE_RATE * MIC_CHUNK_MS / 1000;
+
+  /// Number of chunks retained while deciding whether a press is intentional.
+  static constexpr int kPreCommitAudioChunks =
+      (kRecordingCommitMs + MIC_CHUNK_MS - 1) / MIC_CHUNK_MS;
 
   /// Maximum number of conversation history entries retained locally.
   static constexpr int kMaxConversationHistory = 10;
@@ -110,6 +127,9 @@ private:
   /// Whether a render is currently in progress.
   bool _renderInProgress = false;
 
+  /// Whether the current recording has been committed to the server.
+  bool _recordingCommitted = false;
+
   /// Whether an image is currently available for the body area.
   bool _imagePresent = false;
 
@@ -124,6 +144,18 @@ private:
 
   /// Timestamp of the last header refresh.
   unsigned long _lastHeaderRefreshMs = 0;
+
+  /// Timestamp of the last animated wait-indicator refresh.
+  unsigned long _lastWaitingIndicatorRefreshMs = 0;
+
+  /// Current animated wait-indicator frame.
+  int _waitingIndicatorFrame = 0;
+
+  /// Buffered local audio captured before the press passes kRecordingCommitMs.
+  int16_t _preCommitAudio[kCaptureChunkSamples * kPreCommitAudioChunks];
+
+  /// Number of valid chunks currently buffered in _preCommitAudio.
+  int _preCommitAudioChunkCount = 0;
 
   /// Current body page index.
   int _bodyPageIndex = 0;
@@ -230,6 +262,9 @@ private:
   /// Timestamp of the last power-management poll.
   unsigned long _lastPowerPollMs = 0;
 
+  /// Timestamp of the most recent Connecting-state transition.
+  unsigned long _connectingSinceMs = 0;
+
   /// Wire service callbacks back into controller state transitions.
   void configureCallbacks();
 
@@ -302,6 +337,18 @@ private:
   /// Finish the current recording turn.
   void stopRecording();
 
+  /// Commit a long-enough recording press to the server.
+  bool commitRecording();
+
+  /// Discard an uncommitted local recording press.
+  void discardRecording(const String &reason);
+
+  /// Store one captured chunk before the recording has committed.
+  void bufferPreCommitAudio(const int16_t *data);
+
+  /// Send one captured or buffered PCM chunk to the server.
+  bool sendAudioChunk(const int16_t *data, size_t bytes);
+
   /// Capture and send microphone audio while recording.
   void processRecording();
 
@@ -310,6 +357,12 @@ private:
 
   /// Detect and handle prolonged Thinking timeouts.
   void processThinkingTimeout();
+
+  /// Animate the visible indicator while waiting for a response.
+  void processWaitingIndicator();
+
+  /// Recover when the WebSocket opens but the AI session never becomes ready.
+  void processConnectingTimeout();
 
   /// Complete background menu requests when their tasks finish.
   void processMenuFetches();
@@ -391,6 +444,9 @@ private:
 
   /// Build the body text shown in the chat region.
   String buildBodyText() const;
+
+  /// Build footer text shown while waiting for a response.
+  String waitingIndicatorText() const;
 
   /// Serialize device status for tool responses.
   String deviceStatusJson() const;
