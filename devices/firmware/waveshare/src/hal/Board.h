@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
+#include "hal/DeviceCapabilities.h"
 
 /**
  * @brief Hardware accessors and board-specific control helpers.
@@ -9,6 +10,9 @@
 namespace Board {
 /// Initialize board peripherals.
 bool init();
+
+/// Static feature flags for this board target.
+const DeviceCapabilities &capabilities();
 
 /// Service board-level background work.
 void update();
@@ -51,6 +55,9 @@ bool usbConnected();
 
 /// Human-readable label for the current power source.
 const char *powerSourceLabel();
+
+/// Enter one light-sleep interval and report what woke the board.
+LightSleepWakeReason enterLightSleep(unsigned long wakeIntervalMs);
 
 /// Power down the board.
 void powerOff();

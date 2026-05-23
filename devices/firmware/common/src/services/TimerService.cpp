@@ -1,6 +1,6 @@
 #include "TimerService.h"
 
-#include "../Config.h"
+#include "Config.h"
 #include <ArduinoJson.h>
 
 namespace {

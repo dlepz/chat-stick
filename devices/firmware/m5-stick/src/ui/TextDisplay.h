@@ -1,6 +1,7 @@
 #pragma once
 
-#include "../state/StateTypes.h"
+#include "../Config.h"
+#include "state/StateTypes.h"
 #include <Arduino.h>
 #include <M5Unified.h>
 
@@ -8,6 +9,7 @@ class TextDisplay {
 public:
   static constexpr int kCharsPerLine = 29;
   static constexpr int kLines = 8;
+  static constexpr int kChatRows = 7;
   // Body image bounding box, matching designs.md "Images" / Layout sections.
   static constexpr int kImageX = 4;
   static constexpr int kImageY = 4;
@@ -26,6 +28,7 @@ public:
   void render(const DisplayState &state);
   int pageCountForText(const String &text) const;
   String layoutTextForReveal(const String &text) const;
+  int wrappedRowCount(const String &text) const;
 
   // Store a 1-bit packed bitmap (MSB first) for the body image area. Pixel
   // dimensions must match kImageW x kImageH; mismatches return false.
@@ -36,9 +39,13 @@ public:
 private:
   static constexpr int kBodyRows = 7;
   static constexpr int kFooterRow = 7;
+  static constexpr size_t kCanvasBytes =
+      static_cast<size_t>(SCREEN_WIDTH_PX) * SCREEN_HEIGHT_PX * sizeof(uint16_t);
 
   mutable M5Canvas _canvas;
   bool _canvasReady = false;
+  uint16_t *_previousCanvas = nullptr;
+  bool _hasPreviousCanvas = false;
 
   uint8_t *_imageBuffer = nullptr;
   size_t _imageBufferSize = 0;
@@ -49,6 +56,7 @@ private:
   String mergeEdgeText(const String &left, const String &right) const;
   String spaces(int count) const;
   int wrapBodyText(const String &text, String out[], int maxRows) const;
+  void flushCanvas(bool forceFull = false);
   void drawLine(int row, const String &text, uint16_t color) const;
   void drawCharCell(int x, int yTop, char c, uint16_t color) const;
   void drawBitmapGlyph(int x, int yTop, const uint8_t *bits,

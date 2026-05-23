@@ -171,6 +171,14 @@ bool AudioService::playMelody(const String &melody) {
   return playToneSequence(melody);
 }
 
+bool AudioService::playTone(int frequencyHz, int durationMs) {
+  if (frequencyHz <= 0 || durationMs <= 0) {
+    return false;
+  }
+  M5.Speaker.tone(frequencyHz, static_cast<uint32_t>(durationMs));
+  return true;
+}
+
 void AudioService::resetPlayback() {
   _playWritePos = 0;
   _playReadPos = 0;

@@ -26,6 +26,18 @@ public:
   /// Current speaker volume level.
   int volume() const { return _volume; }
 
+  /// No-op on boards without selectable external speaker routing.
+  void setUseExternalSpeaker(bool) {}
+
+  /// Whether external speaker routing is enabled.
+  bool useExternalSpeaker() const { return false; }
+
+  /// No-op on boards without adjustable external speaker gain.
+  void setExternalSpeakerGain(int) {}
+
+  /// Current external speaker gain, or zero when unsupported.
+  int externalSpeakerGain() const { return 0; }
+
   /// Begin microphone capture for a user turn.
   bool startRecording();
 
@@ -48,6 +60,14 @@ public:
    * @return True on successful playback scheduling.
    */
   bool playMelody(const String &melody);
+
+  /**
+   * @brief Play a single synthesized tone.
+   * @param frequencyHz Frequency in Hz.
+   * @param durationMs Duration in milliseconds.
+   * @return True on successful playback scheduling.
+   */
+  bool playTone(int frequencyHz, int durationMs);
 
   /// Pointer to the most recently captured mono PCM chunk.
   const int16_t *captureData() const { return _captureChunk; }

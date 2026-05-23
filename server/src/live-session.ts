@@ -11,7 +11,11 @@ import {
 	searchFiles,
 	writeFile,
 } from './files'
-import { generateAndProcessImage } from './image-gen'
+import {
+	generateAndProcessImage,
+	DEFAULT_IMAGE_WIDTH,
+	DEFAULT_IMAGE_HEIGHT,
+} from './image-gen'
 import {
 	type ImageSummary,
 	getImageById,
@@ -123,6 +127,12 @@ const THINKING_LEVEL_LIST_TEXT = THINKING_LEVELS.join(', ')
 function resolveVoice(requested: string | null | undefined): string {
 	if (requested && VOICE_NAMES.has(requested)) return requested
 	return DEFAULT_VOICE
+}
+
+function parsePositiveInt(value: string | null | undefined, fallback: number): number {
+	if (!value) return fallback
+	const parsed = Number.parseInt(value, 10)
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
 function findVoice(name: string): (typeof AVAILABLE_VOICES)[number] | undefined {
@@ -291,6 +301,8 @@ export class LiveSession {
 	private geminiConnecting = false
 	private deviceId = 'unknown'
 	private chatId = ''
+	private imageTargetWidth: number = DEFAULT_IMAGE_WIDTH
+	private imageTargetHeight: number = DEFAULT_IMAGE_HEIGHT
 	private currentVoice = DEFAULT_VOICE
 	private currentThinkingLevel: ThinkingLevel = DEFAULT_THINKING_LEVEL
 	private currentUserText = ''
@@ -329,7 +341,7 @@ export class LiveSession {
 		await this.saveConversation()
 		this.cleanup()
 
-		// Extract device_id, chat_id, and voice from URL
+		// Extract device_id, chat_id, voice, and image dimensions from URL
 		const url = new URL(request.url)
 		const requestedChatId = url.searchParams.get('chat_id')
 		this.deviceId = url.searchParams.get('device_id') || 'unknown'
@@ -339,8 +351,19 @@ export class LiveSession {
 			? await this.loadThinkingLevelForChat(this.chatId)
 			: DEFAULT_THINKING_LEVEL
 		this.locationContext = buildLocationContext(request)
+		this.imageTargetWidth = parsePositiveInt(
+			url.searchParams.get('image_w'),
+			DEFAULT_IMAGE_WIDTH
+		)
+		this.imageTargetHeight = parsePositiveInt(
+			url.searchParams.get('image_h'),
+			DEFAULT_IMAGE_HEIGHT
+		)
 
-		console.log(`[Device] Connected: device=${this.deviceId} chat=${this.chatId}`)
+		console.log(
+			`[Device] Connected: device=${this.deviceId} chat=${this.chatId} ` +
+				`image=${this.imageTargetWidth}x${this.imageTargetHeight}`
+		)
 
 		const pair = new WebSocketPair()
 		const [client, server] = Object.values(pair)
@@ -1721,7 +1744,12 @@ export class LiveSession {
 		startMs: number,
 	): Promise<void> {
 		const turnChatId = this.chatId
-		const result = await generateAndProcessImage(prompt, this.env.GEMINI_API_KEY)
+		const result = await generateAndProcessImage(
+			prompt,
+			this.env.GEMINI_API_KEY,
+			this.imageTargetWidth,
+			this.imageTargetHeight
+		)
 		if (!result) {
 			this.sendToDevice({ type: 'show_image_failed' })
 			await this.logToolCall({

@@ -1,9 +1,10 @@
 #include "Board.h"
 
 #include "../Config.h"
-#include "../diag/Log.h"
+#include "diag/Log.h"
 #include <Wire.h>
 #include <XPowersLib.h>
+#include <driver/gpio.h>
 #include <esp_sleep.h>
 
 namespace {
@@ -27,6 +28,17 @@ unsigned long pwrPulseUntilMs = 0;
 unsigned long lastPmuPollMs = 0;
 /// Last brightness written to the display.
 uint8_t currentBrightness = DEFAULT_BRIGHTNESS;
+const DeviceCapabilities kCapabilities = {.externalSpeakerSwitch = false,
+                                          .externalSpeakerGain = false,
+                                          .lightSleep = true,
+                                          .batteryLevel = true,
+                                          .batteryVoltage = true,
+                                          .usbPowerStatus = true,
+                                          .endpointPreference = true,
+                                          .bootDisplay =
+                                              SHOW_BOOT_LOG_ON_DISPLAY,
+                                          .debugDisplay =
+                                              SHOW_DEBUG_TEXT_ON_DISPLAY};
 
 /**
  * @brief Enable PMU ADC channels used for power telemetry.
@@ -66,6 +78,8 @@ void pollPmuButton() {
 } // namespace
 
 namespace Board {
+const DeviceCapabilities &capabilities() { return kCapabilities; }
+
 /**
  * @brief Initialize board GPIO, I2C, PMU, and amplifier defaults.
  * @return True after initialization completes.
@@ -203,6 +217,34 @@ const char *powerSourceLabel() {
     return "BAT";
   }
   return "?";
+}
+
+/**
+ * @brief Enter one light-sleep interval and report why the device woke.
+ * @param wakeIntervalMs Timer wake interval in milliseconds.
+ * @return Wake reason used by shared power management.
+ */
+LightSleepWakeReason enterLightSleep(unsigned long wakeIntervalMs) {
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  gpio_wakeup_enable(BUTTON_A_PIN, GPIO_INTR_LOW_LEVEL);
+  if (BUTTON_B_PIN != GPIO_NUM_NC) {
+    gpio_wakeup_enable(BUTTON_B_PIN, GPIO_INTR_LOW_LEVEL);
+  }
+  esp_sleep_enable_gpio_wakeup();
+  esp_sleep_enable_timer_wakeup(wakeIntervalMs * 1000ULL);
+
+  esp_light_sleep_start();
+
+  const esp_sleep_wakeup_cause_t reason = esp_sleep_get_wakeup_cause();
+  update();
+  if (reason == ESP_SLEEP_WAKEUP_GPIO) {
+    return LightSleepWakeReason::Button;
+  }
+  if (reason == ESP_SLEEP_WAKEUP_TIMER) {
+    return buttonAIsPressed() || buttonBIsPressed() ? LightSleepWakeReason::Button
+                                                    : LightSleepWakeReason::Timer;
+  }
+  return LightSleepWakeReason::Other;
 }
 
 /**

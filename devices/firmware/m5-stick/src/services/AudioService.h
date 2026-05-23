@@ -22,9 +22,15 @@ public:
   bool captureChunk();
   bool playNamedSound(const String &name);
   bool playMelody(const String &melody);
+  bool playTone(int frequencyHz, int durationMs);
 
   const int16_t *captureData() const { return _captureChunk; }
   size_t captureBytes() const { return _chunkBytes; }
+  int lastCaptureAverageAbs() const { return 0; }
+  int lastCapturePeak() const { return 0; }
+  int lastCaptureChannel() const { return 0; }
+  int lastCaptureLeftAverageAbs() const { return 0; }
+  int lastCaptureRightAverageAbs() const { return 0; }
 
   void resetPlayback();
   bool queuePlayback(const uint8_t *data, size_t len);

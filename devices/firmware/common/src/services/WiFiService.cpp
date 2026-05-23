@@ -1,26 +1,21 @@
 #include "WiFiService.h"
 
-#include "../Config.h"
-#include "../credentials.h"
-#include "../diag/Log.h"
+#include "Config.h"
+#include "credentials.h"
 #include <WiFi.h>
+#include <stdarg.h>
+#include <string.h>
 #include <time.h>
 
-/**
- * @brief Open preferences storage and load any saved WiFi networks.
- */
 void WiFiService::init() {
   _prefsReady = _prefs.begin(kPrefsNamespace, false);
   if (_prefsReady) {
     loadSavedNetworks();
   } else {
-    Log::client("WiFi", "preferences init failed; saved networks disabled");
+    log("Preferences init failed; saved networks disabled");
   }
 }
 
-/**
- * @brief Service captive-portal DNS and HTTP handlers when active.
- */
 void WiFiService::poll() {
   if (!_captivePortalActive) {
     return;
@@ -30,42 +25,134 @@ void WiFiService::poll() {
   _portalServer.handleClient();
 }
 
-/**
- * @brief Try connecting to saved and compiled-in networks in priority order.
- * @return True on a successful association.
- */
 bool WiFiService::connectKnownNetworks() {
   stopCaptivePortal();
+  if (WIFI_DISABLE_PERSISTENT_STORAGE) {
+    WiFi.persistent(false);
+  }
   WiFi.mode(WIFI_STA);
+  if (WIFI_DISABLE_SLEEP_DURING_CONNECT) {
+    WiFi.setSleep(false);
+  }
+  const unsigned long startMs = millis();
 
-  for (int i = 0; i < _savedNetworkCount; i++) {
-    const SavedNetwork &network = _savedNetworks[i];
-    const String ssid = network.ssid;
-    const String password = network.password;
-    const String label = network.label;
-    if (connectToNetwork(ssid, password, label)) {
-      rememberNetwork(ssid, password, label);
+  if (!WIFI_SCAN_BEFORE_FALLBACK_CONNECT) {
+    for (int i = 0; i < _savedNetworkCount; i++) {
+      const SavedNetwork &network = _savedNetworks[i];
+      if (connectToNetwork(network.ssid, network.password, network.label,
+                           WIFI_CONNECT_TIMEOUT_SEC * 1000UL)) {
+        rememberNetwork(network.ssid, network.password, network.label);
+        return true;
+      }
+    }
+
+    for (int i = 0; i < WIFI_NETWORK_COUNT; i++) {
+      if (connectToNetwork(WIFI_NETWORKS[i].ssid, WIFI_NETWORKS[i].password,
+                           WIFI_NETWORKS[i].label,
+                           WIFI_CONNECT_TIMEOUT_SEC * 1000UL)) {
+        rememberNetwork(WIFI_NETWORKS[i].ssid, WIFI_NETWORKS[i].password,
+                        WIFI_NETWORKS[i].label);
+        return true;
+      }
+    }
+
+    log("all networks failed");
+    return false;
+  }
+
+  bool retryPrimaryBySsid = false;
+  bool skipFirstConfiguredNetwork = false;
+  if (_savedNetworkCount > 0) {
+    const SavedNetwork network = _savedNetworks[0];
+    const bool hasFastHints =
+        WIFI_USE_FAST_CONNECT_HINTS && network.hasBssid && network.channel > 0;
+    log("Primary saved network %s fast_hints=%d channel=%ld",
+        network.ssid.c_str(), hasFastHints ? 1 : 0,
+        static_cast<long>(network.channel));
+    const unsigned long timeoutMs =
+        hasFastHints ? kPrimaryHintConnectTimeoutMs : kPrimaryConnectTimeoutMs;
+    if (connectToNetwork(network.ssid, network.password, network.label,
+                         timeoutMs, hasFastHints ? network.channel : 0,
+                         hasFastHints ? network.bssid : nullptr)) {
+      rememberNetwork(network.ssid, network.password, network.label);
+      log("Connected in %lums", millis() - startMs);
       return true;
+    }
+    retryPrimaryBySsid = hasFastHints;
+  } else if (WIFI_NETWORK_COUNT > 0) {
+    if (connectToNetwork(WIFI_NETWORKS[0].ssid, WIFI_NETWORKS[0].password,
+                         WIFI_NETWORKS[0].label, kPrimaryConnectTimeoutMs)) {
+      rememberNetwork(WIFI_NETWORKS[0].ssid, WIFI_NETWORKS[0].password,
+                      WIFI_NETWORKS[0].label);
+      log("Connected in %lums", millis() - startMs);
+      return true;
+    }
+    skipFirstConfiguredNetwork = true;
+  }
+
+  const unsigned long scanStartMs = millis();
+  refreshScanResults();
+  log("Scan found %d network(s) in %lums", _scanResultCount,
+      millis() - scanStartMs);
+  const bool hasScanResults = _scanResultCount > 0;
+  const int passCount = hasScanResults ? 2 : 1;
+
+  for (int pass = 0; pass < passCount; pass++) {
+    const bool visiblePass = pass == 0;
+
+    for (int i = 0; i < _savedNetworkCount; i++) {
+      if (i == 0 && !retryPrimaryBySsid) {
+        continue;
+      }
+
+      const SavedNetwork network = _savedNetworks[i];
+      const bool visible = !hasScanResults || isScannedSsid(network.ssid);
+      if (hasScanResults && visible != visiblePass) {
+        continue;
+      }
+
+      const unsigned long timeoutMs =
+          visible ? kFallbackConnectTimeoutMs : kUnavailableConnectTimeoutMs;
+      if (connectToNetwork(network.ssid, network.password, network.label,
+                           timeoutMs)) {
+        rememberNetwork(network.ssid, network.password, network.label);
+        log("Connected in %lums", millis() - startMs);
+        return true;
+      }
+    }
+
+    for (int i = 0; i < WIFI_NETWORK_COUNT; i++) {
+      if (i == 0 && skipFirstConfiguredNetwork) {
+        continue;
+      }
+
+      if (WIFI_SKIP_SAVED_CONFIGURED_DUPLICATES &&
+          hasSavedNetwork(WIFI_NETWORKS[i].ssid)) {
+        continue;
+      }
+
+      const bool visible =
+          !hasScanResults || isScannedSsid(WIFI_NETWORKS[i].ssid);
+      if (hasScanResults && visible != visiblePass) {
+        continue;
+      }
+
+      const unsigned long timeoutMs =
+          visible ? kFallbackConnectTimeoutMs : kUnavailableConnectTimeoutMs;
+      if (connectToNetwork(WIFI_NETWORKS[i].ssid, WIFI_NETWORKS[i].password,
+                           WIFI_NETWORKS[i].label, timeoutMs)) {
+        rememberNetwork(WIFI_NETWORKS[i].ssid, WIFI_NETWORKS[i].password,
+                        WIFI_NETWORKS[i].label);
+        log("Connected in %lums", millis() - startMs);
+        return true;
+      }
     }
   }
 
-  for (int i = 0; i < WIFI_NETWORK_COUNT; i++) {
-    if (connectToNetwork(WIFI_NETWORKS[i].ssid, WIFI_NETWORKS[i].password,
-                         WIFI_NETWORKS[i].label)) {
-      rememberNetwork(WIFI_NETWORKS[i].ssid, WIFI_NETWORKS[i].password,
-                      WIFI_NETWORKS[i].label);
-      return true;
-    }
-  }
-
-  Log::client("WiFi", "all networks failed");
+  log("All networks failed after %lums", millis() - startMs);
   return false;
 }
 
-/**
- * @brief Start the soft-AP captive portal used to provision WiFi credentials.
- * @return True when the portal AP, DNS, and HTTP server all start.
- */
 bool WiFiService::startCaptivePortal() {
   stopCaptivePortal();
   WiFi.disconnect(true, true);
@@ -75,7 +162,7 @@ bool WiFiService::startCaptivePortal() {
   refreshScanResults();
 
   if (!WiFi.softAP(kCaptivePortalSsid)) {
-    Log::client("WiFi", "failed to start captive portal AP");
+    log("Failed to start captive portal AP");
     WiFi.mode(WIFI_OFF);
     return false;
   }
@@ -88,14 +175,11 @@ bool WiFiService::startCaptivePortal() {
   _portalProvisioned = false;
   _provisionedSsid = "";
 
-  Log::client("WiFi", "captive portal started ssid=%s ip=%s",
-              kCaptivePortalSsid, WiFi.softAPIP().toString().c_str());
+  log("Captive portal started: SSID=%s IP=%s", kCaptivePortalSsid,
+      WiFi.softAPIP().toString().c_str());
   return true;
 }
 
-/**
- * @brief Stop captive-portal DNS and HTTP services and disable the soft-AP.
- */
 void WiFiService::stopCaptivePortal() {
   if (_captivePortalActive) {
     _dnsServer.stop();
@@ -108,11 +192,6 @@ void WiFiService::stopCaptivePortal() {
   }
 }
 
-/**
- * @brief Consume a pending portal-provisioning notification and stop the portal.
- * @param ssid Receives the SSID that was just provisioned.
- * @return True when a new provisioning event was pending.
- */
 bool WiFiService::consumeProvisioningSuccess(String &ssid) {
   if (!_portalProvisioned) {
     return false;
@@ -125,18 +204,12 @@ bool WiFiService::consumeProvisioningSuccess(String &ssid) {
   return true;
 }
 
-/**
- * @brief Disconnect from any active WiFi network and stop the captive portal.
- */
 void WiFiService::disconnect() {
   stopCaptivePortal();
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
 }
 
-/**
- * @brief Clear saved networks and stop any active portal/network session.
- */
 void WiFiService::reset() {
   _savedNetworkCount = 0;
   if (_prefsReady) {
@@ -145,37 +218,18 @@ void WiFiService::reset() {
   disconnect();
 }
 
-/**
- * @brief Whether the station interface is currently associated.
- * @return True when WiFi reports a connected status.
- */
 bool WiFiService::isConnected() const { return WiFi.status() == WL_CONNECTED; }
 
-/**
- * @brief SSID of the currently connected network.
- * @return SSID string, or empty when disconnected.
- */
 String WiFiService::ssid() const { return isConnected() ? WiFi.SSID() : ""; }
 
-/**
- * @brief Current station IP address.
- * @return IP string, or empty when disconnected.
- */
 String WiFiService::localIp() const {
   return isConnected() ? WiFi.localIP().toString() : "";
 }
 
-/**
- * @brief Captive portal soft-AP gateway IP.
- * @return IP string, or empty when the portal is not active.
- */
 String WiFiService::captivePortalIp() const {
   return _captivePortalActive ? WiFi.softAPIP().toString() : "";
 }
 
-/**
- * @brief Load persisted WiFi credentials from preferences into memory.
- */
 void WiFiService::loadSavedNetworks() {
   _savedNetworkCount = constrain(_prefs.getUChar("count", 0), 0,
                                  kMaxSavedNetworks);
@@ -188,17 +242,26 @@ void WiFiService::loadSavedNetworks() {
     _savedNetworks[i].label =
         _prefs.getString(("label_" + suffix).c_str(), "");
 
+    if (WIFI_USE_FAST_CONNECT_HINTS) {
+      _savedNetworks[i].channel =
+          _prefs.getInt(("chan_" + suffix).c_str(), 0);
+      const String bssidKey = "bssid_" + suffix;
+      _savedNetworks[i].hasBssid =
+          _prefs.getBytesLength(bssidKey.c_str()) == kBssidLength;
+      if (_savedNetworks[i].hasBssid) {
+        _prefs.getBytes(bssidKey.c_str(), _savedNetworks[i].bssid,
+                        kBssidLength);
+      }
+    }
+
     if (_savedNetworks[i].label.isEmpty()) {
       _savedNetworks[i].label = "Saved";
     }
   }
 
-  Log::client("WiFi", "loaded saved networks count=%d", _savedNetworkCount);
+  log("Loaded %d saved network(s)", _savedNetworkCount);
 }
 
-/**
- * @brief Persist the in-memory saved-network list back to preferences.
- */
 void WiFiService::writeSavedNetworks() {
   if (!_prefsReady) {
     return;
@@ -210,25 +273,34 @@ void WiFiService::writeSavedNetworks() {
     const String ssidKey = "ssid_" + suffix;
     const String passKey = "pass_" + suffix;
     const String labelKey = "label_" + suffix;
+    const String channelKey = "chan_" + suffix;
+    const String bssidKey = "bssid_" + suffix;
 
     if (i < _savedNetworkCount) {
       _prefs.putString(ssidKey.c_str(), _savedNetworks[i].ssid);
       _prefs.putString(passKey.c_str(), _savedNetworks[i].password);
       _prefs.putString(labelKey.c_str(), _savedNetworks[i].label);
+      if (WIFI_USE_FAST_CONNECT_HINTS) {
+        _prefs.putInt(channelKey.c_str(), _savedNetworks[i].channel);
+        if (_savedNetworks[i].hasBssid) {
+          _prefs.putBytes(bssidKey.c_str(), _savedNetworks[i].bssid,
+                          kBssidLength);
+        } else {
+          _prefs.remove(bssidKey.c_str());
+        }
+      }
     } else {
       _prefs.remove(ssidKey.c_str());
       _prefs.remove(passKey.c_str());
       _prefs.remove(labelKey.c_str());
+      if (WIFI_USE_FAST_CONNECT_HINTS) {
+        _prefs.remove(channelKey.c_str());
+        _prefs.remove(bssidKey.c_str());
+      }
     }
   }
 }
 
-/**
- * @brief Save or refresh a credential entry, moving it to the front of the list.
- * @param ssid Network SSID.
- * @param password Network password.
- * @param label Human-readable label.
- */
 void WiFiService::rememberNetwork(const String &ssid, const String &password,
                                   const String &label) {
   if (!_prefsReady || ssid.isEmpty()) {
@@ -247,6 +319,15 @@ void WiFiService::rememberNetwork(const String &ssid, const String &password,
   if (network.label.isEmpty()) {
     network.label = "Saved";
   }
+  if (WIFI_USE_FAST_CONNECT_HINTS && WiFi.status() == WL_CONNECTED &&
+      WiFi.SSID() == ssid) {
+    network.channel = WiFi.channel();
+    uint8_t *connectedBssid = WiFi.BSSID();
+    if (connectedBssid) {
+      memcpy(network.bssid, connectedBssid, kBssidLength);
+      network.hasBssid = true;
+    }
+  }
 
   if (existingIndex > 0) {
     for (int i = existingIndex; i > 0; i--) {
@@ -254,6 +335,15 @@ void WiFiService::rememberNetwork(const String &ssid, const String &password,
     }
     _savedNetworks[0] = network;
   } else if (existingIndex == 0) {
+    const SavedNetwork &current = _savedNetworks[0];
+    if (current.password == network.password && current.label == network.label &&
+        (!WIFI_USE_FAST_CONNECT_HINTS ||
+         (current.channel == network.channel &&
+          current.hasBssid == network.hasBssid &&
+          (!network.hasBssid ||
+           memcmp(current.bssid, network.bssid, kBssidLength) == 0)))) {
+      return;
+    }
     _savedNetworks[0] = network;
   } else {
     const int limit = min(_savedNetworkCount, kMaxSavedNetworks - 1);
@@ -267,49 +357,76 @@ void WiFiService::rememberNetwork(const String &ssid, const String &password,
   }
 
   writeSavedNetworks();
-  Log::client("WiFi", "saved network %s to NVS", ssid.c_str());
+  log("Saved network %s to NVS", ssid.c_str());
 }
 
-/**
- * @brief Attempt to connect to a specific network with a timeout.
- * @param ssid Network SSID.
- * @param password Network password.
- * @param label Human-readable label used in logs.
- * @return True on successful association.
- */
 bool WiFiService::connectToNetwork(const String &ssid, const String &password,
-                                   const String &label) {
+                                   const String &label,
+                                   unsigned long timeoutMs, int32_t channel,
+                                   const uint8_t *bssid) {
   if (ssid.isEmpty()) {
     return false;
   }
 
-  Log::client("WiFi", "trying %s (%s)", ssid.c_str(),
-              label.isEmpty() ? "Saved" : label.c_str());
+  if (WIFI_LOG_CONNECT_DETAILS) {
+    log("Trying %s (%s, timeout=%lums, channel=%ld, bssid=%d)...",
+        ssid.c_str(), label.isEmpty() ? "Saved" : label.c_str(), timeoutMs,
+        static_cast<long>(channel), bssid ? 1 : 0);
+  } else {
+    log("trying %s (%s)", ssid.c_str(),
+        label.isEmpty() ? "Saved" : label.c_str());
+  }
 
-  WiFi.begin(ssid.c_str(), password.c_str());
+  const unsigned long startMs = millis();
+  if (bssid && channel > 0) {
+    WiFi.begin(ssid.c_str(), password.c_str(), channel, bssid);
+  } else {
+    WiFi.begin(ssid.c_str(), password.c_str());
+  }
 
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED &&
-         attempts < WIFI_CONNECT_TIMEOUT_SEC * 4) {
-    delay(250);
-    attempts++;
+  while (WiFi.status() != WL_CONNECTED && millis() - startMs < timeoutMs) {
+    delay(WIFI_CONNECT_POLL_MS);
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Log::client("WiFi", "connected to %s ip=%s", ssid.c_str(),
-                WiFi.localIP().toString().c_str());
+    if (WIFI_LOG_CONNECT_DETAILS) {
+      log("Connected to %s in %lums - %s", ssid.c_str(), millis() - startMs,
+          WiFi.localIP().toString().c_str());
+    } else {
+      log("connected to %s ip=%s", ssid.c_str(),
+          WiFi.localIP().toString().c_str());
+    }
     WiFi.setSleep(WIFI_PS_MIN_MODEM);
     configTime(0, 0, NTP_SERVER);
     return true;
   }
 
+  if (WIFI_LOG_CONNECT_DETAILS) {
+    log("Failed %s after %lums status=%d", ssid.c_str(), millis() - startMs,
+        static_cast<int>(WiFi.status()));
+  }
   WiFi.disconnect();
   return false;
 }
 
-/**
- * @brief Register HTTP routes for the captive portal pages and OS probes.
- */
+bool WiFiService::hasSavedNetwork(const String &ssid) const {
+  for (int i = 0; i < _savedNetworkCount; i++) {
+    if (_savedNetworks[i].ssid == ssid) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool WiFiService::isScannedSsid(const String &ssid) const {
+  for (int i = 0; i < _scanResultCount; i++) {
+    if (_scanResults[i] == ssid) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void WiFiService::configureCaptivePortalRoutes() {
   if (_portalRoutesConfigured) {
     return;
@@ -329,9 +446,6 @@ void WiFiService::configureCaptivePortalRoutes() {
   _portalRoutesConfigured = true;
 }
 
-/**
- * @brief Refresh the cached list of nearby networks shown in the portal page.
- */
 void WiFiService::refreshScanResults() {
   _scanResultCount = 0;
   const int found = WiFi.scanNetworks(false, true);
@@ -361,11 +475,6 @@ void WiFiService::refreshScanResults() {
   WiFi.scanDelete();
 }
 
-/**
- * @brief Build the captive-portal HTML page.
- * @param message Optional status message to embed at the top of the page.
- * @return Complete HTML response body.
- */
 String WiFiService::portalHtml(const String &message) const {
   String html;
   html.reserve(2048);
@@ -400,16 +509,10 @@ String WiFiService::portalHtml(const String &message) const {
   return html;
 }
 
-/**
- * @brief Serve the captive portal landing page.
- */
 void WiFiService::handlePortalRoot() {
   _portalServer.send(200, "text/html", portalHtml());
 }
 
-/**
- * @brief Handle a credential submission from the captive portal form.
- */
 void WiFiService::handlePortalSave() {
   String selectedSsid = _portalServer.arg("ssid");
   String manualSsid = _portalServer.arg("manual_ssid");
@@ -428,16 +531,28 @@ void WiFiService::handlePortalSave() {
   rememberNetwork(ssid, password, "Portal");
   _provisionedSsid = ssid;
   _portalProvisioned = true;
-  _portalServer.send(200, "text/html",
-                     portalHtml("Saved. Return to the device; it is reconnecting now."));
-  Log::client("WiFi", "captive portal saved credentials for %s", ssid.c_str());
+  _portalServer.send(
+      200, "text/html",
+      portalHtml("Saved. Return to the device; it is reconnecting now."));
+  log("Captive portal saved credentials for %s", ssid.c_str());
 }
 
-/**
- * @brief Redirect any unrecognized request back to the captive portal root.
- */
 void WiFiService::redirectToPortal() {
   _portalServer.sendHeader("Location", "http://" + WiFi.softAPIP().toString(),
                            true);
   _portalServer.send(302, "text/plain", "");
+}
+
+void WiFiService::log(const char *fmt, ...) const {
+  char message[256];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(message, sizeof(message), fmt, args);
+  va_end(args);
+
+  if (_logCallback) {
+    _logCallback("WiFi", message);
+  } else {
+    Serial.printf("[WiFi] %s\n", message);
+  }
 }

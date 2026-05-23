@@ -1,10 +1,8 @@
 #include "PowerManager.h"
 
-#include "../Config.h"
-#include "../diag/Log.h"
-#include "../hal/Board.h"
-#include <driver/gpio.h>
-#include <esp_sleep.h>
+#include "Config.h"
+#include "hal/BoardPower.h"
+#include <stdarg.h>
 
 const char *powerStateName(PowerState state) {
   switch (state) {
@@ -39,9 +37,10 @@ void PowerManager::update() {
   const unsigned long idle = getIdleTime();
 
   PowerState target = PowerState::Active;
-  if (idle >= _timeouts.powerOffMs && !Board::usbConnected()) {
+  if (idle >= _timeouts.powerOffMs && canIdlePowerOff()) {
     target = PowerState::PowerOff;
-  } else if (idle >= _timeouts.lightSleepMs) {
+  } else if (Board::capabilities().lightSleep &&
+             idle >= _timeouts.lightSleepMs) {
     target = PowerState::LightSleep;
   } else if (idle >= _timeouts.screenOffMs) {
     target = PowerState::ScreenOff;
@@ -67,11 +66,13 @@ void PowerManager::setTimeouts(const PowerTimeouts &timeouts) {
   _timeouts.screenOffMs = max(_timeouts.dimMs + 1000UL, timeouts.screenOffMs);
   _timeouts.lightSleepMs =
       max(_timeouts.screenOffMs + 1000UL, timeouts.lightSleepMs);
-  _timeouts.powerOffMs =
-      max(_timeouts.lightSleepMs + 1000UL, timeouts.powerOffMs);
-  Log::server("Power", "updated timeouts dim=%lu screen=%lu sleep=%lu off=%lu",
-              _timeouts.dimMs, _timeouts.screenOffMs, _timeouts.lightSleepMs,
-              _timeouts.powerOffMs);
+  const unsigned long powerOffFloor =
+      Board::capabilities().lightSleep ? _timeouts.lightSleepMs
+                                       : _timeouts.screenOffMs;
+  _timeouts.powerOffMs = max(powerOffFloor + 1000UL, timeouts.powerOffMs);
+  logServer("updated timeouts dim=%lu screen=%lu sleep=%lu off=%lu",
+            _timeouts.dimMs, _timeouts.screenOffMs, _timeouts.lightSleepMs,
+            _timeouts.powerOffMs);
 }
 
 void PowerManager::beginWaking() {
@@ -83,7 +84,9 @@ void PowerManager::beginWaking() {
   _state = PowerState::Waking;
   _lastActivityMs = millis();
 
-  Log::client("Power", "%s -> Waking", powerStateName(previous));
+  logClient("%s -> Waking", powerStateName(previous));
+
+  applyCpuFrequency(CPU_ACTIVE_MHZ);
 
   if (_brightnessCallback) {
     _brightnessCallback(_savedBrightness);
@@ -97,7 +100,8 @@ void PowerManager::finishWaking() {
 
   _state = PowerState::Active;
   _lastActivityMs = millis();
-  Log::client("Power", "Waking -> Active");
+  applyCpuFrequency(CPU_ACTIVE_MHZ);
+  logClient("Waking -> Active");
 }
 
 void PowerManager::restoreActive() {
@@ -105,8 +109,9 @@ void PowerManager::restoreActive() {
     return;
   }
 
-  Log::client("Power", "%s -> Active", powerStateName(_state));
+  logClient("%s -> Active", powerStateName(_state));
   _state = PowerState::Active;
+  applyCpuFrequency(CPU_ACTIVE_MHZ);
 
   if (_brightnessCallback) {
     _brightnessCallback(_savedBrightness);
@@ -117,6 +122,22 @@ unsigned long PowerManager::getIdleTime() const {
   return millis() - _lastActivityMs;
 }
 
+bool PowerManager::canIdlePowerOff() const {
+  if (IDLE_POWER_OFF_WHILE_USB_CONNECTED) {
+    return true;
+  }
+  if (!Board::capabilities().usbPowerStatus) {
+    return true;
+  }
+  return !Board::usbConnected();
+}
+
+void PowerManager::applyCpuFrequency(int mhz) {
+  if (_cpuFrequencyCallback) {
+    _cpuFrequencyCallback(mhz);
+  }
+}
+
 void PowerManager::transitionTo(PowerState newState) {
   if (newState == _state) {
     return;
@@ -125,23 +146,25 @@ void PowerManager::transitionTo(PowerState newState) {
   const PowerState oldState = _state;
   _state = newState;
 
-  Log::client("Power", "%s -> %s", powerStateName(oldState),
-              powerStateName(newState));
+  logClient("%s -> %s", powerStateName(oldState), powerStateName(newState));
 
   switch (newState) {
   case PowerState::Active:
+    applyCpuFrequency(CPU_ACTIVE_MHZ);
     if (_brightnessCallback) {
       _brightnessCallback(_savedBrightness);
     }
     break;
 
   case PowerState::Dimmed:
+    applyCpuFrequency(CPU_ACTIVE_MHZ);
     if (_brightnessCallback) {
       _brightnessCallback(BRIGHTNESS_DIM);
     }
     break;
 
   case PowerState::ScreenOff:
+    applyCpuFrequency(CPU_IDLE_MHZ);
     Board::setAudioAmpEnabled(false);
     if (_brightnessCallback) {
       _brightnessCallback(BRIGHTNESS_OFF);
@@ -153,6 +176,7 @@ void PowerManager::transitionTo(PowerState newState) {
     break;
 
   case PowerState::PowerOff:
+    applyCpuFrequency(CPU_IDLE_MHZ);
     Board::setAudioAmpEnabled(false);
     if (_brightnessCallback) {
       _brightnessCallback(BRIGHTNESS_OFF);
@@ -171,7 +195,7 @@ void PowerManager::transitionTo(PowerState newState) {
 }
 
 void PowerManager::enterLightSleep() {
-  Log::client("Power", "entering light sleep");
+  logClient("entering light sleep");
 
   if (_brightnessCallback) {
     _brightnessCallback(BRIGHTNESS_OFF);
@@ -182,20 +206,10 @@ void PowerManager::enterLightSleep() {
   }
 
   while (true) {
-    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-    gpio_wakeup_enable(BUTTON_A_PIN, GPIO_INTR_LOW_LEVEL);
-    if (BUTTON_B_PIN != GPIO_NUM_NC) {
-      gpio_wakeup_enable(BUTTON_B_PIN, GPIO_INTR_LOW_LEVEL);
-    }
-    esp_sleep_enable_gpio_wakeup();
-    esp_sleep_enable_timer_wakeup(LIGHT_SLEEP_WAKE_INTERVAL_MS * 1000ULL);
-
-    esp_light_sleep_start();
-
-    const esp_sleep_wakeup_cause_t reason = esp_sleep_get_wakeup_cause();
-    if (reason == ESP_SLEEP_WAKEUP_GPIO) {
-      Board::update();
-      Log::client("Power", "light sleep wake: button");
+    const LightSleepWakeReason reason =
+        Board::enterLightSleep(LIGHT_SLEEP_WAKE_INTERVAL_MS);
+    if (reason == LightSleepWakeReason::Button) {
+      logClient("light sleep wake: button");
       if (_wifiCallback) {
         _wifiCallback(true);
       }
@@ -207,26 +221,38 @@ void PowerManager::enterLightSleep() {
       return;
     }
 
-    if (reason == ESP_SLEEP_WAKEUP_TIMER) {
-      Board::update();
-      if (Board::buttonAIsPressed() || Board::buttonBIsPressed()) {
-        Log::client("Power", "light sleep wake: polled button");
-        if (_wifiCallback) {
-          _wifiCallback(true);
-        }
-        _state = PowerState::Waking;
-        _lastActivityMs = millis();
-        if (_brightnessCallback) {
-          _brightnessCallback(_savedBrightness);
-        }
-        return;
-      }
-
-      const unsigned long idle = getIdleTime();
-      if (idle >= _timeouts.powerOffMs && !Board::usbConnected()) {
-        transitionTo(PowerState::PowerOff);
-        return;
-      }
+    if (reason == LightSleepWakeReason::Timer &&
+        getIdleTime() >= _timeouts.powerOffMs && canIdlePowerOff()) {
+      transitionTo(PowerState::PowerOff);
+      return;
     }
+  }
+}
+
+void PowerManager::logClient(const char *fmt, ...) const {
+  char message[192];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(message, sizeof(message), fmt, args);
+  va_end(args);
+
+  if (_logCallback) {
+    _logCallback('C', "Power", message);
+  } else {
+    Serial.printf("[Power] %s\n", message);
+  }
+}
+
+void PowerManager::logServer(const char *fmt, ...) const {
+  char message[192];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(message, sizeof(message), fmt, args);
+  va_end(args);
+
+  if (_logCallback) {
+    _logCallback('S', "Power", message);
+  } else {
+    Serial.printf("[Power] %s\n", message);
   }
 }

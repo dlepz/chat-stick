@@ -13,6 +13,12 @@ public:
   bool useExternalSpeaker() const { return _useExternalSpeaker; }
   int externalSpeakerGain() const { return _externalSpeakerGain; }
   const String &voice() const { return _voice; }
+  int serverEndpointIndex() const { return _serverEndpointIndex; }
+  bool pendingFirmwareUpdate() const { return _pendingFirmwareUpdate; }
+  int pendingFirmwareVersion() const { return _pendingFirmwareVersion; }
+  const String &pendingFirmwareDownloadUrl() const {
+    return _pendingFirmwareDownloadUrl;
+  }
 
   void setBrightness(int brightness);
   void setVolume(int volume);
@@ -21,6 +27,9 @@ public:
   void setUseExternalSpeaker(bool enabled);
   void setExternalSpeakerGain(int gain);
   void setVoice(const String &voice);
+  void setServerEndpointIndex(int endpointIndex);
+  void setPendingFirmwareUpdate(int version, const String &downloadUrl);
+  void clearPendingFirmwareUpdate();
   void reset();
 
   static constexpr int kDefaultExternalGain = 24;
@@ -36,6 +45,10 @@ private:
   bool _useExternalSpeaker = false;
   int _externalSpeakerGain = kDefaultExternalGain;
   String _voice = kDefaultVoice;
+  int _serverEndpointIndex = 0;
+  bool _pendingFirmwareUpdate = false;
+  int _pendingFirmwareVersion = 0;
+  String _pendingFirmwareDownloadUrl;
   bool _ready = false;
 
   static constexpr const char *kNamespace = "chat-stick";
@@ -45,4 +58,8 @@ private:
   static constexpr const char *kExternalSpeakerKey = "ext_spk";
   static constexpr const char *kExternalGainKey = "ext_gain";
   static constexpr const char *kVoiceKey = "voice";
+  static constexpr const char *kServerEndpointKey = "server_idx";
+  static constexpr const char *kFirmwarePendingKey = "fw_pending";
+  static constexpr const char *kFirmwareVersionKey = "fw_ver";
+  static constexpr const char *kFirmwareUrlKey = "fw_url";
 };

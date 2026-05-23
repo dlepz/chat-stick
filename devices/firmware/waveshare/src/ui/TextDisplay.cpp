@@ -1,10 +1,11 @@
 #include "TextDisplay.h"
 
 #include "../Config.h"
-#include "../diag/Log.h"
+#include "diag/Log.h"
 #include "../hal/Board.h"
 #include "SmartBrickFont.h"
 #include <esp_heap_caps.h>
+#include <string.h>
 
 namespace {
 // RGB565 colors used by the minimal monochrome UI.
@@ -128,9 +129,11 @@ void TextDisplay::render(const DisplayState &state) {
 bool TextDisplay::setImage(const uint8_t *packed, size_t packedLen, int width,
                            int height) {
   // Images are stored as 1-bit packed masks and drawn in white on black. The
-  // server already scales/generates the bitmap to this fixed display slot.
-  if (!packed || width != kImageW || height != kImageH) {
-    Log::client("Display", "image rejected %dx%d expected=%dx%d", width, height,
+  // server picks the bitmap size per device; saved images from earlier
+  // sessions may be smaller than the screen and get drawn centered.
+  if (!packed || width <= 0 || height <= 0 || width > kImageW ||
+      height > kImageH) {
+    Log::client("Display", "image rejected %dx%d max=%dx%d", width, height,
                 kImageW, kImageH);
     return false;
   }
@@ -200,39 +203,52 @@ void TextDisplay::flushFrame(bool forceFull) const {
     return;
   }
 
-  int minX = SCREEN_WIDTH_PX;
   int minY = SCREEN_HEIGHT_PX;
-  int maxX = -1;
   int maxY = -1;
+  constexpr size_t kRowBytes = SCREEN_WIDTH_PX * sizeof(uint16_t);
 
-  // Find one bounding rectangle around all changed pixels. The display library
-  // accepts contiguous RGB565 spans, so later we push this rectangle row by
-  // row.
+  // Find changed rows first with memcmp. That keeps text reveal frames cheap:
+  // most frames touch only a row or two, so there is no need to inspect every
+  // pixel on the screen.
   for (int y = 0; y < SCREEN_HEIGHT_PX; y++) {
-    const uint16_t *row =
-        _framebuffer + static_cast<size_t>(y) * SCREEN_WIDTH_PX;
-    const uint16_t *prev =
-        _previousFramebuffer + static_cast<size_t>(y) * SCREEN_WIDTH_PX;
-    for (int x = 0; x < SCREEN_WIDTH_PX; x++) {
-      if (row[x] == prev[x]) {
-        continue;
-      }
-      if (x < minX) {
-        minX = x;
-      }
-      if (x > maxX) {
-        maxX = x;
-      }
-      if (y < minY) {
-        minY = y;
-      }
-      if (y > maxY) {
-        maxY = y;
-      }
+    const size_t offset = static_cast<size_t>(y) * SCREEN_WIDTH_PX;
+    if (memcmp(_framebuffer + offset, _previousFramebuffer + offset,
+               kRowBytes) == 0) {
+      continue;
     }
+    minY = min(minY, y);
+    maxY = max(maxY, y);
   }
 
-  if (maxX < minX || maxY < minY) {
+  if (maxY < minY) {
+    return;
+  }
+
+  int minX = SCREEN_WIDTH_PX;
+  int maxX = -1;
+  for (int y = minY; y <= maxY; y++) {
+    const size_t offset = static_cast<size_t>(y) * SCREEN_WIDTH_PX;
+    const uint16_t *row = _framebuffer + offset;
+    const uint16_t *prev = _previousFramebuffer + offset;
+    if (memcmp(row, prev, kRowBytes) == 0) {
+      continue;
+    }
+
+    int left = 0;
+    while (left < SCREEN_WIDTH_PX && row[left] == prev[left]) {
+      left++;
+    }
+
+    int right = SCREEN_WIDTH_PX - 1;
+    while (right >= left && row[right] == prev[right]) {
+      right--;
+    }
+
+    minX = min(minX, left);
+    maxX = max(maxX, right);
+  }
+
+  if (maxX < minX) {
     return;
   }
 
@@ -356,9 +372,13 @@ void TextDisplay::drawStoredImage() const {
     return;
   }
   // Packed image bits are MSB-first. Only set bits are drawn because the frame
-  // has already been cleared to black.
+  // has already been cleared to black. The image is centered so old saved
+  // bitmaps (smaller than the screen) still sit in the middle of the panel
+  // instead of being anchored to a corner.
   const int w = _imageWidth;
   const int h = _imageHeight;
+  const int offsetX = (SCREEN_WIDTH_PX - w) / 2;
+  const int offsetY = (SCREEN_HEIGHT_PX - h) / 2;
   for (int y = 0; y < h; y++) {
     const int rowStart = y * w;
     for (int x = 0; x < w; x++) {
@@ -366,7 +386,7 @@ void TextDisplay::drawStoredImage() const {
       const uint8_t byte = _imageBuffer[bit >> 3];
       const bool on = (byte >> (7 - (bit & 7))) & 1;
       if (on) {
-        putPixel(kImageX + x, kImageY + y, COLOR_WHITE);
+        putPixel(offsetX + x, offsetY + y, COLOR_WHITE);
       }
     }
   }

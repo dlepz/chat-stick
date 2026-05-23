@@ -1,52 +1,37 @@
 # chat-stick
 
-A handheld voice interface for large language models, built on ESP32-S3
-devices including the [M5StickS3](https://docs.m5stack.com/en/core/M5StickS3)
-and Waveshare ESP32-S3 Touch AMOLED 1.8. Hold the primary button, talk,
-release, and hear the model respond. A Cloudflare Worker relays device audio to
-Google's Gemini Live API and routes tool calls back to the device or to
-server-side services.
+A handheld voice interface for large language models, built on ESP32-S3 devices including the [M5StickS3](https://docs.m5stack.com/en/core/M5StickS3) and [Waveshare ESP32-S3 Touch AMOLED 1.8](https://www.waveshare.com/esp32-s3-touch-amoled-1.8.htm?srsltid=AfmBOopWm_MZL8aGf5XV585tGT0jWPlOl0W76xvRGnrxafm7xtMon-yv).
 
-The project is currently configured for `models/gemini-3.1-flash-live-preview`.
-Image requests use Imagen, then the server converts the generated image into a
-1-bit dithered bitmap that fits the device display.
+Hold the primary button, talk, release, and hear the model respond. A Cloudflare Worker relays device audio to Google's Gemini Live API and routes tool calls back to the device or to server-side services.
+
+The project is currently configured for `models/gemini-3.1-flash-live-preview`. Image requests use Imagen, then the server converts the generated image into a 1-bit dithered bitmap that fits the device display.
 
 ## What It Does
 
 - Speech-to-speech chat over WiFi/WebSocket.
-- Device controls for brightness, volume, voice, speaker output, sounds,
-  melodies, text display, image display, status, and power.
+- Device controls for brightness, volume, voice, speaker output, sounds, melodies, text display, image display, status, and power.
+- Per-conversation reasoning depth (`set_thinking_level`).
 - Countdown timers and alarms that persist across chat sessions and reboots.
-- Server-side tools for Google Search, URL fetches, docs search, persistent
-  device files, generated image history, and optional email notifications.
+- Server-side tools for Google Search, URL fetches, docs search, persistent device files, generated image history, and optional email notifications.
 - Conversation history and resume support per device.
 - Optional OTA firmware delivery from Cloudflare R2.
 
 ## Controls
 
 - **Button A**: hold to record, release to send. In menus, press to select.
-- **Button B**: hold to open the menu or go back. Click to cycle menu items or
-  page through on-screen text/images.
-- **A + B hold**: factory reset prompt. This clears saved settings and WiFi
-  credentials, then restarts.
+- **Button B**: hold to open the menu or go back. Click to cycle menu items or page through on-screen text/images.
+- **A + B hold**: factory reset prompt. This clears saved settings and WiFi credentials, then restarts.
 
 ## Architecture
 
 ```text
-ESP32-S3 device --WebSocket--> Cloudflare Worker / Durable Object --WebSocket--> Gemini Live API
-  mic/speaker/display        relay, history, tools, OTA                  speech-to-speech AI
+ESP32-S3 device ──WebSocket──▶ Cloudflare Worker / Durable Object ──WebSocket──▶ Gemini Live API
+  mic/speaker/display          relay, history, tools, OTA                     speech-to-speech AI
 ```
 
-**Firmware** lives in `devices/firmware/`, with one PlatformIO/Arduino project
-per device: `m5-stick/` and `waveshare/`. Each captures 16 kHz PCM audio,
-streams it to the worker, plays 24 kHz PCM audio responses, manages the
-screen/menu/buttons, stores local settings in ESP32 NVS, and executes
-device-side tool calls.
+**Firmware** lives in `devices/firmware/`, with one PlatformIO/Arduino project per device: `m5-stick/` and `waveshare/`. Each captures 16 kHz PCM audio, streams it to the worker, plays 24 kHz PCM audio responses, manages the screen/menu/buttons, stores local settings in ESP32 NVS, and executes device-side tool calls.
 
-**Server** (`server/`) is a Cloudflare Worker with a `LiveSession` Durable
-Object per device. It bridges the device and Gemini Live WebSockets, persists
-conversation/tool/file/image state in D1, uses Workers AI + Vectorize for docs
-search, and optionally uses R2 for OTA firmware and image PNG archival.
+**Server** (`server/`) is a Cloudflare Worker with a `LiveSession` Durable Object per device. It bridges the device and Gemini Live WebSockets, persists conversation/tool/file/image state in D1, uses Workers AI + Vectorize for docs search, and optionally uses R2 for OTA firmware and image PNG archival.
 
 ## Prerequisites
 
@@ -54,10 +39,8 @@ search, and optionally uses R2 for OTA firmware and image PNG archival.
 - [PlatformIO](https://platformio.org/install) for firmware builds.
 - Node.js 18+ and npm for the server.
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/).
-- Google AI Studio API key with Gemini Live API access. Image generation also
-  requires access to `imagen-4.0-fast-generate-001`.
-- Cloudflare account with Workers, Durable Objects, D1, Workers AI, Vectorize,
-  and optionally R2 / Email Routing.
+- Google AI Studio API key with Gemini Live API access. Image generation also requires access to `imagen-4.0-fast-generate-001`.
+- Cloudflare account with Workers, Durable Objects, D1, Workers AI, Vectorize, and optionally R2 / Email Routing.
 
 ## Setup
 
@@ -111,12 +94,9 @@ pio run -t upload
 pio device monitor
 ```
 
-From the repository root, `./flash.sh m5-stick --monitor` and
-`./flash.sh waveshare --monitor` build, flash, and optionally open the monitor.
+From the repository root, `./flash.sh m5-stick --monitor` and `./flash.sh waveshare --monitor` build, flash, and optionally open the monitor.
 
-The device also has a captive WiFi setup flow. From the menu, use
-`Device -> Set up WiFi`, join the `chat-stick-setup` access point, and submit
-credentials in the browser form.
+The device also has a captive WiFi setup flow. From the menu, use `Device -> Set up WiFi`, join the `chat-stick-setup` access point, and submit credentials in the browser form.
 
 ### Deploy
 
@@ -130,31 +110,24 @@ wrangler d1 migrations apply DB --remote
 wrangler deploy
 ```
 
-After deploying, set `PRODUCTION_SERVER_ADDRESS` in
-the device's `src/credentials.h`, rebuild, and flash the device.
+After deploying, set `PRODUCTION_SERVER_ADDRESS` in the device's `src/credentials.h`, rebuild, and flash the device.
 
 ## Optional Cloudflare Bindings
 
 ### R2 Storage
 
-R2 is optional for normal chat. It is required for OTA firmware delivery and is
-used to archive generated image PNGs when configured. Generated images are still
-recorded in D1 for recall even without R2.
+R2 is optional for normal chat. It is required for OTA firmware delivery and is used to archive generated image PNGs when configured. Generated images are still recorded in D1 for recall even without R2.
 
 ```bash
 cd server
 wrangler r2 bucket create your-bucket-name
 ```
 
-Then uncomment the `[[r2_buckets]]` block in `wrangler.toml` with binding
-`STORAGE`. If you use `publish-ota-release.sh`, make sure its `BUCKET` value
-matches the bucket in `wrangler.toml`.
+Then uncomment the `[[r2_buckets]]` block in `wrangler.toml` with binding `STORAGE`. If you use `publish-ota-release.sh`, make sure its `BUCKET` value matches the bucket in `wrangler.toml`.
 
 ### Email Notifications
 
-The model only receives the `email_me` tool when the Email Routing binding and
-email secrets are configured. Cloudflare Email Routing can send only to verified
-destination addresses, so this is for self-notifications.
+The model only receives the `email_me` tool when the Email Routing binding and email secrets are configured. Cloudflare Email Routing can send only to verified destination addresses, so this is for self-notifications.
 
 ```bash
 cd server
@@ -167,32 +140,25 @@ wrangler secret put EMAIL_RECIPIENT    # verified destination address
 wrangler deploy
 ```
 
-For local development, add `EMAIL_SENDER` and `EMAIL_RECIPIENT` to
-`server/.dev.vars`. Mail is not delivered from `wrangler dev`; deploy to test.
+For local development, add `EMAIL_SENDER` and `EMAIL_RECIPIENT` to `server/.dev.vars`. Mail is not delivered from `wrangler dev`; deploy to test.
 
 ## Server APIs
 
-- `GET /health` - unauthenticated health check.
-- `GET /ping` - device connectivity check. Requires `DEVICE_AUTH_TOKEN` when configured.
-- `GET /history/:deviceId` - recent conversations for a device.
-- `GET /session/:chatId` - last saved assistant message for a chat.
-- `GET /firmware/check?version=<n>&device=<m5-stick|waveshare>` - returns OTA availability for a device.
-- `GET /firmware/download?device=<m5-stick|waveshare>` - downloads the latest firmware binary from R2.
-- `GET /admin/index` - indexes `src/docs-index.json` into Vectorize.
-- `GET /admin/search?q=...` - tests Vectorize search.
-- `GET /ws?device_id=...&chat_id=...` - device WebSocket endpoint.
+- `GET /health` — unauthenticated health check.
+- `GET /ping` — device connectivity check. Requires `DEVICE_AUTH_TOKEN` when configured.
+- `GET /history/:deviceId` — recent conversations for a device.
+- `GET /session/:chatId` — last saved assistant message for a chat.
+- `GET /firmware/check?version=<n>&device=<m5-stick|waveshare>` — returns OTA availability for a device.
+- `GET /firmware/download?device=<m5-stick|waveshare>` — downloads the latest firmware binary from R2.
+- `GET /admin/index` — indexes `src/docs-index.json` into Vectorize.
+- `GET /admin/search?q=...` — tests Vectorize search.
+- `GET /ws?device_id=...&chat_id=...` — device WebSocket endpoint.
 
-History endpoints require `X-History-Token`, `Authorization: Bearer ...`, or
-`?token=...`. Admin endpoints use `X-Admin-Token` or fall back to the history
-token. Device endpoints use `X-Device-Token` or `?device_token=...` when
-`DEVICE_AUTH_TOKEN` is configured; if no device token is configured, device
-endpoints are open.
+History endpoints require `X-History-Token`, `Authorization: Bearer ...`, or `?token=...`. Admin endpoints use `X-Admin-Token` or fall back to the history token. Device endpoints use `X-Device-Token` or `?device_token=...` when `DEVICE_AUTH_TOKEN` is configured; if no device token is configured, device endpoints are open.
 
 ## Knowledge Base
 
-The server can search a docs index through keyword search and Cloudflare
-Vectorize. Source content is expected to be `.mdx` files grouped by directory,
-where each directory becomes a section.
+The server can search a docs index through keyword search and Cloudflare Vectorize. Source content is expected to be `.mdx` files grouped by directory, where each directory becomes a section.
 
 ```text
 my-docs/
@@ -246,17 +212,11 @@ npx tsx scripts/test-search.ts
 
 ## Device Tools
 
-Gemini can call tools that the worker handles directly or forwards to the
-device.
+Gemini can call tools that the worker handles directly or forwards to the device.
 
-Server-side tools include `search_docs`, `web_fetch`, `list_files`,
-`read_file`, `write_file`, `append_to_file`, `search_files`,
-`new_conversation`, image history tools, and optional `email_me`.
+Server-side tools include `search_docs`, `web_fetch`, `list_files`, `read_file`, `write_file`, `append_to_file`, `search_files`, `new_conversation` / `new_chat`, `set_thinking_level`, image generation (`show_image`) and history (`list_recent_images`, `search_images`, `show_saved_image`), and optional `email_me`.
 
-Device-side tools include `set_brightness`, `set_volume`, `set_speaker`,
-`set_external_speaker_gain`, `set_voice`, `show_text`, `show_image`,
-`set_timer`, `list_timers`, `cancel_timer`, `extend_timer`, `play_sound`,
-`play_melody`, `power_off`, and `get_device_status`.
+Device-side tools include `set_brightness`, `set_volume`, `set_speaker`, `set_external_speaker_gain`, `set_voice`, `show_text`, `set_timer`, `list_timers`, `cancel_timer`, `extend_timer`, `play_sound`, `play_melody`, `power_off`, and `get_device_status`.
 
 ## Test Data
 
@@ -264,36 +224,26 @@ Device-side tools include `set_brightness`, `set_volume`, `set_speaker`,
 
 ## Releases and OTA
 
-This repository is source-only. Do not publish pre-built `.bin` firmware files
-publicly. `credentials.h` is compiled into the firmware, so local binaries
-contain WiFi SSIDs, passwords, device tokens, and server URLs in plaintext.
+This repository is source-only. Do not publish pre-built `.bin` firmware files publicly. `credentials.h` is compiled into the firmware, so local binaries contain WiFi SSIDs, passwords, device tokens, and server URLs in plaintext.
 
-OTA distribution is per deployment. Each user should serve their own firmware
-binary from their own R2 bucket through their own worker.
+OTA distribution is per deployment. Each user should serve their own firmware binary from their own R2 bucket through their own worker.
 
 Convenience scripts:
 
 | Script | What it does |
 | --- | --- |
-| `./flash.sh [m5-stick|waveshare] [--monitor]` | Build firmware and upload over USB. |
+| `./flash.sh [m5-stick\|waveshare] [--monitor]` | Build firmware and upload over USB. |
 | `./deploy.sh` | Deploy the Cloudflare Worker. |
-| `./publish-ota-release.sh [m5-stick|waveshare]` | Bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2. |
-| `./publish.sh [m5-stick|waveshare]` | Publish the OTA binary, then deploy the worker. |
+| `./publish-ota-release.sh [m5-stick\|waveshare]` | Bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2. |
+| `./publish.sh [m5-stick\|waveshare]` | Publish the OTA binary, then deploy the worker. |
 
 To cut a firmware release:
 
 1. Confirm `BUCKET` in `publish-ota-release.sh` matches your R2 bucket.
 2. Run `./publish-ota-release.sh m5-stick` or `./publish-ota-release.sh waveshare`.
-3. Devices on older versions install the update on next boot, or from
-   `Device -> Check for updates`.
+3. Devices on older versions install the update on next boot, or from `Device -> Check for updates`.
 
-The worker finds the latest available firmware by listing
-`chat-stick/firmware/<device>/firmware-v<N>.bin` in R2 and choosing the highest
-version. For M5StickS3, it also checks the legacy
-`chat-stick/firmware/firmware-v<N>.bin` path.
-`publish-ota-release.sh` asks the deployed worker for that latest version before
-building; set `OTA_CHECK_URL` to override the default URL derived from
-the selected device's `src/credentials.h`.
+The worker finds the latest available firmware by listing `chat-stick/firmware/<device>/firmware-v<N>.bin` in R2 and choosing the highest version. For M5StickS3, it also checks the legacy `chat-stick/firmware/firmware-v<N>.bin` path. `publish-ota-release.sh` asks the deployed worker for that latest version before building; set `OTA_CHECK_URL` to override the default URL derived from the selected device's `src/credentials.h`.
 
 ## Credentials
 

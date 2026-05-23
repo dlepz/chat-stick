@@ -1,16 +1,17 @@
 #pragma once
 
-#include "../Config.h"
-#include "../input/ButtonStateMachine.h"
-#include "../power/PowerManager.h"
-#include "../services/AudioService.h"
-#include "../services/LiveSessionService.h"
-#include "../services/SettingsStore.h"
-#include "../services/TimerService.h"
-#include "../services/WiFiService.h"
-#include "../state/StateTypes.h"
-#include "../ui/TextDisplay.h"
-#include "TurnController.h"
+#include "Config.h"
+#include "input/ButtonStateMachine.h"
+#include "services/AudioService.h"
+#include "services/LiveSessionService.h"
+#include "power/PowerManager.h"
+#include "services/SettingsStore.h"
+#include "services/TimerService.h"
+#include "services/WiFiService.h"
+#include "state/StateTypes.h"
+#include "ui/TextDisplay.h"
+#include "app/TurnController.h"
+#include <esp_sleep.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -53,6 +54,11 @@ private:
    */
   enum class MenuLoadStatus { Idle, Loading, Loaded, Failed };
 
+  /**
+   * @brief Why the current firmware update check task was started.
+   */
+  enum class FirmwareCheckReason { None, Menu, Automatic };
+
   /// Minimum audio buffered before switching into playback state.
   static constexpr int kMinPlaybackBytes =
       PLAY_SAMPLE_RATE * sizeof(int16_t) * 3 / 4;
@@ -80,6 +86,9 @@ private:
 
   /// Cadence for the M5-style tool text reveal animation.
   static constexpr unsigned long kTextRevealFrameMs = 18;
+
+  /// Slow display cadence while audio playback is active.
+  static constexpr unsigned long kPlaybackRenderFrameMs = 90;
 
   /// Samples captured in one microphone chunk.
   static constexpr int kCaptureChunkSamples =
@@ -179,6 +188,9 @@ private:
   /// Timestamp of the last text reveal frame.
   unsigned long _lastTextRevealMs = 0;
 
+  /// Timestamp of the last display refresh allowed during playback.
+  unsigned long _lastPlaybackRenderMs = 0;
+
   /// Current animated wait-indicator frame.
   int _waitingIndicatorFrame = 0;
 
@@ -260,6 +272,9 @@ private:
   /// Whether the background firmware check has completed.
   volatile bool _firmwareFetchDone = false;
 
+  /// Why the active firmware check task is running.
+  FirmwareCheckReason _firmwareFetchReason = FirmwareCheckReason::None;
+
   /// State machine for the push-to-talk button.
   ButtonStateMachine _buttonA = ButtonStateMachine(500, 350);
 
@@ -317,11 +332,29 @@ private:
   /// Last time the alarm trill was played.
   unsigned long _lastAlarmSoundMs = 0;
 
+  /// Whether the network stack has been started since boot.
+  bool _networkStackStarted = false;
+
+  /// Whether boot went straight into an expired timer alarm.
+  bool _bootHadExpiredAlarm = false;
+
+  /// Whether a valid deferred firmware update was already known at boot.
+  bool _pendingFirmwareUpdateAtBoot = false;
+
+  /// Whether this boot has already tried to install the deferred update.
+  bool _pendingFirmwareInstallAttempted = false;
+
+  /// Whether this boot has already launched its automatic update check.
+  bool _automaticFirmwareCheckStarted = false;
+
   /// Wire service callbacks back into controller state transitions.
   void configureCallbacks();
 
   /// Bring up WiFi and the live session stack.
   void connectNetworkStack();
+
+  /// React once the device has reached the server after WiFi connection.
+  void handleInternetReady();
 
   /// Enable or disable the network-dependent services.
   void setNetworkEnabled(bool enabled);
@@ -338,7 +371,17 @@ private:
   void retryAfterError();
 
   /// Shut the device down cleanly.
-  void performPowerOff();
+  void performPowerOff(bool allowIdleDeepSleep = false);
+
+  /// Disconnect services and delegate final power-down to the board HAL.
+  void shutdownHardware();
+
+  /// Whether a deep-sleep timer wake has elapsed past the idle shutdown window.
+  bool shouldPowerOffAfterIdleDeepSleep(
+      esp_sleep_wakeup_cause_t wakeCause) const;
+
+  /// Enter deep sleep until the next timer or idle shutdown deadline.
+  bool enterDeepSleepForTimerOrIdle(bool includeIdleShutdownDeadline);
 
   /// Clear transient tool text from the UI.
   void clearToolText();
@@ -503,6 +546,9 @@ private:
   /// Check for an available firmware update.
   void startFirmwareUpdateCheck();
 
+  /// Check for an available firmware update without interrupting the UI.
+  void startAutomaticFirmwareUpdateCheck();
+
   /// Background worker body for firmware update checks.
   void firmwareUpdateCheckTask();
 
@@ -514,6 +560,12 @@ private:
 
   /// Download and apply the selected firmware update.
   void installFirmwareUpdate();
+
+  /// Download and apply a specific firmware update.
+  void installFirmwareUpdate(const FirmwareUpdateInfo &info);
+
+  /// Install a deferred update that was discovered before this boot.
+  bool installPendingFirmwareUpdate();
 
   /// Build the display snapshot for the current UI state.
   DisplayState buildDisplayState() const;

@@ -4,9 +4,15 @@
 #include <DNSServer.h>
 #include <Preferences.h>
 #include <WebServer.h>
+#include <functional>
 
 class WiFiService {
 public:
+  using LogCallback = std::function<void(const char *topic,
+                                         const char *message)>;
+
+  void onLog(LogCallback callback) { _logCallback = callback; }
+
   void init();
   void poll();
   bool connectKnownNetworks();
@@ -47,6 +53,7 @@ private:
   Preferences _prefs;
   DNSServer _dnsServer;
   WebServer _portalServer{80};
+  LogCallback _logCallback;
   bool _prefsReady = false;
   bool _captivePortalActive = false;
   bool _portalRoutesConfigured = false;
@@ -72,4 +79,5 @@ private:
   void handlePortalRoot();
   void handlePortalSave();
   void redirectToPortal();
+  void log(const char *fmt, ...) const;
 };

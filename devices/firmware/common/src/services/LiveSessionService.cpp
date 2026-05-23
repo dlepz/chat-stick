@@ -1,16 +1,19 @@
 #include "LiveSessionService.h"
 
-#include "../credentials.h"
-#include "../diag/Log.h"
+#include "credentials.h"
+#include "hal/BoardPower.h"
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <Update.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
+#include <stdarg.h>
 
 using namespace websockets;
 
 namespace {
+constexpr uint16_t kHttpGetTimeoutMs = 3000;
+
 /**
  * @brief Whether a device-auth token is compiled into credentials.h.
  */
@@ -23,6 +26,31 @@ void addDeviceAuthHeader(HTTPClient &http) {
   if (hasDeviceAuthToken()) {
     http.addHeader("X-Device-Token", DEVICE_AUTH_TOKEN);
   }
+}
+
+/**
+ * @brief Emit one log line through the optional callback or Serial fallback.
+ */
+void writeLog(const LiveSessionCallbacks &callbacks, char side,
+              const char *topic, const char *fmt, va_list args) {
+  char message[256];
+  vsnprintf(message, sizeof(message), fmt, args);
+  if (callbacks.onLog) {
+    callbacks.onLog(side, topic, message);
+  } else {
+    Serial.printf("[%s] %s\n", topic, message);
+  }
+}
+
+/**
+ * @brief Emit a client-side log line from a helper function.
+ */
+void logClient(const LiveSessionCallbacks &callbacks, const char *topic,
+               const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  writeLog(callbacks, 'C', topic, fmt, args);
+  va_end(args);
 }
 
 /**
@@ -194,25 +222,26 @@ String updateError() {
  * @param outError Receives a human-readable error message on failure.
  * @return True when the firmware was written, ended, and finished cleanly.
  */
-bool runFirmwareUpdateDownload(HTTPClient &http, String &outError) {
+bool runFirmwareUpdateDownload(HTTPClient &http, String &outError,
+                               const LiveSessionCallbacks &callbacks) {
   const int statusCode = http.GET();
   if (statusCode != HTTP_CODE_OK) {
     outError = "Download failed: HTTP " + String(statusCode);
-    Log::client("OTA", "download failed status=%d", statusCode);
+    logClient(callbacks, "OTA", "download failed status=%d", statusCode);
     return false;
   }
 
   const int contentLength = http.getSize();
   if (contentLength <= 0) {
     outError = "Missing firmware size";
-    Log::client("OTA", "missing content length=%d", contentLength);
+    logClient(callbacks, "OTA", "missing content length=%d", contentLength);
     return false;
   }
 
-  Log::client("OTA", "downloading firmware bytes=%d", contentLength);
+  logClient(callbacks, "OTA", "downloading firmware bytes=%d", contentLength);
   if (!Update.begin(contentLength, U_FLASH)) {
     outError = "Update begin failed: " + updateError();
-    Log::client("OTA", "Update.begin failed: %s", outError.c_str());
+    logClient(callbacks, "OTA", "Update.begin failed: %s", outError.c_str());
     return false;
   }
 
@@ -224,26 +253,27 @@ bool runFirmwareUpdateDownload(HTTPClient &http, String &outError) {
     if (error.length()) {
       outError += " " + error;
     }
-    Log::client("OTA", "Update.writeStream failed wrote=%u expected=%d err=%s",
-                static_cast<unsigned>(written), contentLength,
-                updateError().c_str());
+    logClient(callbacks, "OTA",
+              "Update.writeStream failed wrote=%u expected=%d err=%s",
+              static_cast<unsigned>(written), contentLength,
+              updateError().c_str());
     Update.abort();
     return false;
   }
 
   if (!Update.end()) {
     outError = "Update end failed: " + updateError();
-    Log::client("OTA", "Update.end failed: %s", outError.c_str());
+    logClient(callbacks, "OTA", "Update.end failed: %s", outError.c_str());
     return false;
   }
 
   if (!Update.isFinished()) {
     outError = "Update incomplete";
-    Log::client("OTA", "update incomplete");
+    logClient(callbacks, "OTA", "update incomplete");
     return false;
   }
 
-  Log::client("OTA", "firmware update installed");
+  logClient(callbacks, "OTA", "firmware update installed");
   return true;
 }
 } // namespace
@@ -254,6 +284,19 @@ bool runFirmwareUpdateDownload(HTTPClient &http, String &outError) {
  */
 void LiveSessionService::init(const LiveSessionCallbacks &callbacks) {
   _callbacks = callbacks;
+  if (!_preferredEndpointSetExternally && !_callbacks.onEndpointIndexChanged) {
+    _prefsReady = _prefs.begin(kPrefsNamespace, false);
+    if (_prefsReady) {
+      const int savedIndex = _prefs.getInt(kLastServerIndexKey, 0);
+      if (savedIndex >= 0 && savedIndex < SERVER_ENDPOINT_COUNT) {
+        _nextServerIndex = savedIndex;
+        logClient("WS", "loaded preferred server index %d", _nextServerIndex);
+      }
+    } else {
+      logClient("WS", "preferences init failed; server preference disabled");
+    }
+  }
+
   if (hasDeviceAuthToken()) {
     _ws.addHeader("X-Device-Token", DEVICE_AUTH_TOKEN);
   }
@@ -273,7 +316,12 @@ void LiveSessionService::connect() {
   const String path = String(SERVER_PATH) + "?device_id=" + DEVICE_ID;
   const String chatQuery = _chatId.isEmpty() ? "" : "&chat_id=" + _chatId;
   const String voiceQuery = _voice.isEmpty() ? "" : "&voice=" + _voice;
-  const String fullPath = path + chatQuery + voiceQuery;
+  // Tell the server what pixel size to dither generated images to. Different
+  // devices have different display sizes; see IMAGE_TARGET_* in Config.h.
+  const String imageSizeQuery =
+      "&image_w=" + String(IMAGE_TARGET_WIDTH) +
+      "&image_h=" + String(IMAGE_TARGET_HEIGHT);
+  const String fullPath = path + chatQuery + voiceQuery + imageSizeQuery;
   const String host = endpointHostForConnection(endpoint);
   const char *scheme = wsSchemeForEndpoint(endpoint);
 
@@ -281,7 +329,7 @@ void LiveSessionService::connect() {
     _callbacks.onStatus("Connecting...");
   }
 
-  Log::client("WS", "connecting %s://%s:%d%s", scheme, host.c_str(),
+  logClient("WS", "connecting %s://%s:%d%s", scheme, host.c_str(),
               endpoint.port, fullPath.c_str());
 
   if (endpoint.ca_cert) {
@@ -298,7 +346,7 @@ void LiveSessionService::connect() {
   }
 
   if (!_connected) {
-    Log::client("WS", "connect failed %s://%s:%d; will retry", scheme,
+    logClient("WS", "connect failed %s://%s:%d; will retry", scheme,
                 host.c_str(), endpoint.port);
   }
 }
@@ -321,6 +369,7 @@ void LiveSessionService::setPreferredEndpointIndex(int endpointIndex) {
   if (endpointIndex < 0 || endpointIndex >= SERVER_ENDPOINT_COUNT) {
     return;
   }
+  _preferredEndpointSetExternally = true;
   _nextServerIndex = endpointIndex;
 }
 
@@ -364,6 +413,31 @@ String LiveSessionService::activeEndpointLabel() const {
 }
 
 /**
+ * @brief Verify that at least one configured endpoint responds to /ping.
+ * @return True when a configured endpoint responds with "pong".
+ */
+bool LiveSessionService::pingServer() {
+  return getFromConfiguredEndpoints(
+      "pinging server at",
+      [this](const ServerEndpoint &endpoint) {
+        return endpointBaseUrl(endpoint) + "/ping?device_id=" + DEVICE_ID;
+      },
+      [this](const HttpGetResponse &response) {
+        String body = response.body;
+        body.trim();
+        if (response.statusCode == 200 && body == "pong") {
+          logClient("HTTP", "server ping OK endpoint=%d",
+                    response.endpointIndex);
+          return HttpGetDecision::Success;
+        }
+
+        logClient("HTTP", "server ping failed status=%d body=%s",
+                  response.statusCode, body.c_str());
+        return HttpGetDecision::Continue;
+      });
+}
+
+/**
  * @brief Send a start-of-turn JSON message to the server.
  * @return True when the message was sent.
  */
@@ -402,22 +476,22 @@ bool LiveSessionService::fetchLastAssistantMessage(String &outMessage) {
         return endpointBaseUrl(endpoint) + "/session/" + _chatId +
                "?device_id=" + DEVICE_ID;
       },
-      [&outMessage](const HttpGetResponse &response) {
+      [this, &outMessage](const HttpGetResponse &response) {
         if (response.statusCode == 404) {
-          Log::client("HTTP", "session not found at endpoint %d",
+          logClient("HTTP", "session not found at endpoint %d",
                       response.endpointIndex);
           return HttpGetDecision::Continue;
         }
 
         if (response.statusCode != 200 || response.body.isEmpty()) {
-          Log::client("HTTP", "session restore failed status=%d",
+          logClient("HTTP", "session restore failed status=%d",
                       response.statusCode);
           return HttpGetDecision::Continue;
         }
 
         JsonDocument doc;
         if (deserializeJson(doc, response.body)) {
-          Log::client("HTTP", "session restore returned invalid JSON");
+          logClient("HTTP", "session restore returned invalid JSON");
           return HttpGetDecision::Continue;
         }
 
@@ -452,16 +526,17 @@ bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries
         return endpointBaseUrl(endpoint) + "/history/" + DEVICE_ID +
                "?device_id=" + DEVICE_ID;
       },
-      [outEntries, maxEntries, &outCount](const HttpGetResponse &response) {
+      [this, outEntries, maxEntries, &outCount](
+          const HttpGetResponse &response) {
         if (response.statusCode != 200 || response.body.isEmpty()) {
-          Log::client("HTTP", "history fetch failed status=%d",
+          logClient("HTTP", "history fetch failed status=%d",
                       response.statusCode);
           return HttpGetDecision::Continue;
         }
 
         JsonDocument doc;
         if (deserializeJson(doc, response.body) || !doc.is<JsonArray>()) {
-          Log::client("HTTP", "history response invalid");
+          logClient("HTTP", "history response invalid");
           return HttpGetDecision::Continue;
         }
 
@@ -499,20 +574,20 @@ bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
         return endpointBaseUrl(endpoint) + "/firmware/check?version=" +
                String(FIRMWARE_VERSION) + "&device=" + FIRMWARE_DEVICE;
       },
-      [&outInfo](const HttpGetResponse &response) {
+      [this, &outInfo](const HttpGetResponse &response) {
         if (response.statusCode == 404) {
           return HttpGetDecision::Continue;
         }
 
         if (response.statusCode != 200 || response.body.isEmpty()) {
-          Log::client("HTTP", "firmware check failed status=%d",
+          logClient("HTTP", "firmware check failed status=%d",
                       response.statusCode);
           return HttpGetDecision::Continue;
         }
 
         JsonDocument doc;
         if (deserializeJson(doc, response.body)) {
-          Log::client("HTTP", "firmware check invalid JSON");
+          logClient("HTTP", "firmware check invalid JSON");
           return HttpGetDecision::Continue;
         }
 
@@ -539,7 +614,7 @@ bool LiveSessionService::downloadAndApplyFirmwareUpdate(
     return false;
   }
 
-  Log::client("OTA", "downloading update from %s", downloadUrl.c_str());
+  logClient("OTA", "downloading update from %s", downloadUrl.c_str());
   disconnect();
   delay(100);
 
@@ -561,7 +636,7 @@ bool LiveSessionService::downloadAndApplyFirmwareUpdate(
       return false;
     }
 
-    const bool ok = runFirmwareUpdateDownload(http, outError);
+    const bool ok = runFirmwareUpdateDownload(http, outError, _callbacks);
     http.end();
     return ok;
   }
@@ -572,7 +647,7 @@ bool LiveSessionService::downloadAndApplyFirmwareUpdate(
     return false;
   }
 
-  const bool ok = runFirmwareUpdateDownload(http, outError);
+  const bool ok = runFirmwareUpdateDownload(http, outError, _callbacks);
   http.end();
   return ok;
 }
@@ -585,7 +660,7 @@ bool LiveSessionService::downloadAndApplyFirmwareUpdate(
 void LiveSessionService::handleEvent(WebsocketsEvent event, String data) {
   switch (event) {
   case WebsocketsEvent::ConnectionOpened:
-    Log::client("WS", "opened");
+    logClient("WS", "opened");
     _connected = true;
     rememberSuccessfulEndpoint(_activeServerIndex);
     if (_callbacks.onStatus) {
@@ -594,7 +669,7 @@ void LiveSessionService::handleEvent(WebsocketsEvent event, String data) {
     break;
 
   case WebsocketsEvent::ConnectionClosed:
-    Log::client("WS", "closed: %s", data.c_str());
+    logClient("WS", "closed: %s", data.c_str());
     _connected = false;
     if (_callbacks.onStatus) {
       _callbacks.onStatus("Reconnecting...");
@@ -636,7 +711,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 
   if (strcmp(type, "server_ready") == 0) {
-    Log::server("Device", "channel ready");
+    logServer("Device", "channel ready");
     if (_callbacks.onServerReady) {
       _callbacks.onServerReady();
     }
@@ -655,7 +730,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 
   if (strcmp(type, "ready") == 0) {
-    Log::server("Gemini", "session ready");
+    logServer("Gemini", "session ready");
     if (_callbacks.onReady) {
       _callbacks.onReady();
     }
@@ -663,7 +738,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 
   if (strcmp(type, "turn_complete") == 0) {
-    Log::server("Gemini", "turn complete");
+    logServer("Gemini", "turn complete");
     if (_callbacks.onTurnComplete) {
       _callbacks.onTurnComplete();
     }
@@ -671,7 +746,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 
   if (strcmp(type, "drop_audio") == 0) {
-    Log::server("Gemini", "drop audio interrupted");
+    logServer("Gemini", "drop audio interrupted");
     if (_callbacks.onDropAudio) {
       _callbacks.onDropAudio();
     }
@@ -700,7 +775,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     const char *source = doc["source"];
     const char *text = doc["text"];
     if (!source || strcmp(source, "model") != 0) {
-      Log::server("Transcript", "%s: %s", source ? source : "?",
+      logServer("Transcript", "%s: %s", source ? source : "?",
                   text ? text : "");
     }
     if (_callbacks.onTranscript && source && text) {
@@ -712,7 +787,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   if (strcmp(type, "error") == 0) {
     const char *category = doc["category"];
     const char *message = doc["message"];
-    Log::server("Error", "[%s] %s", category ? category : "server",
+    logServer("Error", "[%s] %s", category ? category : "server",
                 message ? message : "unknown");
     if (_callbacks.onError) {
       _callbacks.onError(category ? category : "server",
@@ -726,7 +801,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     const int bytes = doc["bytes"] | -1;
     const int avgAbs = doc["avg_abs"] | -1;
     const int chunks = doc["chunks"] | -1;
-    Log::server("Gemini", "ignored audio: %s bytes=%d avg_abs=%d chunks=%d",
+    logServer("Gemini", "ignored audio: %s bytes=%d avg_abs=%d chunks=%d",
                 reason ? reason : "ignored", bytes, avgAbs, chunks);
     if (_callbacks.onIgnoredAudio) {
       _callbacks.onIgnoredAudio(reason ? reason : "ignored");
@@ -742,7 +817,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 
   if (strcmp(type, "show_image_failed") == 0) {
-    Log::server("Image", "generation failed");
+    logServer("Image", "generation failed");
     if (_callbacks.onShowImageFailed) {
       _callbacks.onShowImageFailed();
     }
@@ -754,26 +829,26 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     const int width = doc["width"] | 0;
     const int height = doc["height"] | 0;
     if (!data || width <= 0 || height <= 0) {
-      Log::server("Image", "show_image missing data or dimensions");
+      logServer("Image", "show_image missing data or dimensions");
       return;
     }
     const size_t encodedLen = strlen(data);
     const size_t expectedBytes = (size_t)((width * height + 7) / 8);
     uint8_t *packed = (uint8_t *)malloc(expectedBytes);
     if (!packed) {
-      Log::server("Image", "failed to allocate decode buffer");
+      logServer("Image", "failed to allocate decode buffer");
       if (_callbacks.onShowImageFailed) _callbacks.onShowImageFailed();
       return;
     }
     const int decoded = decodeBase64(data, encodedLen, packed, expectedBytes);
     if (decoded < 0 || (size_t)decoded < expectedBytes) {
-      Log::server("Image", "decode failed got=%d expected=%u", decoded,
+      logServer("Image", "decode failed got=%d expected=%u", decoded,
                   (unsigned)expectedBytes);
       free(packed);
       if (_callbacks.onShowImageFailed) _callbacks.onShowImageFailed();
       return;
     }
-    Log::server("Image", "show_image %dx%d bytes=%u", width, height,
+    logServer("Image", "show_image %dx%d bytes=%u", width, height,
                 (unsigned)expectedBytes);
     if (_callbacks.onShowImage) {
       _callbacks.onShowImage(packed, expectedBytes, width, height);
@@ -786,7 +861,7 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     const char *voice = doc["voice"];
     if (voice && *voice) {
       _voice = voice;
-      Log::server("Voice", "changed to %s", voice);
+      logServer("Voice", "changed to %s", voice);
       if (_callbacks.onVoiceChanged) {
         _callbacks.onVoiceChanged(String(voice));
       }
@@ -824,9 +899,33 @@ void LiveSessionService::handleToolCall(const JsonDocument &doc) {
     }
     result = String("Volume set to ") + level;
   } else if (strcmp(name, "set_speaker") == 0) {
-    result = "Speaker switching unavailable on this device";
+    const char *mode = doc["args"]["mode"];
+    if (!Board::capabilities().externalSpeakerSwitch) {
+      result = "Speaker switching unavailable on this device";
+    } else if (!mode) {
+      result = "Missing mode (use 'internal' or 'external')";
+    } else if (!_callbacks.onSetSpeaker) {
+      result = "Speaker control unavailable";
+    } else if (_callbacks.onSetSpeaker(mode)) {
+      result = String("Speaker set to ") + mode;
+    } else {
+      result = "Invalid mode (use 'internal' or 'external')";
+    }
   } else if (strcmp(name, "set_external_speaker_gain") == 0) {
-    result = "External speaker gain unavailable on this device";
+    if (!Board::capabilities().externalSpeakerGain) {
+      result = "External speaker gain unavailable on this device";
+    } else if (!doc["args"]["gain"].is<int>()) {
+      result = "Missing gain (integer 1..64)";
+    } else if (!_callbacks.onSetExternalGain) {
+      result = "Gain control unavailable";
+    } else {
+      const int gain = doc["args"]["gain"].as<int>();
+      if (_callbacks.onSetExternalGain(gain)) {
+        result = String("External speaker gain set to ") + constrain(gain, 1, 64);
+      } else {
+        result = "Gain out of range (use 1..64)";
+      }
+    }
   } else if (strcmp(name, "get_device_status") == 0) {
     result = _callbacks.getDeviceStatusJson ? _callbacks.getDeviceStatusJson()
                                             : "{}";
@@ -913,7 +1012,7 @@ void LiveSessionService::sendToolResponse(const char *name, const char *id,
   String encoded;
   serializeJson(response, encoded);
   _ws.send(encoded.c_str());
-  Log::server("Tool", "%s -> %s", name, result.c_str());
+  logServer("Tool", "%s -> %s", name, result.c_str());
 }
 
 /**
@@ -946,6 +1045,7 @@ bool LiveSessionService::performEndpointGet(const ServerEndpoint &endpoint,
   body = "";
 
   HTTPClient http;
+  http.setTimeout(kHttpGetTimeoutMs);
   if (urlUsesHttps(url)) {
     WiFiClientSecure client;
     if (endpoint.ca_cert) {
@@ -955,7 +1055,7 @@ bool LiveSessionService::performEndpointGet(const ServerEndpoint &endpoint,
     }
 
     if (!http.begin(client, url)) {
-      Log::client("HTTP", "begin failed for %s", url.c_str());
+      logClient("HTTP", "begin failed for %s", url.c_str());
       return false;
     }
 
@@ -970,7 +1070,7 @@ bool LiveSessionService::performEndpointGet(const ServerEndpoint &endpoint,
 
   WiFiClient client;
   if (!http.begin(client, url)) {
-    Log::client("HTTP", "begin failed for %s", url.c_str());
+    logClient("HTTP", "begin failed for %s", url.c_str());
     return false;
   }
 
@@ -998,7 +1098,7 @@ bool LiveSessionService::getFromConfiguredEndpoints(
     const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
     const String url = buildUrl(endpoint);
 
-    Log::client("HTTP", "%s %s", logAction, url.c_str());
+    logClient("HTTP", "%s %s", logAction, url.c_str());
 
     HttpGetResponse response;
     response.endpointIndex = index;
@@ -1032,5 +1132,25 @@ void LiveSessionService::rememberSuccessfulEndpoint(int endpointIndex) {
   _nextServerIndex = endpointIndex;
   if (_callbacks.onEndpointIndexChanged) {
     _callbacks.onEndpointIndexChanged(endpointIndex);
+  } else if (_prefsReady &&
+             _prefs.getInt(kLastServerIndexKey, -1) != endpointIndex) {
+    _prefs.putInt(kLastServerIndexKey, endpointIndex);
+    logClient("WS", "saved preferred server index %d", endpointIndex);
   }
+}
+
+void LiveSessionService::logClient(const char *topic, const char *fmt,
+                                   ...) const {
+  va_list args;
+  va_start(args, fmt);
+  writeLog(_callbacks, 'C', topic, fmt, args);
+  va_end(args);
+}
+
+void LiveSessionService::logServer(const char *topic, const char *fmt,
+                                   ...) const {
+  va_list args;
+  va_start(args, fmt);
+  writeLog(_callbacks, 'S', topic, fmt, args);
+  va_end(args);
 }

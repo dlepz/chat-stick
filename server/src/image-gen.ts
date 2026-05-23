@@ -1,17 +1,24 @@
 /**
- * Image generation and processing for the M5StickS3 display.
+ * Image generation and processing for the on-device display.
  *
  * Generates images via Google's Imagen API, then processes them to a 1-bit
- * dithered bitmap matching the on-device image bounding box defined in
- * `designs.md` (232x112 — rows 1–7 of the 240x135 LCD).
+ * dithered bitmap sized to whatever the connected device requested (see
+ * IMAGE_TARGET_* in each device's Config.h). The M5StickS3 still asks for the
+ * 232x112 chat-area box from designs.md; the Waveshare asks for its full
+ * 368x448 panel.
  */
 
 import UPNG from 'upng-js'
 
-// Target dimensions match the chat text area bounding box (rows 1–7).
-// See designs.md "Layout and Spacing" / "Images".
-const TARGET_WIDTH = 232
-const TARGET_HEIGHT = 112
+// Fallback target dimensions for devices that don't declare a size in the
+// connect URL. Matches the M5StickS3 chat-area bounding box (designs.md).
+export const DEFAULT_IMAGE_WIDTH = 232
+export const DEFAULT_IMAGE_HEIGHT = 112
+
+// Hard caps so a misbehaving client can't ask the Worker to allocate tens of
+// megabytes of pixels. Generous enough for any plausible display.
+const MAX_IMAGE_WIDTH = 1024
+const MAX_IMAGE_HEIGHT = 1024
 
 // Imagen calls take ~5–15s; cap at 30s.
 const IMAGEN_TIMEOUT_MS = 30000
@@ -31,12 +38,17 @@ export interface ImageResult {
  */
 export async function generateAndProcessImage(
 	prompt: string,
-	apiKey: string
+	apiKey: string,
+	targetWidth: number = DEFAULT_IMAGE_WIDTH,
+	targetHeight: number = DEFAULT_IMAGE_HEIGHT
 ): Promise<ImageResult | null> {
+	const width = clampDimension(targetWidth, DEFAULT_IMAGE_WIDTH)
+	const height = clampDimension(targetHeight, DEFAULT_IMAGE_HEIGHT)
 	try {
-		console.log(`[ImageGen] Generating image for: "${prompt}"`)
+		console.log(`[ImageGen] Generating ${width}x${height} image for: "${prompt}"`)
 		const enhancedPrompt = buildEnhancedPrompt(prompt)
-		const imageBase64 = await generateImage(enhancedPrompt, apiKey)
+		const aspectRatio = pickImagenAspectRatio(width, height)
+		const imageBase64 = await generateImage(enhancedPrompt, apiKey, aspectRatio)
 		if (!imageBase64) return null
 
 		const pngBuffer = base64ToArrayBuffer(imageBase64)
@@ -44,21 +56,15 @@ export async function generateAndProcessImage(
 		const rgba = new Uint8Array(UPNG.toRGBA8(decoded)[0])
 		console.log(`[ImageGen] Decoded PNG: ${decoded.width}x${decoded.height}`)
 
-		const resized = resizeImageCover(
-			rgba,
-			decoded.width,
-			decoded.height,
-			TARGET_WIDTH,
-			TARGET_HEIGHT
-		)
+		const resized = resizeImageCover(rgba, decoded.width, decoded.height, width, height)
 
-		const grayscale = toGrayscale(resized, TARGET_WIDTH, TARGET_HEIGHT)
-		const dithered = floydSteinbergDither(grayscale, TARGET_WIDTH, TARGET_HEIGHT)
+		const grayscale = toGrayscale(resized, width, height)
+		const dithered = floydSteinbergDither(grayscale, width, height)
 		const packed = packBits(dithered)
 		const base64 = arrayBufferToBase64(packed)
 		console.log(`[ImageGen] Packed to ${packed.length} bytes (${base64.length}b64 chars)`)
 
-		const ditheredRgba = new Uint8Array(TARGET_WIDTH * TARGET_HEIGHT * 4)
+		const ditheredRgba = new Uint8Array(width * height * 4)
 		for (let i = 0; i < dithered.length; i++) {
 			const v = dithered[i] ? 255 : 0
 			ditheredRgba[i * 4] = v
@@ -66,17 +72,12 @@ export async function generateAndProcessImage(
 			ditheredRgba[i * 4 + 2] = v
 			ditheredRgba[i * 4 + 3] = 255
 		}
-		const ditheredPng = UPNG.encode(
-			[ditheredRgba.buffer],
-			TARGET_WIDTH,
-			TARGET_HEIGHT,
-			0
-		)
+		const ditheredPng = UPNG.encode([ditheredRgba.buffer], width, height, 0)
 
 		return {
 			data: base64,
-			width: TARGET_WIDTH,
-			height: TARGET_HEIGHT,
+			width,
+			height,
 			ditheredPng,
 			originalPng: pngBuffer,
 			enhancedPrompt,
@@ -87,12 +88,50 @@ export async function generateAndProcessImage(
 	}
 }
 
+function clampDimension(value: number, fallback: number): number {
+	if (!Number.isFinite(value) || value <= 0) return fallback
+	const rounded = Math.round(value)
+	if (rounded < 16) return fallback
+	if (rounded > MAX_IMAGE_WIDTH) return MAX_IMAGE_WIDTH
+	return rounded
+}
+
+/**
+ * Imagen 4 fast only accepts a fixed set of aspect ratio presets. Pick the
+ * one whose ratio is closest to the requested target so cover-scaling has the
+ * least cropping to do.
+ */
+function pickImagenAspectRatio(width: number, height: number): string {
+	const presets: Array<{ name: string; ratio: number }> = [
+		{ name: '1:1', ratio: 1 },
+		{ name: '4:3', ratio: 4 / 3 },
+		{ name: '3:4', ratio: 3 / 4 },
+		{ name: '16:9', ratio: 16 / 9 },
+		{ name: '9:16', ratio: 9 / 16 },
+	]
+	const target = width / height
+	let best = presets[0]
+	let bestDelta = Math.abs(Math.log(target / best.ratio))
+	for (const preset of presets.slice(1)) {
+		const delta = Math.abs(Math.log(target / preset.ratio))
+		if (delta < bestDelta) {
+			best = preset
+			bestDelta = delta
+		}
+	}
+	return best.name
+}
+
 function buildEnhancedPrompt(prompt: string): string {
 	// Tuned for monochrome dithered output: bright high-contrast subjects on black.
 	return `${prompt}. Style: white artwork on solid black background, high contrast, simple composition, clear silhouettes, dark mode aesthetic with bright white elements against pure black.`
 }
 
-async function generateImage(enhancedPrompt: string, apiKey: string): Promise<string | null> {
+async function generateImage(
+	enhancedPrompt: string,
+	apiKey: string,
+	aspectRatio: string
+): Promise<string | null> {
 	const controller = new AbortController()
 	const timeoutId = setTimeout(() => controller.abort(), IMAGEN_TIMEOUT_MS)
 
@@ -108,9 +147,9 @@ async function generateImage(enhancedPrompt: string, apiKey: string): Promise<st
 				},
 				body: JSON.stringify({
 					instances: [{ prompt: enhancedPrompt }],
-					// 232:112 ≈ 2.07; 16:9 (1.78) is the closest preset. Cover scaling
-					// will crop a small amount top/bottom — acceptable for B&W output.
-					parameters: { sampleCount: 1, aspectRatio: '16:9' },
+					// Cover scaling later crops the long axis as needed; this just picks
+					// whichever Imagen preset is closest to the device's display.
+					parameters: { sampleCount: 1, aspectRatio },
 				}),
 				signal: controller.signal,
 			}

@@ -1,7 +1,7 @@
 #include "AudioService.h"
 
 #include "../Config.h"
-#include "../diag/Log.h"
+#include "diag/Log.h"
 #include "../drivers/es8311/es8311.h"
 #include <ESP_I2S.h>
 #include <math.h>
@@ -358,6 +358,52 @@ bool AudioService::playNamedSound(const String &name) {
  */
 bool AudioService::playMelody(const String &melody) {
   return playToneSequence(melody);
+}
+
+/**
+ * @brief Queue one generated tone for asynchronous speaker playback.
+ * @param frequencyHz Frequency in Hz.
+ * @param durationMs Duration in milliseconds.
+ * @return True when the tone samples were queued.
+ */
+bool AudioService::playTone(int frequencyHz, int durationMs) {
+  if (frequencyHz <= 0 || durationMs <= 0) {
+    return false;
+  }
+
+  stopPlayback();
+
+  const int duration = max(10, durationMs);
+  int remainingSamples = max(1, PLAY_SAMPLE_RATE * duration / 1000);
+  const float phaseStep = 2.0f * PI * frequencyHz / PLAY_SAMPLE_RATE;
+  const float amplitude = 16000.0f * (_volume / 255.0f);
+  float phase = 0.0f;
+  bool queued = false;
+  int16_t chunk[kPlaybackChunkSamples];
+
+  while (remainingSamples > 0) {
+    const int samples = min(remainingSamples, kPlaybackChunkSamples);
+    for (int i = 0; i < samples; i++) {
+      chunk[i] = static_cast<int16_t>(sinf(phase) * amplitude);
+      phase += phaseStep;
+      if (phase > 2.0f * PI) {
+        phase -= 2.0f * PI;
+      }
+    }
+
+    if (!queuePlayback(reinterpret_cast<const uint8_t *>(chunk),
+                       samples * sizeof(int16_t))) {
+      stopPlayback();
+      return false;
+    }
+    queued = true;
+    remainingSamples -= samples;
+  }
+
+  if (queued) {
+    markPlaybackStarted();
+  }
+  return queued;
 }
 
 /**

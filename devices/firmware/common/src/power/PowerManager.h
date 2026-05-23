@@ -8,6 +8,7 @@ enum class PowerState {
   Dimmed,
   ScreenOff,
   Waking,
+  LightSleep,
   PowerOff,
 };
 
@@ -16,22 +17,28 @@ const char *powerStateName(PowerState state);
 struct PowerTimeouts {
   unsigned long dimMs;
   unsigned long screenOffMs;
+  unsigned long lightSleepMs;
   unsigned long powerOffMs;
 };
 
 class PowerManager {
 public:
+  using LogCallback = std::function<void(char side, const char *topic,
+                                         const char *message)>;
+
   PowerManager();
 
   void update();
   void registerActivity();
+  void setTimeouts(const PowerTimeouts &timeouts);
   const PowerTimeouts &timeouts() const { return _timeouts; }
 
   PowerState getState() const { return _state; }
   unsigned long getIdleTime() const;
 
   bool isInterruptible() const {
-    return _state == PowerState::Dimmed || _state == PowerState::ScreenOff;
+    return _state == PowerState::Dimmed || _state == PowerState::ScreenOff ||
+           _state == PowerState::LightSleep;
   }
 
   bool isWaking() const { return _state == PowerState::Waking; }
@@ -54,7 +61,11 @@ public:
     _cpuFrequencyCallback = callback;
   }
 
-  void onPowerOff(std::function<void()> callback) { _powerOffCallback = callback; }
+  void onPowerOff(std::function<void()> callback) {
+    _powerOffCallback = callback;
+  }
+
+  void onLog(LogCallback callback) { _logCallback = callback; }
 
 private:
   PowerState _state;
@@ -66,7 +77,12 @@ private:
   std::function<void(bool)> _wifiCallback;
   std::function<void(int)> _cpuFrequencyCallback;
   std::function<void()> _powerOffCallback;
+  LogCallback _logCallback;
 
+  bool canIdlePowerOff() const;
   void applyCpuFrequency(int mhz);
   void transitionTo(PowerState newState);
+  void enterLightSleep();
+  void logClient(const char *fmt, ...) const;
+  void logServer(const char *fmt, ...) const;
 };

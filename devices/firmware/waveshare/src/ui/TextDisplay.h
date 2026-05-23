@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../Config.h"
-#include "../state/StateTypes.h"
+#include "state/StateTypes.h"
 #include <Arduino.h>
 
 /**
@@ -55,17 +55,12 @@ public:
   /// Maximum number of page indicator dots drawn.
   static constexpr int kDotCountMax = 8;
 
-  /// Stored image display width.
-  static constexpr int kImageW = 232;
+  /// Maximum image bitmap width the device will accept (server-generated
+  /// images fill the screen).
+  static constexpr int kImageW = IMAGE_TARGET_WIDTH;
 
-  /// Stored image display height.
-  static constexpr int kImageH = 112;
-
-  /// Stored image left offset.
-  static constexpr int kImageX = (SCREEN_WIDTH_PX - kImageW) / 2;
-
-  /// Stored image top offset.
-  static constexpr int kImageY = (SCREEN_HEIGHT_PX - kImageH) / 2;
+  /// Maximum image bitmap height the device will accept.
+  static constexpr int kImageH = IMAGE_TARGET_HEIGHT;
 
   /// Initialize display buffers and hardware state.
   void init();

@@ -2,6 +2,7 @@
 
 #include "../Config.h"
 #include <M5Unified.h>
+#include <string.h>
 
 namespace {
 constexpr uint16_t COLOR_BLACK = 0x0000;
@@ -70,12 +71,23 @@ void TextDisplay::init() {
   M5.Display.setTextSize(1);
   M5.Display.fillScreen(COLOR_BLACK);
   _canvas.setColorDepth(16);
-  _canvas.createSprite(SCREEN_WIDTH_PX, SCREEN_HEIGHT_PX);
-  _canvasReady = true;
+  _canvasReady = _canvas.createSprite(SCREEN_WIDTH_PX, SCREEN_HEIGHT_PX) != nullptr;
+  if (_canvasReady) {
+    _previousCanvas = static_cast<uint16_t *>(ps_malloc(kCanvasBytes));
+    if (!_previousCanvas) {
+      _previousCanvas = static_cast<uint16_t *>(malloc(kCanvasBytes));
+    }
+    if (!_previousCanvas) {
+      Serial.println("[Display] Dirty buffer unavailable; full canvas flush");
+    }
+  }
 }
 
 void TextDisplay::setBrightness(uint8_t brightness) {
   M5.Display.setBrightness(brightness);
+  if (brightness > 0) {
+    _hasPreviousCanvas = false;
+  }
 }
 
 void TextDisplay::render(const DisplayState &state) {
@@ -92,7 +104,7 @@ void TextDisplay::render(const DisplayState &state) {
   if (state.alarmActive) {
     drawAlarm(state);
     if (_canvasReady) {
-      _canvas.pushSprite(&M5.Display, 0, 0);
+      flushCanvas();
     }
     return;
   }
@@ -142,7 +154,7 @@ void TextDisplay::render(const DisplayState &state) {
   }
 
   if (_canvasReady) {
-    _canvas.pushSprite(&M5.Display, 0, 0);
+    flushCanvas();
   }
 }
 
@@ -226,6 +238,14 @@ String TextDisplay::layoutTextForReveal(const String &text) const {
   }
 
   return out;
+}
+
+int TextDisplay::wrappedRowCount(const String &text) const {
+  if (text.isEmpty()) {
+    return 0;
+  }
+  String wrapped[32];
+  return wrapBodyText(text, wrapped, 32);
 }
 
 String TextDisplay::fitLine(const String &text) const {
@@ -362,6 +382,95 @@ int TextDisplay::wrapBodyText(const String &text, String out[], int maxRows) con
   }
 
   return max(1, row);
+}
+
+void TextDisplay::flushCanvas(bool forceFull) {
+  if (!_canvasReady) {
+    return;
+  }
+
+  uint16_t *current = static_cast<uint16_t *>(_canvas.getBuffer());
+  if (!current) {
+    return;
+  }
+
+  if (forceFull || !_previousCanvas || !_hasPreviousCanvas) {
+    _canvas.pushSprite(&M5.Display, 0, 0);
+    if (_previousCanvas) {
+      memcpy(_previousCanvas, current, kCanvasBytes);
+      _hasPreviousCanvas = true;
+    }
+    return;
+  }
+
+  constexpr size_t kRowBytes = SCREEN_WIDTH_PX * sizeof(uint16_t);
+  int minY = SCREEN_HEIGHT_PX;
+  int maxY = -1;
+
+  for (int y = 0; y < SCREEN_HEIGHT_PX; y++) {
+    const size_t offset = static_cast<size_t>(y) * SCREEN_WIDTH_PX;
+    if (memcmp(current + offset, _previousCanvas + offset, kRowBytes) == 0) {
+      continue;
+    }
+    minY = min(minY, y);
+    maxY = max(maxY, y);
+  }
+
+  if (maxY < minY) {
+    return;
+  }
+
+  int minX = SCREEN_WIDTH_PX;
+  int maxX = -1;
+  for (int y = minY; y <= maxY; y++) {
+    const size_t offset = static_cast<size_t>(y) * SCREEN_WIDTH_PX;
+    const uint16_t *row = current + offset;
+    const uint16_t *prev = _previousCanvas + offset;
+    if (memcmp(row, prev, kRowBytes) == 0) {
+      continue;
+    }
+
+    int left = 0;
+    while (left < SCREEN_WIDTH_PX && row[left] == prev[left]) {
+      left++;
+    }
+
+    int right = SCREEN_WIDTH_PX - 1;
+    while (right >= left && row[right] == prev[right]) {
+      right--;
+    }
+
+    minX = min(minX, left);
+    maxX = max(maxX, right);
+  }
+
+  if (maxX < minX) {
+    return;
+  }
+
+  const int dirtyW = maxX - minX + 1;
+  const int dirtyH = maxY - minY + 1;
+  const int dirtyPixels = dirtyW * dirtyH;
+  const int screenPixels = SCREEN_WIDTH_PX * SCREEN_HEIGHT_PX;
+
+  if (dirtyPixels > screenPixels / 3) {
+    _canvas.pushSprite(&M5.Display, 0, 0);
+    memcpy(_previousCanvas, current, kCanvasBytes);
+    _hasPreviousCanvas = true;
+    return;
+  }
+
+  for (int y = minY; y <= maxY; y++) {
+    const uint16_t *row =
+        current + static_cast<size_t>(y) * SCREEN_WIDTH_PX + minX;
+    M5.Display.pushImage(minX, y, dirtyW, 1, row);
+  }
+
+  for (int y = minY; y <= maxY; y++) {
+    const size_t offset = static_cast<size_t>(y) * SCREEN_WIDTH_PX + minX;
+    memcpy(_previousCanvas + offset, current + offset,
+           dirtyW * sizeof(uint16_t));
+  }
 }
 
 void TextDisplay::drawLine(int row, const String &text, uint16_t color) const {

@@ -1,0 +1,6 @@
+{
+  "name": "ChatStickFirmwareCommon",
+  "version": "0.1.0",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

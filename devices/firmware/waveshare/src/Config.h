@@ -59,11 +59,18 @@ struct WiFiNetwork {
 // Copy credentials.h.example to credentials.h and fill in your networks.
 // credentials.h defines: WIFI_NETWORKS[] and WIFI_NETWORK_COUNT
 constexpr int WIFI_CONNECT_TIMEOUT_SEC = 10;
+constexpr bool WIFI_DISABLE_PERSISTENT_STORAGE = false;
+constexpr bool WIFI_DISABLE_SLEEP_DURING_CONNECT = false;
+constexpr bool WIFI_SCAN_BEFORE_FALLBACK_CONNECT = false;
+constexpr bool WIFI_USE_FAST_CONNECT_HINTS = false;
+constexpr bool WIFI_SKIP_SAVED_CONFIGURED_DUPLICATES = false;
+constexpr bool WIFI_LOG_CONNECT_DETAILS = false;
+constexpr unsigned long WIFI_CONNECT_POLL_MS = 250;
 
 // ============= Device =============
 constexpr const char *FIRMWARE_DEVICE = "waveshare";
 constexpr const char *DEVICE_ID = "waveshare-amoled18-live";
-constexpr int FIRMWARE_VERSION = 9;
+constexpr int FIRMWARE_VERSION = 10;
 
 // ============= Audio =============
 constexpr int MIC_SAMPLE_RATE = 16000;  // 16 kHz input (Gemini Live API)
@@ -74,6 +81,13 @@ constexpr int MAX_PLAYBACK_SEC = 30;    // Max response buffer
 // ============= Display =============
 constexpr int SCREEN_WIDTH_PX = 368;
 constexpr int SCREEN_HEIGHT_PX = 448;
+
+// Target pixel size for server-generated images. Waveshare fills the whole
+// screen; the server picks the closest Imagen aspect ratio and dithers to this
+// size before sending. Old saved images keep whatever dimensions they were
+// generated at.
+constexpr int IMAGE_TARGET_WIDTH = SCREEN_WIDTH_PX;
+constexpr int IMAGE_TARGET_HEIGHT = SCREEN_HEIGHT_PX;
 constexpr int DEFAULT_BRIGHTNESS =
     80; // lower = longer battery; plenty readable indoors
 constexpr int DEFAULT_VOLUME = 180;
@@ -117,10 +131,16 @@ constexpr int TIMER_MAX_DURATION_SEC = 24 * 60 * 60; // 24 hours
 constexpr time_t TIMER_MIN_VALID_EPOCH = 1704067200;
 
 // ============= Power Management =============
+constexpr int CPU_ACTIVE_MHZ = 240;
+constexpr int CPU_IDLE_MHZ = 80;
 constexpr unsigned long IDLE_DIM_MS = 60 * 1000;
 constexpr unsigned long IDLE_SCREEN_OFF_MS = 2 * 60 * 1000;
 constexpr unsigned long IDLE_LIGHT_SLEEP_MS = 5 * 60 * 1000;
 constexpr unsigned long IDLE_POWER_OFF_MS = 10 * 60 * 1000;
 constexpr unsigned long LIGHT_SLEEP_WAKE_INTERVAL_MS = 250;
+constexpr bool IDLE_POWER_OFF_WHILE_USB_CONNECTED = false;
+constexpr bool IDLE_DEEP_SLEEP_ENABLED = false;
+constexpr uint32_t IDLE_FULL_POWER_OFF_SEC = 0;
+constexpr uint32_t IDLE_DEEP_SLEEP_SHUTDOWN_SEC = 0;
 constexpr int BRIGHTNESS_DIM = 48;
 constexpr int BRIGHTNESS_OFF = 0;

@@ -1,16 +1,20 @@
 #pragma once
 
-#include "../Config.h"
-#include "TimerService.h"
+#include "Config.h"
+#include "services/TimerService.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ArduinoWebsockets.h>
+#include <Preferences.h>
 #include <functional>
 
 /**
  * @brief Callback hooks invoked as live session events arrive from the server.
  */
 struct LiveSessionCallbacks {
+  /// Optional mirrored log sink: side is 'C' for client, 'S' for server.
+  std::function<void(char side, const char *topic, const char *message)> onLog;
+
   /// Invoked for session or transport errors.
   std::function<void(const String &, const String &)> onError;
 
@@ -64,6 +68,12 @@ struct LiveSessionCallbacks {
 
   /// Invoked when a tool requests volume changes.
   std::function<void(int)> onVolume;
+
+  /// Invoked when a tool requests speaker routing changes.
+  std::function<bool(const String &)> onSetSpeaker;
+
+  /// Invoked when a tool requests external speaker gain changes.
+  std::function<bool(int)> onSetExternalGain;
 
   /// Invoked when a named UI sound should be played.
   std::function<bool(const String &)> onPlaySound;
@@ -188,6 +198,9 @@ public:
   /// Human-readable label for the active endpoint.
   String activeEndpointLabel() const;
 
+  /// Verify that at least one configured endpoint is reachable.
+  bool pingServer();
+
   /// Send a start-of-turn message.
   bool sendStart();
 
@@ -274,6 +287,9 @@ private:
   /// Active WebSocket client connection to the server.
   websockets::WebsocketsClient _ws;
 
+  /// Optional internal endpoint preference store used when no app callback owns it.
+  Preferences _prefs;
+
   /// Registered callback bundle.
   LiveSessionCallbacks _callbacks;
 
@@ -286,6 +302,12 @@ private:
   /// Whether the WebSocket is currently connected.
   bool _connected = false;
 
+  /// Whether internal Preferences storage is available.
+  bool _prefsReady = false;
+
+  /// Whether the app explicitly set the preferred endpoint before init.
+  bool _preferredEndpointSetExternally = false;
+
   /// Timestamp of the last reconnect attempt.
   unsigned long _lastReconnectMs = 0;
 
@@ -297,6 +319,12 @@ private:
 
   /// Delay between reconnect attempts.
   static constexpr unsigned long kReconnectMs = 5000;
+
+  /// Preferences namespace for fallback endpoint persistence.
+  static constexpr const char *kPrefsNamespace = "live";
+
+  /// Preferences key for the last successful server endpoint.
+  static constexpr const char *kLastServerIndexKey = "server";
 
   /// Handle an incoming WebSocket message.
   void handleMessage(websockets::WebsocketsMessage msg);
@@ -349,4 +377,10 @@ private:
    * @param endpointIndex Index into SERVER_ENDPOINTS.
    */
   void rememberSuccessfulEndpoint(int endpointIndex);
+
+  /// Emit a client-side log line.
+  void logClient(const char *topic, const char *fmt, ...) const;
+
+  /// Emit a server-side log line.
+  void logServer(const char *topic, const char *fmt, ...) const;
 };
