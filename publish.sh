@@ -5,5 +5,5 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-./publish-ota-release.sh
+./publish-ota-release.sh "$@"
 ./deploy.sh

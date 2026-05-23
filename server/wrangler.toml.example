@@ -38,7 +38,8 @@ migrations_dir = "migrations"
 
 # Optional R2 storage (OTA firmware + per-device assets).
 # Layout:
-#   chat-stick/firmware/firmware-v<N>.bin    (OTA picks the highest N)
+#   chat-stick/firmware/m5-stick/firmware-v<N>.bin
+#   chat-stick/firmware/waveshare/firmware-v<N>.bin
 #   chat-stick/assets/<device-id>/images/<chat-id>-<stamp>.png
 # When STORAGE is unbound, OTA is disabled and generated images are still
 # rendered on the device but not persisted. The show_image tool works either way.

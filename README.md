@@ -1,14 +1,15 @@
 # chat-stick
 
-A handheld voice interface for large language models, built on an
-[M5StickS3](https://docs.m5stack.com/en/core/M5StickS3) ESP32-S3 device.
-Hold the A button, talk, release, and hear the model respond. A Cloudflare
-Worker relays device audio to Google's Gemini Live API and routes tool calls
-back to the device or to server-side services.
+A handheld voice interface for large language models, built on ESP32-S3
+devices including the [M5StickS3](https://docs.m5stack.com/en/core/M5StickS3)
+and Waveshare ESP32-S3 Touch AMOLED 1.8. Hold the primary button, talk,
+release, and hear the model respond. A Cloudflare Worker relays device audio to
+Google's Gemini Live API and routes tool calls back to the device or to
+server-side services.
 
 The project is currently configured for `models/gemini-3.1-flash-live-preview`.
 Image requests use Imagen, then the server converts the generated image into a
-1-bit dithered bitmap that fits the StickS3 display.
+1-bit dithered bitmap that fits the device display.
 
 ## What It Does
 
@@ -32,14 +33,15 @@ Image requests use Imagen, then the server converts the generated image into a
 ## Architecture
 
 ```text
-M5StickS3 --WebSocket--> Cloudflare Worker / Durable Object --WebSocket--> Gemini Live API
-  mic/speaker/display       relay, history, tools, OTA                  speech-to-speech AI
+ESP32-S3 device --WebSocket--> Cloudflare Worker / Durable Object --WebSocket--> Gemini Live API
+  mic/speaker/display        relay, history, tools, OTA                  speech-to-speech AI
 ```
 
-**Firmware** (`firmware/`) is a PlatformIO/Arduino project for the M5StickS3.
-It captures 16 kHz PCM audio, streams it to the worker, plays 24 kHz PCM audio
-responses, manages the screen/menu/buttons, stores local settings in ESP32 NVS,
-and executes device-side tool calls.
+**Firmware** lives in `devices/firmware/`, with one PlatformIO/Arduino project
+per device: `m5-stick/` and `waveshare/`. Each captures 16 kHz PCM audio,
+streams it to the worker, plays 24 kHz PCM audio responses, manages the
+screen/menu/buttons, stores local settings in ESP32 NVS, and executes
+device-side tool calls.
 
 **Server** (`server/`) is a Cloudflare Worker with a `LiveSession` Durable
 Object per device. It bridges the device and Gemini Live WebSockets, persists
@@ -48,7 +50,7 @@ search, and optionally uses R2 for OTA firmware and image PNG archival.
 
 ## Prerequisites
 
-- M5StickS3 and USB-C cable.
+- M5StickS3 or Waveshare ESP32-S3 Touch AMOLED 1.8, plus USB-C cable.
 - [PlatformIO](https://platformio.org/install) for firmware builds.
 - Node.js 18+ and npm for the server.
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/).
@@ -93,7 +95,8 @@ wrangler d1 migrations apply DB --remote
 ### Firmware
 
 ```bash
-cd firmware
+cd devices/firmware/m5-stick
+# or: cd devices/firmware/waveshare
 
 cp src/credentials.h.example src/credentials.h
 # Edit src/credentials.h:
@@ -107,6 +110,9 @@ cp src/credentials.h.example src/credentials.h
 pio run -t upload
 pio device monitor
 ```
+
+From the repository root, `./flash.sh m5-stick --monitor` and
+`./flash.sh waveshare --monitor` build, flash, and optionally open the monitor.
 
 The device also has a captive WiFi setup flow. From the menu, use
 `Device -> Set up WiFi`, join the `chat-stick-setup` access point, and submit
@@ -125,7 +131,7 @@ wrangler deploy
 ```
 
 After deploying, set `PRODUCTION_SERVER_ADDRESS` in
-`firmware/src/credentials.h`, rebuild, and flash the device.
+the device's `src/credentials.h`, rebuild, and flash the device.
 
 ## Optional Cloudflare Bindings
 
@@ -170,8 +176,8 @@ For local development, add `EMAIL_SENDER` and `EMAIL_RECIPIENT` to
 - `GET /ping` - device connectivity check. Requires `DEVICE_AUTH_TOKEN` when configured.
 - `GET /history/:deviceId` - recent conversations for a device.
 - `GET /session/:chatId` - last saved assistant message for a chat.
-- `GET /firmware/check?version=<n>` - returns OTA availability for a device.
-- `GET /firmware/download` - downloads the latest firmware binary from R2.
+- `GET /firmware/check?version=<n>&device=<m5-stick|waveshare>` - returns OTA availability for a device.
+- `GET /firmware/download?device=<m5-stick|waveshare>` - downloads the latest firmware binary from R2.
 - `GET /admin/index` - indexes `src/docs-index.json` into Vectorize.
 - `GET /admin/search?q=...` - tests Vectorize search.
 - `GET /ws?device_id=...&chat_id=...` - device WebSocket endpoint.
@@ -269,23 +275,25 @@ Convenience scripts:
 
 | Script | What it does |
 | --- | --- |
-| `./flash.sh [--monitor]` | Build firmware and upload over USB. |
+| `./flash.sh [m5-stick|waveshare] [--monitor]` | Build firmware and upload over USB. |
 | `./deploy.sh` | Deploy the Cloudflare Worker. |
-| `./publish-ota-release.sh` | Bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2. |
-| `./publish.sh` | Publish the OTA binary, then deploy the worker. |
+| `./publish-ota-release.sh [m5-stick|waveshare]` | Bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2. |
+| `./publish.sh [m5-stick|waveshare]` | Publish the OTA binary, then deploy the worker. |
 
 To cut a firmware release:
 
 1. Confirm `BUCKET` in `publish-ota-release.sh` matches your R2 bucket.
-2. Run `./publish-ota-release.sh`.
+2. Run `./publish-ota-release.sh m5-stick` or `./publish-ota-release.sh waveshare`.
 3. Devices on older versions install the update on next boot, or from
    `Device -> Check for updates`.
 
 The worker finds the latest available firmware by listing
-`chat-stick/firmware/firmware-v<N>.bin` in R2 and choosing the highest version.
+`chat-stick/firmware/<device>/firmware-v<N>.bin` in R2 and choosing the highest
+version. For M5StickS3, it also checks the legacy
+`chat-stick/firmware/firmware-v<N>.bin` path.
 `publish-ota-release.sh` asks the deployed worker for that latest version before
 building; set `OTA_CHECK_URL` to override the default URL derived from
-`firmware/src/credentials.h`.
+the selected device's `src/credentials.h`.
 
 ## Credentials
 
@@ -295,14 +303,14 @@ All deployment-specific files are gitignored:
 | --- | --- | --- |
 | `server/.dev.vars` | Local secrets for Wrangler dev. | `server/.dev.vars.example` |
 | `server/wrangler.toml` | Cloudflare bindings and account-specific ids. | `server/wrangler.toml.example` |
-| `firmware/src/credentials.h` | Server endpoints, device token, WiFi networks. | `firmware/src/credentials.h.example` |
+| `devices/firmware/<device>/src/credentials.h` | Server endpoints, device token, WiFi networks. | `devices/firmware/<device>/src/credentials.h.example` |
 
 Never commit credentials or firmware binaries built with credentials embedded.
 
 ## Hardware
 
-- **Device**: M5StickS3 (ESP32-S3, 135x240 LCD, MEMS mic, 1W speaker)
-- **Buttons**: A = GPIO 11, B = GPIO 12
+- **Devices**: M5StickS3 and Waveshare ESP32-S3 Touch AMOLED 1.8
+- **Buttons**: M5 A/B buttons; Waveshare BOOT for A and PMU power key for B
 - **Audio**: 16-bit PCM, 16 kHz input, 24 kHz output
 - **Optional speaker**: M5Stack HAT SPK2 external speaker
 

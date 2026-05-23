@@ -15,20 +15,30 @@ export interface Env {
 	STORAGE?: R2Bucket
 }
 
-const FIRMWARE_PREFIX = 'chat-stick/firmware/'
+const LEGACY_FIRMWARE_PREFIX = 'chat-stick/firmware/'
+const FIRMWARE_DEVICE_IDS = new Set(['m5-stick', 'waveshare'])
 
 async function findLatestFirmware(
-	env: Env
+	env: Env,
+	device: string
 ): Promise<{ version: number; key: string } | null> {
 	if (!env.STORAGE) return null
-	const list = await env.STORAGE.list({ prefix: FIRMWARE_PREFIX })
+	const prefixes =
+		device === 'm5-stick'
+			? [`chat-stick/firmware/${device}/`, LEGACY_FIRMWARE_PREFIX]
+			: [`chat-stick/firmware/${device}/`]
 	let latest: { version: number; key: string } | null = null
-	for (const obj of list.objects) {
-		const match = obj.key.match(/firmware-v(\d+)\.bin$/)
-		if (!match) continue
-		const version = Number(match[1])
-		if (!latest || version > latest.version) {
-			latest = { version, key: obj.key }
+	for (const prefix of prefixes) {
+		const list = await env.STORAGE.list({ prefix })
+		for (const obj of list.objects) {
+			const objectName = obj.key.slice(prefix.length)
+			if (objectName.includes('/')) continue
+			const match = objectName.match(/^firmware-v(\d+)\.bin$/)
+			if (!match) continue
+			const version = Number(match[1])
+			if (!latest || version > latest.version) {
+				latest = { version, key: obj.key }
+			}
 		}
 	}
 	return latest
@@ -96,18 +106,22 @@ export default {
 					return new Response('Unauthorized', { status: 401, headers: corsHeaders() })
 				}
 				const currentVersion = Number(url.searchParams.get('version') || '0')
-				const latest = await findLatestFirmware(env)
+				const device = resolveFirmwareDevice(url)
+				const latest = await findLatestFirmware(env, device)
 				const updateAvailable = !!latest && latest.version > currentVersion
 				return json({
 					available: updateAvailable,
 					latest_version: latest?.version ?? currentVersion,
 					notes: '',
-					download_url: updateAvailable ? `${url.origin}/firmware/download` : '',
+					download_url: updateAvailable
+						? `${url.origin}/firmware/download?device=${encodeURIComponent(device)}`
+						: '',
 				})
 			}
 
 			case '/firmware/download': {
-				const latest = await findLatestFirmware(env)
+				const device = resolveFirmwareDevice(url)
+				const latest = await findLatestFirmware(env, device)
 				if (!env.STORAGE || !latest) {
 					return new Response('Firmware download unavailable', { status: 404 })
 				}
@@ -218,6 +232,11 @@ function json(payload: unknown, init?: ResponseInit): Response {
 			...(init?.headers || {}),
 		},
 	})
+}
+
+function resolveFirmwareDevice(url: URL): string {
+	const requested = url.searchParams.get('device') || 'm5-stick'
+	return FIRMWARE_DEVICE_IDS.has(requested) ? requested : 'm5-stick'
 }
 
 function isAuthorizedHistoryRequest(request: Request, env: Env): boolean {

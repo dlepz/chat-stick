@@ -445,7 +445,7 @@ bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
     const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
     const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
     const String url = endpointBaseUrl(endpoint) + "/firmware/check?version=" +
-                       String(FIRMWARE_VERSION);
+                       String(FIRMWARE_VERSION) + "&device=" + FIRMWARE_DEVICE;
 
     Serial.printf("[HTTP] Checking firmware at %s\n", url.c_str());
 

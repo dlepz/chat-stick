@@ -3,16 +3,60 @@
 # Devices on an older version will pick this up on next boot.
 #
 # Releasing a new version:
-#   1. ./publish-ota-release.sh
+#   1. ./publish-ota-release.sh [m5-stick|waveshare]
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-CONFIG_H="firmware/src/Config.h"
-CREDENTIALS_H="firmware/src/credentials.h"
-FIRMWARE_BIN="firmware/.pio/build/m5stick-s3/firmware.bin"
+DEVICE="${FIRMWARE_DEVICE:-m5-stick}"
 BUCKET="m5-stick-assets"
-KEY_PREFIX="chat-stick/firmware"
+
+usage() {
+  echo "Usage: $0 [m5-stick|waveshare]" >&2
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --device)
+      shift
+      [[ $# -gt 0 ]] || { usage; exit 1; }
+      DEVICE="$1"
+      ;;
+    --device=*)
+      DEVICE="${1#--device=}"
+      ;;
+    m5-stick|waveshare)
+      DEVICE="$1"
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+FIRMWARE_DIR="devices/firmware/$DEVICE"
+CONFIG_H="$FIRMWARE_DIR/src/Config.h"
+CREDENTIALS_H="$FIRMWARE_DIR/src/credentials.h"
+PLATFORMIO_INI="$FIRMWARE_DIR/platformio.ini"
+KEY_PREFIX="chat-stick/firmware/$DEVICE"
+
+if [[ ! -d "$FIRMWARE_DIR" ]]; then
+  echo "Error: unknown firmware device '$DEVICE'" >&2
+  usage
+  exit 1
+fi
+
+PIO_ENV=$(
+  sed -n 's/^\[env:\(.*\)\]$/\1/p' "$PLATFORMIO_INI" | head -1
+)
+if [[ -z "$PIO_ENV" ]]; then
+  echo "Error: could not parse PlatformIO env from $PLATFORMIO_INI" >&2
+  exit 1
+fi
+
+FIRMWARE_BIN="$FIRMWARE_DIR/.pio/build/$PIO_ENV/firmware.bin"
 
 VERSION=$(grep -E "constexpr int FIRMWARE_VERSION" "$CONFIG_H" | grep -oE "[0-9]+" | head -1)
 if [[ -z "$VERSION" ]]; then
@@ -30,7 +74,7 @@ if [[ -z "$CHECK_URL" && -f "$CREDENTIALS_H" ]]; then
       || true
   )
   if [[ -n "$PRODUCTION_HOST" ]]; then
-    CHECK_URL="https://$PRODUCTION_HOST/firmware/check?version=0"
+    CHECK_URL="https://$PRODUCTION_HOST/firmware/check?version=0&device=$DEVICE"
   fi
 fi
 
@@ -83,11 +127,11 @@ fi
 
 KEY="$KEY_PREFIX/firmware-v$VERSION.bin"
 
-echo "Publishing firmware v$VERSION → $BUCKET/$KEY"
+echo "Publishing $DEVICE firmware v$VERSION → $BUCKET/$KEY"
 echo
 
 echo "[2/3] Building firmware..."
-(cd firmware && pio run)
+(cd "$FIRMWARE_DIR" && pio run)
 
 if [[ ! -f "$FIRMWARE_BIN" ]]; then
   echo "Error: $FIRMWARE_BIN not found after build" >&2
@@ -101,5 +145,5 @@ echo "[3/3] Uploading $SIZE bytes to R2..."
 (cd server && npx wrangler r2 object put "$BUCKET/$KEY" --file="../$FIRMWARE_BIN" --remote)
 
 echo
-echo "Published firmware v$VERSION ($SIZE bytes)"
+echo "Published $DEVICE firmware v$VERSION ($SIZE bytes)"
 echo "Devices on older versions will install this on next boot."

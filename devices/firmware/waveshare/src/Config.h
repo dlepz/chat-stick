@@ -1,0 +1,126 @@
+#pragma once
+
+#include <Arduino.h>
+
+// ============= Server Configuration =============
+// The dev and prod server addresses are per-user and live in credentials.h
+// (gitignored). credentials.h defines: DEVELOPMENT_SERVER_ADDRESS,
+// DEVELOPMENT_SERVER_PORT, PRODUCTION_SERVER_ADDRESS, SERVER_ENDPOINTS[],
+// and SERVER_ENDPOINT_COUNT.
+/**
+ * @brief TLS endpoint configuration for a chat server deployment.
+ */
+struct ServerEndpoint {
+  /// Hostname of the server.
+  const char *host;
+
+  /// TCP port used for HTTPS or WebSocket connections.
+  int port;
+
+  /// PEM certificate authority bundle used to verify the endpoint.
+  const char *ca_cert;
+};
+
+// Google Trust Services root used by the deployed workers.dev endpoint.
+// Source: https://pki.goog/ demo certificate chain for GTS Root R4.
+constexpr const char *GTS_ROOT_R4_CA =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIICCTCCAY6gAwIBAgINAgPlwGjvYxqccpBQUjAKBggqhkjOPQQDAzBHMQswCQYD\n"
+    "VQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2VzIExMQzEUMBIG\n"
+    "A1UEAxMLR1RTIFJvb3QgUjQwHhcNMTYwNjIyMDAwMDAwWhcNMzYwNjIyMDAwMDAw\n"
+    "WjBHMQswCQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2Vz\n"
+    "IExMQzEUMBIGA1UEAxMLR1RTIFJvb3QgUjQwdjAQBgcqhkjOPQIBBgUrgQQAIgNi\n"
+    "AATzdHOnaItgrkO4NcWBMHtLSZ37wWHO5t5GvWvVYRg1rkDdc/eJkTBa6zzuhXyi\n"
+    "QHY7qca4R9gq55KRanPpsXI5nymfopjTX15YhmUPoYRlBtHci8nHc8iMai/lxKvR\n"
+    "HYqjQjBAMA4GA1UdDwEB/wQEAwIBhjAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQW\n"
+    "BBSATNbrdP9JNqPV2Py1PsVq8JQdjDAKBggqhkjOPQQDAwNpADBmAjEA6ED/g94D\n"
+    "9J+uHXqnLrmvT/aDHQ4thQEd0dlq7A/Cr8deVl5c1RxYIigL9zC2L7F8AjEA8GE8\n"
+    "p/SgguMh1YQdc4acLa/KNJvxn7kjNuK8YAOdgLOaVsjh4rsUecrNIdSUtUlD\n"
+    "-----END CERTIFICATE-----\n";
+
+constexpr const char *SERVER_PATH = "/ws";
+
+// ============= WiFi Networks =============
+/**
+ * @brief Built-in WiFi credential entry compiled from credentials.h.
+ */
+struct WiFiNetwork {
+  /// Network SSID.
+  const char *ssid;
+
+  /// Network password.
+  const char *password;
+
+  /// Human-readable label shown in logs and UI.
+  const char *label;
+};
+
+// WiFi credentials are in credentials.h (gitignored).
+// Copy credentials.h.example to credentials.h and fill in your networks.
+// credentials.h defines: WIFI_NETWORKS[] and WIFI_NETWORK_COUNT
+constexpr int WIFI_CONNECT_TIMEOUT_SEC = 10;
+
+// ============= Device =============
+constexpr const char *FIRMWARE_DEVICE = "waveshare";
+constexpr const char *DEVICE_ID = "waveshare-amoled18-live";
+constexpr int FIRMWARE_VERSION = 9;
+
+// ============= Audio =============
+constexpr int MIC_SAMPLE_RATE = 16000;  // 16 kHz input (Gemini Live API)
+constexpr int MIC_CHUNK_MS = 100;       // Send a chunk every 100 ms
+constexpr int PLAY_SAMPLE_RATE = 24000; // 24 kHz output (Gemini Live API)
+constexpr int MAX_PLAYBACK_SEC = 30;    // Max response buffer
+
+// ============= Display =============
+constexpr int SCREEN_WIDTH_PX = 368;
+constexpr int SCREEN_HEIGHT_PX = 448;
+constexpr int DEFAULT_BRIGHTNESS =
+    80; // lower = longer battery; plenty readable indoors
+constexpr int DEFAULT_VOLUME = 180;
+constexpr bool SHOW_BOOT_LOG_ON_DISPLAY = false;
+constexpr bool SHOW_DEBUG_TEXT_ON_DISPLAY = false;
+
+// ============= Hardware (Waveshare ESP32-S3-Touch-AMOLED-1.8) =============
+constexpr int LCD_SDIO0_PIN = 4;
+constexpr int LCD_SDIO1_PIN = 5;
+constexpr int LCD_SDIO2_PIN = 6;
+constexpr int LCD_SDIO3_PIN = 7;
+constexpr int LCD_SCLK_PIN = 11;
+constexpr int LCD_CS_PIN = 12;
+
+constexpr int BOARD_I2C_SDA_PIN = 15;
+constexpr int BOARD_I2C_SCL_PIN = 14;
+
+constexpr gpio_num_t BUTTON_A_PIN = GPIO_NUM_0; // BOOT, active low
+// PWR is read through AXP2101 IRQs. On this board AXP_IRQ is wired to the
+// TCA9554 expander (EXIO5), not a wake-capable ESP32 GPIO.
+constexpr gpio_num_t BUTTON_B_PIN = GPIO_NUM_NC;
+
+constexpr int AUDIO_I2S_MCLK_PIN = 16;
+constexpr int AUDIO_I2S_BCLK_PIN = 9;
+constexpr int AUDIO_I2S_DIN_PIN = 10; // ES8311 ADC -> ESP32
+constexpr int AUDIO_I2S_WS_PIN = 45;
+constexpr int AUDIO_I2S_DOUT_PIN = 8; // ESP32 -> ES8311 DAC
+constexpr int AUDIO_PA_ENABLE_PIN = 46;
+
+// ============= Clock =============
+constexpr const char *NTP_SERVER = "pool.ntp.org";
+constexpr const char *LOCAL_TZ = "PST8PDT,M3.2.0,M11.1.0";
+
+// ============= Timers / Alarms =============
+constexpr int MAX_TIMERS = 4;
+constexpr int TIMER_NAME_MAX_LEN = 24;
+constexpr int TIMER_MIN_DURATION_SEC = 1;
+constexpr int TIMER_MAX_DURATION_SEC = 24 * 60 * 60; // 24 hours
+// `time(nullptr)` below this epoch is treated as "clock not yet synced",
+// so timers can't be created or fired blindly. ~2024-01-01 UTC.
+constexpr time_t TIMER_MIN_VALID_EPOCH = 1704067200;
+
+// ============= Power Management =============
+constexpr unsigned long IDLE_DIM_MS = 60 * 1000;
+constexpr unsigned long IDLE_SCREEN_OFF_MS = 2 * 60 * 1000;
+constexpr unsigned long IDLE_LIGHT_SLEEP_MS = 5 * 60 * 1000;
+constexpr unsigned long IDLE_POWER_OFF_MS = 10 * 60 * 1000;
+constexpr unsigned long LIGHT_SLEEP_WAKE_INTERVAL_MS = 250;
+constexpr int BRIGHTNESS_DIM = 48;
+constexpr int BRIGHTNESS_OFF = 0;

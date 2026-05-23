@@ -2,10 +2,10 @@
 .env
 server/.dev.vars
 server/wrangler.toml
-firmware/src/credentials.h
+devices/firmware/*/src/credentials.h
 
 # PlatformIO
-firmware/.pio/
+devices/firmware/*/.pio/
 
 # Cloudflare / Wrangler
 server/.wrangler/

@@ -4,18 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A handheld voice assistant built on an M5StickS3 (ESP32-S3). Hold a button, talk, release to hear the AI respond. Audio streams over WiFi/WebSocket to a Cloudflare Worker, which relays it to Google's Gemini 3.1 Live API for speech-to-speech AI.
+A handheld voice assistant built on ESP32-S3 devices: M5StickS3 and Waveshare ESP32-S3 Touch AMOLED 1.8. Hold a button, talk, release to hear the AI respond. Audio streams over WiFi/WebSocket to a Cloudflare Worker, which relays it to Google's Gemini 3.1 Live API for speech-to-speech AI.
 
 ```
-M5StickS3 ──WebSocket──▶ Cloudflare Worker (Durable Object) ──WebSocket──▶ Gemini Live API
-  mic/speaker               relay + tool handling                           speech-to-speech AI
+ESP32-S3 device ──WebSocket──▶ Cloudflare Worker (Durable Object) ──WebSocket──▶ Gemini Live API
+  mic/speaker/display        relay + tool handling                           speech-to-speech AI
 ```
 
 ## Repository Structure
 
 Two independent codebases in one repo:
 
-- **`firmware/`** — PlatformIO/Arduino C++ project targeting M5StickS3 (ESP32-S3)
+- **`devices/firmware/m5-stick/`** — PlatformIO/Arduino C++ project targeting M5StickS3
+- **`devices/firmware/waveshare/`** — PlatformIO/Arduino C++ project targeting Waveshare ESP32-S3 Touch AMOLED 1.8
 - **`server/`** — Cloudflare Worker (TypeScript) with Durable Objects, D1, Vectorize, Workers AI
 
 ## Build & Run Commands
@@ -40,7 +41,7 @@ curl http://localhost:8799/index
 ### Firmware (PlatformIO)
 
 ```bash
-cd firmware
+cd devices/firmware/m5-stick      # or devices/firmware/waveshare
 pio run -t upload          # build & flash
 pio device monitor         # serial monitor (115200 baud)
 python monitor.py          # alternative serial monitor
@@ -65,6 +66,7 @@ Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Up
 
 ### Firmware
 
+- **Device projects** live under `devices/firmware/<device>/`; shared behavior is intentionally mirrored between the M5 and Waveshare firmware where hardware allows.
 - **`main.cpp`** — thin shell delegating to `AppController`
 - **`AppController`** (`app/`) — central coordinator. Owns all services, manages state machine (`AppState`: Connecting → Ready → Recording → Thinking → Playing), handles button input, menu navigation, and display updates
 - **Services** (`services/`):
@@ -89,7 +91,7 @@ Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Up
 All deployment-specific config is gitignored. Templates exist at:
 - `server/.dev.vars.example` → `server/.dev.vars` (GEMINI_API_KEY, HISTORY_API_TOKEN, optional ADMIN_API_TOKEN, DEVICE_AUTH_TOKEN, EMAIL_SENDER/EMAIL_RECIPIENT)
 - `server/wrangler.toml.example` → `server/wrangler.toml` (Cloudflare bindings — D1 database_id, optional `[[send_email]]` and `[[r2_buckets]]` blocks). The committed `wrangler.toml.example` is the canonical structure; do not edit `wrangler.toml` expecting forks to inherit it
-- `firmware/src/credentials.h.example` → `firmware/src/credentials.h` (WiFi networks)
+- `devices/firmware/<device>/src/credentials.h.example` → `devices/firmware/<device>/src/credentials.h` (server endpoints, optional device token, WiFi networks)
 
 ## Audio Format
 
@@ -99,17 +101,17 @@ All deployment-specific config is gitignored. Templates exist at:
 
 ## Convenience Scripts (repo root)
 
-- `./flash.sh [--monitor]` — build firmware and upload over USB
+- `./flash.sh [m5-stick|waveshare] [--monitor]` — build firmware and upload over USB
 - `./deploy.sh` — `wrangler deploy` the Cloudflare Worker
-- `./publish-ota-release.sh` — bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2 under `chat-stick/firmware/`
+- `./publish-ota-release.sh [m5-stick|waveshare]` — bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2 under `chat-stick/firmware/<device>/`
 - `./publish.sh` — publish OTA + deploy worker (chains the two above)
 
 ## Releasing Firmware (OTA)
 
-1. Run `./publish-ota-release.sh`
+1. Run `./publish-ota-release.sh m5-stick` or `./publish-ota-release.sh waveshare`
 2. Devices running an older version pick up the new binary on next boot via `/firmware/check` → `/firmware/download`
 
-The worker auto-detects the highest `firmware-v<N>.bin` in R2; there's no separate version registry. Because `credentials.h` is compiled into the binary, **never commit or publish built `.bin` files** — `strings` will surface WiFi creds and the worker URL.
+The worker auto-detects the highest `firmware-v<N>.bin` per device in R2; there's no separate version registry. Because `credentials.h` is compiled into the binary, **never commit or publish built `.bin` files** — `strings` will surface WiFi creds and the worker URL.
 
 ## Display Layout
 

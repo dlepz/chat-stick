@@ -45,6 +45,7 @@ struct WiFiNetwork {
 constexpr int WIFI_CONNECT_TIMEOUT_SEC = 10;
 
 // ============= Device =============
+constexpr const char *FIRMWARE_DEVICE = "m5-stick";
 constexpr const char *DEVICE_ID = "m5s3-live";
 constexpr int FIRMWARE_VERSION = 12;
 
