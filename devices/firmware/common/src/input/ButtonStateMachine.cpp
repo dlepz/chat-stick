@@ -38,6 +38,9 @@ void ButtonStateMachine::update(bool pressed, unsigned long nowMs) {
                nowMs - _lastReleaseMs <= _config.doubleClickMs) {
       _doubleClickEvent = true;
       _awaitingSecondClick = false;
+    } else if (_config.doubleClickMs == 0) {
+      _clickEvent = true;
+      _awaitingSecondClick = false;
     } else {
       _awaitingSecondClick = true;
       _lastReleaseMs = nowMs;

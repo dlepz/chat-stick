@@ -14,7 +14,8 @@ public:
     /// Milliseconds a press must last before it counts as a hold.
     unsigned long holdMs;
 
-    /// Maximum gap between clicks to emit a double-click event.
+    /// Maximum gap between clicks to emit a double-click event. Set to 0 to
+    /// emit single-clicks immediately on release.
     unsigned long doubleClickMs;
   };
 
@@ -24,7 +25,8 @@ public:
   /**
    * @brief Construct with explicit hold and double-click timings.
    * @param holdMs Milliseconds required to enter the held state.
-   * @param doubleClickMs Maximum gap between clicks for a double click.
+   * @param doubleClickMs Maximum gap between clicks for a double click, or 0
+   * to emit single-clicks immediately on release.
    */
   ButtonStateMachine(unsigned long holdMs, unsigned long doubleClickMs = 350)
       : _config({holdMs, doubleClickMs}) {}

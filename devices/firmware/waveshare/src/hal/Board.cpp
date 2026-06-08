@@ -58,20 +58,33 @@ void pollPmuButton() {
   if (!pmuReady || millis() - lastPmuPollMs < 20) {
     return;
   }
-  lastPmuPollMs = millis();
+  const unsigned long now = millis();
+  lastPmuPollMs = now;
 
   pmu.getIrqStatus();
-  if (pmu.isPekeyNegativeIrq()) {
+  const bool negative = pmu.isPekeyNegativeIrq();
+  const bool positive = pmu.isPekeyPositiveIrq();
+  const bool shortPress = pmu.isPekeyShortPressIrq();
+  const bool longPress = pmu.isPekeyLongPressIrq();
+
+  if (negative) {
     pwrPressed = true;
+    pwrPulseUntilMs = 0;
   }
-  if (pmu.isPekeyPositiveIrq()) {
+  if (positive) {
     pwrPressed = false;
+    pwrPulseUntilMs = 0;
   }
-  if (pmu.isPekeyShortPressIrq()) {
-    pwrPulseUntilMs = millis() + 180;
+  if (shortPress) {
+    if (negative || positive || pwrPressed) {
+      pwrPressed = false;
+      pwrPulseUntilMs = 0;
+    } else {
+      pwrPulseUntilMs = now + 180;
+    }
   }
-  if (pmu.isPekeyLongPressIrq()) {
-    pwrPulseUntilMs = millis() + 1200;
+  if (longPress && !pwrPressed && !negative && !positive) {
+    pwrPulseUntilMs = now + 1200;
   }
   pmu.clearIrqStatus();
 }

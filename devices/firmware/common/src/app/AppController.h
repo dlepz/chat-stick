@@ -276,10 +276,10 @@ private:
   FirmwareCheckReason _firmwareFetchReason = FirmwareCheckReason::None;
 
   /// State machine for the push-to-talk button.
-  ButtonStateMachine _buttonA = ButtonStateMachine(500, 350);
+  ButtonStateMachine _buttonA = ButtonStateMachine(500, 0);
 
   /// State machine for the menu/power button.
-  ButtonStateMachine _buttonB = ButtonStateMachine(1000, 350);
+  ButtonStateMachine _buttonB = ButtonStateMachine(1000, 0);
 
   /// Per-turn voice exchange state.
   TurnController _turn;
