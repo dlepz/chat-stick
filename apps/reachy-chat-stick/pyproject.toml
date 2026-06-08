@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reachy-chat-stick"
+version = "0.1.0"
+description = "Reachy Mini voice client for the chat-stick server"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+	"numpy>=1.24",
+	"reachy-mini>=1.2.0,<2.0.0",
+	"websockets>=12.0",
+]
+
+[project.entry-points."reachy_mini_apps"]
+reachy_chat_stick = "reachy_chat_stick.main:ChatStickReachyApp"
+
+[tool.setuptools.packages.find]
+where = ["."]

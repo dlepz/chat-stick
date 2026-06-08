@@ -1,0 +1,2 @@
+[reachy_mini_apps]
+reachy_chat_stick = reachy_chat_stick.main:ChatStickReachyApp

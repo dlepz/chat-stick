@@ -31,6 +31,8 @@ ESP32-S3 device ──WebSocket──▶ Cloudflare Worker / Durable Object ─�
 
 **Firmware** lives in `devices/firmware/`, with one PlatformIO/Arduino project per device: `m5-stick/` and `waveshare/`. Each captures 16 kHz PCM audio, streams it to the worker, plays 24 kHz PCM audio responses, manages the screen/menu/buttons, stores local settings in ESP32 NVS, and executes device-side tool calls.
 
+**Reachy Mini app** lives in `apps/reachy-chat-stick/`. It uses the Reachy Mini Python SDK for microphone/speaker I/O, emulates push-to-talk with voice activity detection, and connects to the same `/ws` device endpoint as the ESP32 firmware.
+
 **Server** (`server/`) is a Cloudflare Worker with a `LiveSession` Durable Object per device. It bridges the device and Gemini Live WebSockets, persists conversation/tool/file/image state in D1, uses Workers AI + Vectorize for docs search, and optionally uses R2 for OTA firmware and image PNG archival.
 
 ## Prerequisites

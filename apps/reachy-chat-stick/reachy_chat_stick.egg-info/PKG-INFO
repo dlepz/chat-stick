@@ -1,0 +1,77 @@
+Metadata-Version: 2.4
+Name: reachy-chat-stick
+Version: 0.1.0
+Summary: Reachy Mini voice client for the chat-stick server
+Requires-Python: <3.14,>=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.24
+Requires-Dist: reachy-mini<2.0.0,>=1.2.0
+Requires-Dist: websockets>=12.0
+
+---
+tags:
+  - reachy_mini_python_app
+---
+
+# Reachy Chat Stick
+
+A Reachy Mini Python app that connects the robot to the existing chat-stick voice server.
+
+Reachy provides the microphones and speaker. The app speaks the chat-stick wire protocol:
+
+- Send `{"type":"start"}` when voice activity starts.
+- Stream 16 kHz signed PCM as binary WebSocket frames.
+- Send `{"type":"stop"}` after silence.
+- Play assistant 24 kHz PCM binary frames through Reachy's speaker.
+- Answer device-side tool calls for status, sounds, melodies, and timers.
+
+## Configuration
+
+Set these in the environment used by the Reachy daemon or before running directly:
+
+```bash
+export CHAT_STICK_SERVER_URL="http://localhost:8787"
+export CHAT_STICK_DEVICE_ID="reachy-mini"
+# Optional, only if DEVICE_AUTH_TOKEN is configured on the worker:
+export CHAT_STICK_DEVICE_TOKEN="..."
+export CHAT_STICK_VOICE="Aoede"
+```
+
+For a Wireless robot, `CHAT_STICK_SERVER_URL` usually needs to point to your deployed worker or to a LAN-reachable dev machine, not `localhost`.
+
+Useful tuning knobs:
+
+```bash
+export CHAT_STICK_VAD_START_THRESHOLD="0.012"
+export CHAT_STICK_VAD_SILENCE_THRESHOLD="0.008"
+export CHAT_STICK_VAD_END_SILENCE_S="0.70"
+export CHAT_STICK_LISTEN_WHILE_SPEAKING="false"
+export CHAT_STICK_REACHY_MOTION="true"
+```
+
+## Run Directly
+
+From this app directory:
+
+```bash
+uv pip install -e .
+python -m reachy_chat_stick.main
+```
+
+The Reachy daemon must already be running. On Lite, that is normally on your laptop. On Wireless, run this in the robot's app environment or install it through the daemon.
+
+## Install Manually on Wireless
+
+```bash
+scp -r apps/reachy-chat-stick pollen@reachy-mini.local:/tmp/reachy-chat-stick
+ssh pollen@reachy-mini.local "/venvs/apps_venv/bin/pip install /tmp/reachy-chat-stick"
+curl -X POST http://reachy-mini.local:8000/api/apps/start-app/reachy_chat_stick
+```
+
+Replace `reachy-mini.local` with the robot IP if mDNS is unavailable.
+
+## Notes
+
+- This app does not change the chat-stick server. It connects as another device with `device_id=reachy-mini`.
+- Image and text display tool calls are acknowledged but only logged because Reachy Mini does not have the chat-stick screen.
+- Timers are persisted to `~/.local/state/reachy-chat-stick/timers.json` by default.

@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+reachy_chat_stick/__init__.py
+reachy_chat_stick/audio.py
+reachy_chat_stick/config.py
+reachy_chat_stick/main.py
+reachy_chat_stick/runner.py
+reachy_chat_stick/timers.py
+reachy_chat_stick.egg-info/PKG-INFO
+reachy_chat_stick.egg-info/SOURCES.txt
+reachy_chat_stick.egg-info/dependency_links.txt
+reachy_chat_stick.egg-info/entry_points.txt
+reachy_chat_stick.egg-info/requires.txt
+reachy_chat_stick.egg-info/top_level.txt
