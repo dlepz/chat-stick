@@ -9,8 +9,10 @@ export CHAT_STICK_DEVICE_ID="${CHAT_STICK_DEVICE_ID:-reachy-mini}"
 export REACHY_CONNECTION_MODE="${REACHY_CONNECTION_MODE:-localhost_only}"
 export REACHY_HOST="${REACHY_HOST:-reachy-mini.local}"
 export REACHY_MEDIA_BACKEND="${REACHY_MEDIA_BACKEND:-webrtc}"
-export CHAT_STICK_REACHY_MOTION="${CHAT_STICK_REACHY_MOTION:-false}"
-export CHAT_STICK_USE_DOA="${CHAT_STICK_USE_DOA:-false}"
+export CHAT_STICK_REACHY_MOTION="${CHAT_STICK_REACHY_MOTION:-true}"
+export CHAT_STICK_USE_DOA="${CHAT_STICK_USE_DOA:-true}"
+export CHAT_STICK_REACHY_FACE_TRACKING="${CHAT_STICK_REACHY_FACE_TRACKING:-true}"
+export CHAT_STICK_REACHY_GESTURES="${CHAT_STICK_REACHY_GESTURES:-true}"
 
 if [[ ! -x .venv/bin/python ]]; then
 	if command -v uv >/dev/null 2>&1; then
@@ -23,13 +25,20 @@ fi
 PY="$APP_DIR/.venv/bin/python"
 
 if ! "$PY" - <<'PY' >/dev/null 2>&1
+import os
 import numpy
 import reachy_mini
 import websockets
+if os.environ.get("CHAT_STICK_REACHY_FACE_TRACKING", "").strip().lower() in {"1", "true", "yes", "on"}:
+	import cv2
 PY
 then
 	echo "Installing Reachy chat-stick app dependencies into $APP_DIR/.venv ..."
-	"$PY" -m pip install -e .
+	if [[ "${CHAT_STICK_REACHY_FACE_TRACKING,,}" =~ ^(1|true|yes|on)$ ]]; then
+		"$PY" -m pip install -e '.[vision]'
+	else
+		"$PY" -m pip install -e .
+	fi
 fi
 
 if ! "$PY" - <<'PY'
@@ -73,4 +82,6 @@ echo "  device_id: $CHAT_STICK_DEVICE_ID"
 echo "  reachy:    $REACHY_CONNECTION_MODE $REACHY_HOST ($REACHY_MEDIA_BACKEND media)"
 echo "  motion:    $CHAT_STICK_REACHY_MOTION"
 echo "  doa vad:   $CHAT_STICK_USE_DOA"
+echo "  faces:     $CHAT_STICK_REACHY_FACE_TRACKING"
+echo "  gestures:  $CHAT_STICK_REACHY_GESTURES"
 exec "$PY" -m reachy_chat_stick.main

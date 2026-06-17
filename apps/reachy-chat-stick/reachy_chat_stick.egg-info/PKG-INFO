@@ -7,6 +7,8 @@ Description-Content-Type: text/markdown
 Requires-Dist: numpy>=1.24
 Requires-Dist: reachy-mini<2.0.0,>=1.2.0
 Requires-Dist: websockets>=12.0
+Provides-Extra: vision
+Requires-Dist: opencv-python-headless<5.0,>=4.8; extra == "vision"
 
 ---
 tags:
@@ -32,6 +34,9 @@ Set these in the environment used by the Reachy daemon or before running directl
 ```bash
 export CHAT_STICK_SERVER_URL="http://localhost:8787"
 export CHAT_STICK_DEVICE_ID="reachy-mini"
+export REACHY_CONNECTION_MODE="localhost_only"
+export REACHY_HOST="reachy-mini.local"
+export REACHY_MEDIA_BACKEND="webrtc"
 # Optional, only if DEVICE_AUTH_TOKEN is configured on the worker:
 export CHAT_STICK_DEVICE_TOKEN="..."
 export CHAT_STICK_VOICE="Aoede"
@@ -42,11 +47,16 @@ For a Wireless robot, `CHAT_STICK_SERVER_URL` usually needs to point to your dep
 Useful tuning knobs:
 
 ```bash
-export CHAT_STICK_VAD_START_THRESHOLD="0.012"
+export CHAT_STICK_VAD_START_THRESHOLD="0.014"
 export CHAT_STICK_VAD_SILENCE_THRESHOLD="0.008"
-export CHAT_STICK_VAD_END_SILENCE_S="0.70"
+export CHAT_STICK_VAD_START_S="0.16"
+export CHAT_STICK_VAD_END_SILENCE_S="0.85"
+export CHAT_STICK_VAD_PREROLL_S="0.55"
+export CHAT_STICK_USE_DOA="true"
 export CHAT_STICK_LISTEN_WHILE_SPEAKING="false"
 export CHAT_STICK_REACHY_MOTION="true"
+export CHAT_STICK_REACHY_FACE_TRACKING="true"
+export CHAT_STICK_REACHY_GESTURES="true"
 ```
 
 ## Run Directly
@@ -54,11 +64,61 @@ export CHAT_STICK_REACHY_MOTION="true"
 From this app directory:
 
 ```bash
-uv pip install -e .
-python -m reachy_chat_stick.main
+./run.sh
+```
+
+The launcher creates/uses `.venv`, installs dependencies when needed, checks that the chat-stick server is reachable, and then starts the Reachy app.
+
+By default the launcher connects to the local Reachy daemon but forces WebRTC media:
+
+```bash
+REACHY_CONNECTION_MODE=localhost_only
+REACHY_MEDIA_BACKEND=webrtc
+```
+
+That was the combination that worked here for robot microphone/speaker audio. If the SDK reports `Using LOCAL backend`, it is using computer audio instead.
+
+Before running it, start the chat-stick server in another terminal:
+
+```bash
+cd server
+npx wrangler dev --local --port 8787
+```
+
+For a deployed worker:
+
+```bash
+CHAT_STICK_SERVER_URL="https://your-worker.example.workers.dev" ./run.sh
 ```
 
 The Reachy daemon must already be running. On Lite, that is normally on your laptop. On Wireless, run this in the robot's app environment or install it through the daemon.
+
+Robot motion, DoA VAD, face tracking, and small expressive gestures are on by default
+when using `./run.sh`. To disable them:
+
+```bash
+CHAT_STICK_REACHY_MOTION=false CHAT_STICK_REACHY_FACE_TRACKING=false CHAT_STICK_REACHY_GESTURES=false ./run.sh
+```
+
+Face tracking uses the Reachy camera through `media.get_frame()`, OpenCV's
+frontal-face detector, and the SDK's calibrated `look_at_image()` helper to aim
+the head at the detected face. The launcher installs the optional `vision`
+dependencies when `CHAT_STICK_REACHY_FACE_TRACKING=true`; for manual installs use:
+
+```bash
+python -m pip install -e '.[vision]'
+```
+
+Reachy Mini does not expose a screen or emoji face API in the SDK. The app maps
+some assistant text, punctuation, and common emoji characters to small head and
+antenna gestures instead.
+
+Use `CHAT_STICK_LOG_LEVEL=DEBUG ./run.sh` to see per-second face target updates;
+INFO logs include face tracking start, first found face, and lost face events.
+
+For missed or clipped turns, first try the defaults in this version. If you still
+need to tune, lower `CHAT_STICK_VAD_START_THRESHOLD`, shorten
+`CHAT_STICK_VAD_START_S`, or lengthen `CHAT_STICK_VAD_PREROLL_S`.
 
 ## Install Manually on Wireless
 

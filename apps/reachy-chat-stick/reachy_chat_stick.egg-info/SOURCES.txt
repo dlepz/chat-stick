@@ -6,6 +6,7 @@ reachy_chat_stick/config.py
 reachy_chat_stick/main.py
 reachy_chat_stick/runner.py
 reachy_chat_stick/timers.py
+reachy_chat_stick/vision.py
 reachy_chat_stick.egg-info/PKG-INFO
 reachy_chat_stick.egg-info/SOURCES.txt
 reachy_chat_stick.egg-info/dependency_links.txt

@@ -35,13 +35,16 @@ For a Wireless robot, `CHAT_STICK_SERVER_URL` usually needs to point to your dep
 Useful tuning knobs:
 
 ```bash
-export CHAT_STICK_VAD_START_THRESHOLD="0.020"
-export CHAT_STICK_VAD_SILENCE_THRESHOLD="0.010"
-export CHAT_STICK_VAD_START_S="0.25"
-export CHAT_STICK_VAD_END_SILENCE_S="0.70"
-export CHAT_STICK_USE_DOA="false"
+export CHAT_STICK_VAD_START_THRESHOLD="0.014"
+export CHAT_STICK_VAD_SILENCE_THRESHOLD="0.008"
+export CHAT_STICK_VAD_START_S="0.16"
+export CHAT_STICK_VAD_END_SILENCE_S="0.85"
+export CHAT_STICK_VAD_PREROLL_S="0.55"
+export CHAT_STICK_USE_DOA="true"
 export CHAT_STICK_LISTEN_WHILE_SPEAKING="false"
-export CHAT_STICK_REACHY_MOTION="false"
+export CHAT_STICK_REACHY_MOTION="true"
+export CHAT_STICK_REACHY_FACE_TRACKING="true"
+export CHAT_STICK_REACHY_GESTURES="true"
 ```
 
 ## Run Directly
@@ -78,11 +81,32 @@ CHAT_STICK_SERVER_URL="https://your-worker.example.workers.dev" ./run.sh
 
 The Reachy daemon must already be running. On Lite, that is normally on your laptop. On Wireless, run this in the robot's app environment or install it through the daemon.
 
-Robot motion is off by default. To enable a small fixed listening pose only while the app is recording:
+Robot motion, DoA VAD, face tracking, and small expressive gestures are on by default
+when using `./run.sh`. To disable them:
 
 ```bash
-CHAT_STICK_REACHY_MOTION=true ./run.sh
+CHAT_STICK_REACHY_MOTION=false CHAT_STICK_REACHY_FACE_TRACKING=false CHAT_STICK_REACHY_GESTURES=false ./run.sh
 ```
+
+Face tracking uses the Reachy camera through `media.get_frame()`, OpenCV's
+frontal-face detector, and the SDK's calibrated `look_at_image()` helper to aim
+the head at the detected face. The launcher installs the optional `vision`
+dependencies when `CHAT_STICK_REACHY_FACE_TRACKING=true`; for manual installs use:
+
+```bash
+python -m pip install -e '.[vision]'
+```
+
+Reachy Mini does not expose a screen or emoji face API in the SDK. The app maps
+some assistant text, punctuation, and common emoji characters to small head and
+antenna gestures instead.
+
+Use `CHAT_STICK_LOG_LEVEL=DEBUG ./run.sh` to see per-second face target updates;
+INFO logs include face tracking start, first found face, and lost face events.
+
+For missed or clipped turns, first try the defaults in this version. If you still
+need to tune, lower `CHAT_STICK_VAD_START_THRESHOLD`, shorten
+`CHAT_STICK_VAD_START_S`, or lengthen `CHAT_STICK_VAD_PREROLL_S`.
 
 ## Install Manually on Wireless
 

@@ -62,6 +62,14 @@ class AppConfig:
 	use_doa: bool
 	listen_while_speaking: bool
 	enable_motion: bool
+	enable_face_tracking: bool
+	enable_gestures: bool
+	face_tracking_interval_s: float
+	face_tracking_lost_s: float
+	face_tracking_yaw_gain: float
+	face_tracking_pitch_gain: float
+	face_tracking_max_yaw: float
+	face_tracking_max_pitch: float
 	log_transcripts: bool
 	timer_file: Path
 
@@ -82,16 +90,24 @@ class AppConfig:
 			reachy_port=_int_env("REACHY_PORT", 8000),
 			output_audio_rate=_int_env("CHAT_STICK_OUTPUT_AUDIO_RATE", 24000),
 			reconnect_delay_s=_float_env("CHAT_STICK_RECONNECT_DELAY_S", 2.0),
-			vad_start_threshold=_float_env("CHAT_STICK_VAD_START_THRESHOLD", 0.020),
-			vad_silence_threshold=_float_env("CHAT_STICK_VAD_SILENCE_THRESHOLD", 0.010),
-			vad_start_s=_float_env("CHAT_STICK_VAD_START_S", 0.25),
-			vad_end_silence_s=_float_env("CHAT_STICK_VAD_END_SILENCE_S", 0.70),
-			vad_min_turn_s=_float_env("CHAT_STICK_VAD_MIN_TURN_S", 0.45),
+			vad_start_threshold=_float_env("CHAT_STICK_VAD_START_THRESHOLD", 0.014),
+			vad_silence_threshold=_float_env("CHAT_STICK_VAD_SILENCE_THRESHOLD", 0.008),
+			vad_start_s=_float_env("CHAT_STICK_VAD_START_S", 0.16),
+			vad_end_silence_s=_float_env("CHAT_STICK_VAD_END_SILENCE_S", 0.85),
+			vad_min_turn_s=_float_env("CHAT_STICK_VAD_MIN_TURN_S", 0.28),
 			vad_max_turn_s=_float_env("CHAT_STICK_VAD_MAX_TURN_S", 20.0),
-			vad_preroll_s=_float_env("CHAT_STICK_VAD_PREROLL_S", 0.35),
-			use_doa=_bool_env("CHAT_STICK_USE_DOA", False),
+			vad_preroll_s=_float_env("CHAT_STICK_VAD_PREROLL_S", 0.55),
+			use_doa=_bool_env("CHAT_STICK_USE_DOA", True),
 			listen_while_speaking=_bool_env("CHAT_STICK_LISTEN_WHILE_SPEAKING", False),
-			enable_motion=_bool_env("CHAT_STICK_REACHY_MOTION", False),
+			enable_motion=_bool_env("CHAT_STICK_REACHY_MOTION", True),
+			enable_face_tracking=_bool_env("CHAT_STICK_REACHY_FACE_TRACKING", True),
+			enable_gestures=_bool_env("CHAT_STICK_REACHY_GESTURES", True),
+			face_tracking_interval_s=_float_env("CHAT_STICK_REACHY_FACE_INTERVAL_S", 0.25),
+			face_tracking_lost_s=_float_env("CHAT_STICK_REACHY_FACE_LOST_S", 1.5),
+			face_tracking_yaw_gain=_float_env("CHAT_STICK_REACHY_FACE_YAW_GAIN", 18.0),
+			face_tracking_pitch_gain=_float_env("CHAT_STICK_REACHY_FACE_PITCH_GAIN", 10.0),
+			face_tracking_max_yaw=_float_env("CHAT_STICK_REACHY_FACE_MAX_YAW", 18.0),
+			face_tracking_max_pitch=_float_env("CHAT_STICK_REACHY_FACE_MAX_PITCH", 10.0),
 			log_transcripts=_bool_env("CHAT_STICK_LOG_TRANSCRIPTS", True),
 			timer_file=Path(os.getenv("CHAT_STICK_TIMER_FILE", state_dir / "timers.json")),
 		)

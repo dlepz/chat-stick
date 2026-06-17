@@ -14,6 +14,11 @@ dependencies = [
 	"websockets>=12.0",
 ]
 
+[project.optional-dependencies]
+vision = [
+	"opencv-python-headless>=4.8,<5.0",
+]
+
 [project.entry-points."reachy_mini_apps"]
 reachy_chat_stick = "reachy_chat_stick.main:ChatStickReachyApp"
 
