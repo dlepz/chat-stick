@@ -104,13 +104,18 @@ The device also has a captive WiFi setup flow. From the menu, use `Device -> Set
 
 ```bash
 cd server
-wrangler secret put GEMINI_API_KEY
-wrangler secret put HISTORY_API_TOKEN
-wrangler secret put ADMIN_API_TOKEN      # optional
-wrangler secret put DEVICE_AUTH_TOKEN    # optional; must match firmware
+WORKER_NAME=$(npm run worker:name --silent)
+wrangler secret put GEMINI_API_KEY --name "$WORKER_NAME"
+wrangler secret put HISTORY_API_TOKEN --name "$WORKER_NAME"
+wrangler secret put ADMIN_API_TOKEN --name "$WORKER_NAME"      # optional
+wrangler secret put DEVICE_AUTH_TOKEN --name "$WORKER_NAME"    # optional; must match firmware
 wrangler d1 migrations apply DB --remote
-wrangler deploy
+npm run deploy
 ```
+
+`npm run deploy` is branch-aware: `main` and `master` deploy to `m5-live`,
+while other branches deploy to `m5-live-<branch>`. Set `WORKER_NAME` to override
+that default.
 
 After deploying, set `PRODUCTION_SERVER_ADDRESS` in the device's `src/credentials.h`, rebuild, and flash the device.
 
@@ -137,9 +142,10 @@ cd server
 # Enable Email Routing for your domain in Cloudflare and verify a destination.
 # Uncomment [[send_email]] in wrangler.toml and set destination_address.
 
-wrangler secret put EMAIL_SENDER       # e.g. chat-stick@your-domain.com
-wrangler secret put EMAIL_RECIPIENT    # verified destination address
-wrangler deploy
+WORKER_NAME=$(npm run worker:name --silent)
+wrangler secret put EMAIL_SENDER --name "$WORKER_NAME"       # e.g. chat-stick@your-domain.com
+wrangler secret put EMAIL_RECIPIENT --name "$WORKER_NAME"    # verified destination address
+npm run deploy
 ```
 
 For local development, add `EMAIL_SENDER` and `EMAIL_RECIPIENT` to `server/.dev.vars`. Mail is not delivered from `wrangler dev`; deploy to test.
@@ -235,7 +241,7 @@ Convenience scripts:
 | Script | What it does |
 | --- | --- |
 | `./flash.sh [m5-stick\|waveshare] [--monitor]` | Build firmware and upload over USB. |
-| `./deploy.sh` | Deploy the Cloudflare Worker. |
+| `./deploy.sh` | Deploy the Cloudflare Worker with branch-aware naming. |
 | `./publish-ota-release.sh [m5-stick\|waveshare]` | Bump version if needed, build firmware, and upload `firmware-v<N>.bin` to R2. |
 | `./publish.sh [m5-stick\|waveshare]` | Publish the OTA binary, then deploy the worker. |
 
