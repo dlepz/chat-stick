@@ -1755,10 +1755,23 @@ void AppController::maybeSendReadingAssistantIntro() {
       "the opening under 10 seconds.";
 
   if (!_live.sendText(prompt)) {
+    Log::client("Mode", "reading assistant intro send failed; reconnecting");
     _roleplayActive = false;
+    _readingAssistantIntroPending = true;
+    setToolTextImmediate("Reading assistant\nreconnecting...");
+    _turn.clearResponse();
+    _turn.clearPendingReset();
+    if (_wifi.isConnected()) {
+      setAppState(AppState::Connecting, "Connecting...");
+      _live.disconnect();
+      _live.connect();
+    } else {
+      setAppState(AppState::Ready, "Ready");
+    }
     return;
   }
 
+  Log::client("Mode", "reading assistant intro sent");
   _turn.beginThinking(millis());
   setAppState(AppState::Thinking, "Reading...");
 }
@@ -1775,9 +1788,22 @@ void AppController::maybeSendQuizIntro() {
           "For this conversation, become Quiz Masters: a cheerful, "
           "kid-friendly nature quiz host. Ask one short question at a time, "
           "wait for the child's answer, give kind hints, and keep it fun.")) {
+    Log::client("Mode", "quiz intro send failed; reconnecting");
+    _roleplayActive = false;
+    _quizIntroPending = true;
+    _turn.clearResponse();
+    _turn.clearPendingReset();
+    if (_wifi.isConnected()) {
+      setAppState(AppState::Connecting, "Connecting...");
+      _live.disconnect();
+      _live.connect();
+    } else {
+      setAppState(AppState::Ready, "Ready");
+    }
     return;
   }
 
+  Log::client("Mode", "quiz intro sent");
   _turn.beginThinking(millis());
   setAppState(AppState::Thinking, "Starting quiz...");
 }

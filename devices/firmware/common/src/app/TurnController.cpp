@@ -39,6 +39,10 @@ void TurnController::beginRecording(unsigned long nowMs) {
 }
 
 void TurnController::beginThinking(unsigned long nowMs) {
+  _complete = false;
+  _turnCompleteSeen = false;
+  _hasAudio = false;
+  _hasResponseContent = false;
   _pendingReset = true;
   _thinkingStartMs = nowMs;
 }
