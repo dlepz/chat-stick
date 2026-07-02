@@ -859,15 +859,20 @@ void AppController::handleChatButtons() {
     _powerManager.registerActivity();
     completeToolTextReveal();
     const int pageCount = currentBodyPageCount();
-    if (pageCount > 1 && _bodyPageIndex < pageCount - 1) {
-      _bodyPageIndex++;
+    const bool practiceActionsAvailable =
+        _roleplayActive || _voiceMode == "quiz_masters";
+    if (pageCount > 1) {
+      if (practiceActionsAvailable && _bodyPageIndex >= pageCount - 1) {
+        openMenu(MenuState::RoleplayActions);
+        return;
+      }
+      _bodyPageIndex = (_bodyPageIndex + 1) % pageCount;
       _screenDirty = true;
       return;
     }
 
     if (_appState != AppState::Recording && _appState != AppState::Error &&
-        (!_toolText.isEmpty() || _imagePresent || _roleplayActive ||
-         _voiceMode == "quiz_masters")) {
+        practiceActionsAvailable) {
       openMenu(MenuState::RoleplayActions);
       return;
     }
