@@ -23,6 +23,10 @@ server/wrangler.local.toml
 # Node
 node_modules/
 
+# Python
+.venv/
+__pycache__/
+
 # OS
 .DS_Store
 Thumbs.db
