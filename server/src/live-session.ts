@@ -138,6 +138,7 @@ export class LiveSession {
 	private static readonly MIN_RECONNECT_MS = 1500
 	private static readonly IDLE_CLOSE_MS = 120_000
 	private static readonly MAX_QUEUED_AUDIO_BYTES = 1_000_000
+	private static readonly MAX_QUEUED_TEXT_INPUTS = 8
 	private state: DurableObjectState
 	private env: Env
 	private deviceWs: WebSocket | null = null
@@ -167,6 +168,7 @@ export class LiveSession {
 	private currentTurnDebugDroppedBytes = 0
 	private queuedAudioChunks: ArrayBuffer[] = []
 	private queuedAudioBytes = 0
+	private queuedTextInputs: string[] = []
 	private pendingStopAfterGeminiReady = false
 	private pendingActivityStartAfterGeminiReady = false
 	private activityOpen = false
@@ -493,6 +495,36 @@ export class LiveSession {
 		}
 	}
 
+	private queueTextInput(content: string) {
+		const text = content.trim()
+		if (!text) return
+		while (this.queuedTextInputs.length >= LiveSession.MAX_QUEUED_TEXT_INPUTS) {
+			this.queuedTextInputs.shift()
+		}
+		this.queuedTextInputs.push(text)
+		console.log(`[Bridge] Queued text input until Gemini ready (${this.queuedTextInputs.length})`)
+		this.ensureGeminiSession()
+	}
+
+	private sendTextInputToGemini(content: string): boolean {
+		const text = content.trim()
+		if (!text || !this.gemini.isReady) return false
+		this.gemini.send(buildGeminiRealtimeTextPayload(text))
+		return true
+	}
+
+	private flushQueuedTextInputsToGemini() {
+		if (!this.gemini.isReady || this.queuedTextInputs.length === 0) {
+			return
+		}
+		const inputs = this.queuedTextInputs
+		this.queuedTextInputs = []
+		console.log(`[Bridge] Flushing ${inputs.length} queued text input(s)`)
+		for (const input of inputs) {
+			this.sendTextInputToGemini(input)
+		}
+	}
+
 	private sendActivityStartToGemini(): boolean {
 		if (!this.gemini.isReady) return false
 		if (this.activityOpen) return true
@@ -617,10 +649,12 @@ export class LiveSession {
 				}
 
 				// Forward text input to Gemini
-				if (msg.type === 'text' && msg.content && this.gemini.isReady) {
-					this.sendActivityStartToGemini()
-					this.gemini.send(buildGeminiRealtimeTextPayload(msg.content))
-					this.sendActivityEndToGemini()
+				if (msg.type === 'text' && msg.content) {
+					if (this.gemini.isReady) {
+						this.sendTextInputToGemini(String(msg.content))
+					} else {
+						this.queueTextInput(String(msg.content))
+					}
 				}
 
 				if (msg.type === 'stop') {
@@ -685,6 +719,7 @@ export class LiveSession {
 				this.sendActivityStartToGemini()
 			}
 			this.sendToDevice({ type: 'ready' })
+			this.flushQueuedTextInputsToGemini()
 			this.flushQueuedAudioToGemini()
 			if (this.pendingStopAfterGeminiReady) {
 				this.pendingStopAfterGeminiReady = false
@@ -1793,6 +1828,7 @@ export class LiveSession {
 		this.resetCurrentTurnMetrics()
 		this.queuedAudioChunks = []
 		this.queuedAudioBytes = 0
+		this.queuedTextInputs = []
 		this.pendingStopAfterGeminiReady = false
 		this.pendingActivityStartAfterGeminiReady = false
 		this.activityOpen = false
