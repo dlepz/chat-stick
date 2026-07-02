@@ -51,6 +51,14 @@ import {
 import { handleDocsSearchTool } from './docs-tool'
 import { handleEmailTool } from './email-tool'
 import { type WebFetchArgs, fetchWebPage } from './web-fetch'
+import {
+	GEMINI_LIVE_MODEL,
+	buildGeminiActivityStartPayload,
+	buildGeminiAudioStreamEndPayload,
+	buildGeminiRealtimeAudioPayload,
+	buildGeminiRealtimeTextPayload,
+	openGeminiLiveWebSocket,
+} from './gemini-live'
 
 interface Env extends EmailEnv, DebugAudioEnv {
 	GEMINI_API_KEY: string
@@ -303,9 +311,6 @@ export class LiveSession {
 			this.geminiReady = false
 		}
 
-		const url =
-			'https://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent' +
-			`?key=${this.env.GEMINI_API_KEY}`
 		const userInstructions = await this.getUserInstructionsForPrompt()
 		this.sessionResumptionHandle = await this.loadSessionResumptionHandle()
 		this.pendingInitialHistoryTurns = this.sessionResumptionHandle
@@ -314,11 +319,7 @@ export class LiveSession {
 		this.activityOpen = false
 
 		try {
-			const resp = await fetch(url, {
-				headers: { Upgrade: 'websocket' },
-			})
-
-			const ws = resp.webSocket
+			const ws = await openGeminiLiveWebSocket(this.env.GEMINI_API_KEY)
 			if (!ws) {
 				this.geminiConnecting = false
 				console.error('[Gemini] WebSocket upgrade failed')
@@ -403,7 +404,7 @@ export class LiveSession {
 			})
 
 			const setup: Record<string, unknown> = {
-				model: 'models/gemini-3.1-flash-live-preview',
+				model: GEMINI_LIVE_MODEL,
 				generationConfig: {
 					responseModalities: ['AUDIO'],
 					speechConfig: {
@@ -1140,11 +1141,7 @@ export class LiveSession {
 	private sendActivityStartToGemini(): boolean {
 		if (!this.geminiWs || !this.geminiReady) return false
 		if (this.activityOpen) return true
-		this.geminiWs.send(
-			JSON.stringify({
-				realtimeInput: { activityStart: {} },
-			}),
-		)
+		this.geminiWs.send(buildGeminiActivityStartPayload())
 		this.activityOpen = true
 		console.log('[Bridge] Sent activityStart')
 		return true
@@ -1153,13 +1150,9 @@ export class LiveSession {
 	private sendActivityEndToGemini(): boolean {
 		if (!this.geminiWs || !this.geminiReady) return false
 		if (!this.activityOpen) return true
-		this.geminiWs.send(
-			JSON.stringify({
-				realtimeInput: { activityEnd: {} },
-			}),
-		)
+		this.geminiWs.send(buildGeminiAudioStreamEndPayload())
 		this.activityOpen = false
-		console.log('[Bridge] Sent activityEnd')
+		console.log('[Bridge] Sent audioStreamEnd')
 		return true
 	}
 
@@ -1172,16 +1165,7 @@ export class LiveSession {
 		}
 
 		const base64 = arrayBufferToBase64(data)
-		this.geminiWs.send(
-			JSON.stringify({
-				realtimeInput: {
-					audio: {
-						data: base64,
-						mimeType: 'audio/pcm;rate=16000',
-					},
-				},
-			}),
-		)
+		this.geminiWs.send(buildGeminiRealtimeAudioPayload(base64))
 		return true
 	}
 
@@ -1280,11 +1264,7 @@ export class LiveSession {
 				// Forward text input to Gemini
 				if (msg.type === 'text' && msg.content && this.geminiWs && this.geminiReady) {
 					this.sendActivityStartToGemini()
-					this.geminiWs.send(
-						JSON.stringify({
-							realtimeInput: { text: msg.content },
-						}),
-					)
+					this.geminiWs.send(buildGeminiRealtimeTextPayload(msg.content))
 					this.sendActivityEndToGemini()
 				}
 

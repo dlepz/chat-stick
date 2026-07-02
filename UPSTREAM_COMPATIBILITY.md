@@ -38,6 +38,8 @@ an older divergent shape that deletes the Reachy app, removes the current
     visual prompts while preserving D1/R2 image history and recall
   - Gemini tool response payload construction is centralized for extracted
     server-side tools
+  - Gemini Live websocket URL/model and realtime audio/text/end payloads are
+    centralized, with push-to-talk stop using `audioStreamEnd`
   - canonical aliases for `user-instructions.md`
   - D1 write verification for file tools
 - Setup hygiene:
