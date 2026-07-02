@@ -315,7 +315,10 @@ void WiFiService::rememberNetwork(const String &ssid, const String &password,
     }
   }
 
-  SavedNetwork network{ssid, password, label};
+  SavedNetwork network;
+  network.ssid = ssid;
+  network.password = password;
+  network.label = label;
   if (network.label.isEmpty()) {
     network.label = "Saved";
   }

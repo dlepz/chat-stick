@@ -9,6 +9,7 @@ void SettingsStore::init() {
   _useExternalSpeaker = false;
   _externalSpeakerGain = kDefaultExternalGain;
   _voice = kDefaultVoice;
+  _voiceMode = "assistant";
   _serverEndpointIndex = 0;
   _pendingFirmwareUpdate = false;
   _pendingFirmwareVersion = 0;
@@ -29,6 +30,10 @@ void SettingsStore::init() {
       static_cast<int>(_prefs.getUChar(kExternalGainKey, kDefaultExternalGain)),
       kMinExternalGain, kMaxExternalGain);
   _voice = _prefs.getString(kVoiceKey, kDefaultVoice);
+  _voiceMode = _prefs.getString(kVoiceModeKey, "assistant");
+  if (_voiceMode != "quiz_masters") {
+    _voiceMode = "assistant";
+  }
   _serverEndpointIndex =
       max(0, static_cast<int>(_prefs.getInt(kServerEndpointKey, 0)));
   _pendingFirmwareUpdate = _prefs.getBool(kFirmwarePendingKey, false);
@@ -45,11 +50,11 @@ void SettingsStore::init() {
   }
 
   Serial.printf("[Settings] Loaded brightness=%d volume=%d chat=%s "
-                "ext_spk=%d gain=%d voice=%s server=%d pending_fw=%d:%d\n",
+                "ext_spk=%d gain=%d voice=%s mode=%s server=%d pending_fw=%d:%d\n",
                 _brightness, _volume,
                 _chatId.isEmpty() ? "(none)" : _chatId.c_str(),
                 _useExternalSpeaker ? 1 : 0, _externalSpeakerGain,
-                _voice.c_str(), _serverEndpointIndex,
+                _voice.c_str(), _voiceMode.c_str(), _serverEndpointIndex,
                 _pendingFirmwareUpdate ? 1 : 0, _pendingFirmwareVersion);
 }
 
@@ -103,6 +108,13 @@ void SettingsStore::setVoice(const String &voice) {
   }
 }
 
+void SettingsStore::setVoiceMode(const String &voiceMode) {
+  _voiceMode = voiceMode == "quiz_masters" ? "quiz_masters" : "assistant";
+  if (_ready) {
+    _prefs.putString(kVoiceModeKey, _voiceMode);
+  }
+}
+
 void SettingsStore::setServerEndpointIndex(int endpointIndex) {
   _serverEndpointIndex = max(0, endpointIndex);
   if (_ready) {
@@ -145,6 +157,7 @@ void SettingsStore::reset() {
   _useExternalSpeaker = false;
   _externalSpeakerGain = kDefaultExternalGain;
   _voice = kDefaultVoice;
+  _voiceMode = "assistant";
   _serverEndpointIndex = 0;
   _pendingFirmwareUpdate = false;
   _pendingFirmwareVersion = 0;

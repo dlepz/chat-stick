@@ -143,6 +143,26 @@ struct FirmwareUpdateInfo {
 };
 
 /**
+ * @brief Learning resource row returned by the device resource browser.
+ */
+struct LearningResourceSummary {
+  String resourceId;
+  String title;
+  String subtitle;
+  String source;
+  String level;
+};
+
+/**
+ * @brief Flashcard row returned by the device inbox review endpoint.
+ */
+struct InboxFlashcardSummary {
+  String id;
+  String front;
+  String back;
+};
+
+/**
  * @brief Maintains the device-side WebSocket session with the chat server.
  */
 class LiveSessionService {
@@ -181,6 +201,12 @@ public:
   void setVoice(const String &voice) { _voice = voice; }
 
   /**
+   * @brief Update the selected voice/persona mode sent with connections.
+   * @param voiceMode "assistant" or "quiz_masters".
+   */
+  void setVoiceMode(const String &voiceMode) { _voiceMode = voiceMode; }
+
+  /**
    * @brief Prefer a server endpoint for the next connection attempt.
    * @param endpointIndex Index into SERVER_ENDPOINTS.
    */
@@ -188,6 +214,9 @@ public:
 
   /// Current selected voice identifier.
   const String &voice() const { return _voice; }
+
+  /// Current selected voice/persona mode.
+  const String &voiceMode() const { return _voiceMode; }
 
   /// Whether the live session is currently connected.
   bool isConnected() const { return _connected; }
@@ -216,6 +245,13 @@ public:
   bool sendAudio(const int16_t *data, size_t len);
 
   /**
+   * @brief Send a text prompt into the active live session.
+   * @param content Prompt text.
+   * @return True when the text frame was queued to the socket.
+   */
+  bool sendText(const String &content);
+
+  /**
    * @brief Fetch the last assistant message for session restore.
    * @param outMessage Receives the last assistant message.
    * @return True on success.
@@ -238,6 +274,28 @@ public:
    * @return True on successful request parsing.
    */
   bool checkFirmwareUpdate(FirmwareUpdateInfo &outInfo);
+
+  /**
+   * @brief Fetch German learning resources for the device menu.
+   */
+  bool fetchLearningResources(const String &source, const String &query,
+                              LearningResourceSummary outEntries[],
+                              int maxEntries, int &outCount);
+
+  /**
+   * @brief Fetch due or all saved flashcards for on-device review.
+   */
+  bool fetchInboxFlashcards(const String &mode,
+                            InboxFlashcardSummary outEntries[], int maxEntries,
+                            int &outCount, int &outDue, int &outTotal);
+
+  /**
+   * @brief Grade one inbox flashcard after review.
+   * @param cardId Flashcard identifier.
+   * @param grade "good" or "again".
+   * @return True when the server accepted the grade.
+   */
+  bool gradeInboxFlashcard(const String &cardId, const String &grade);
 
   /**
    * @brief Download and apply an OTA firmware update.
@@ -298,6 +356,9 @@ private:
 
   /// Current selected voice identifier.
   String _voice;
+
+  /// Current selected voice/persona mode.
+  String _voiceMode = "assistant";
 
   /// Whether the WebSocket is currently connected.
   bool _connected = false;

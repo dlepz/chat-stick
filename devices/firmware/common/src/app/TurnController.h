@@ -42,6 +42,9 @@ public:
   /// Mark that response audio has arrived for this turn.
   void noteAudioReceived();
 
+  /// Mark that text, image, or tool content has arrived for this turn.
+  void noteResponseContent();
+
   /// Clear response flags for interrupted, ignored, or completed playback.
   void clearResponse();
 
@@ -50,6 +53,9 @@ public:
 
   /// Whether the current turn has produced response audio.
   bool hasAudio() const { return _hasAudio; }
+
+  /// Whether the current turn has produced any visible/audible content.
+  bool hasResponseContent() const { return _hasResponseContent; }
 
   /// Cancel delayed cleanup of the previous tool/image body.
   void clearPendingReset();
@@ -88,6 +94,9 @@ private:
 
   /// Whether the current assistant turn has produced audio.
   bool _hasAudio = false;
+
+  /// Whether the current turn has produced text, image, tool, or audio content.
+  bool _hasResponseContent = false;
 
   /// Whether turn-completion cleanup is deferred until response content arrives.
   bool _pendingReset = false;

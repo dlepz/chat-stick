@@ -13,15 +13,19 @@ unsigned long lastPm1PollMs = 0;
 uint8_t currentBrightness = DEFAULT_BRIGHTNESS;
 m5pm1_pwr_src_t currentPowerSource = M5PM1_PWR_SRC_UNKNOWN;
 
-const DeviceCapabilities kCapabilities = {.externalSpeakerSwitch = true,
-                                          .externalSpeakerGain = true,
-                                          .lightSleep = false,
-                                          .batteryLevel = true,
-                                          .batteryVoltage = true,
-                                          .usbPowerStatus = true,
-                                          .endpointPreference = false,
-                                          .bootDisplay = false,
-                                          .debugDisplay = false};
+const DeviceCapabilities kCapabilities = []() {
+  DeviceCapabilities caps;
+  caps.externalSpeakerSwitch = true;
+  caps.externalSpeakerGain = true;
+  caps.lightSleep = false;
+  caps.batteryLevel = true;
+  caps.batteryVoltage = true;
+  caps.usbPowerStatus = true;
+  caps.endpointPreference = false;
+  caps.bootDisplay = false;
+  caps.debugDisplay = false;
+  return caps;
+}();
 
 const char *sourceLabel(m5pm1_pwr_src_t source) {
   switch (source) {

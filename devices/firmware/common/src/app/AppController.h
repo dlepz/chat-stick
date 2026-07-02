@@ -31,7 +31,7 @@ private:
   /**
    * @brief High-level screen region currently being rendered.
    */
-  enum class AppRegion { Initializing, Chat, Menu };
+  enum class AppRegion { Initializing, Chat, Menu, Review };
 
   /**
    * @brief Categories of user-visible error states.
@@ -47,7 +47,19 @@ private:
   /**
    * @brief Menu screens available from the UI overlay.
    */
-  enum class MenuState { Home, Device, ResumeChat, Updates };
+  enum class MenuState {
+    Home,
+    Modes,
+    Device,
+    ResumeChat,
+    Updates,
+    Lessons,
+    Readers,
+    Roleplays,
+    RoleplayStart,
+    RoleplayActions,
+    Inbox,
+  };
 
   /**
    * @brief Async loading status for menu screens backed by network requests.
@@ -101,6 +113,12 @@ private:
   /// Maximum number of conversation history entries retained locally.
   static constexpr int kMaxConversationHistory = 10;
 
+  /// Maximum number of learning resources shown in the device menu.
+  static constexpr int kMaxLearningResources = 8;
+
+  /// Maximum number of flashcards fetched for one inbox review session.
+  static constexpr int kMaxInboxFlashcards = 20;
+
   /// Stack size used by short-lived menu fetch tasks.
   static constexpr uint32_t kMenuFetchTaskStack = 8192;
 
@@ -127,6 +145,9 @@ private:
 
   /// Active conversation id.
   String _chatId;
+
+  /// Active German assistant/persona mode.
+  String _voiceMode = "assistant";
 
   /// Most recent tool-generated body text.
   String _toolText;
@@ -170,6 +191,15 @@ private:
   /// Whether an image is currently available for the body area.
   bool _imagePresent = false;
 
+  /// Whether the current conversation is a lesson, reader, roleplay, or quiz.
+  bool _roleplayActive = false;
+
+  /// Whether the quiz persona should be introduced once connected.
+  bool _quizIntroPending = false;
+
+  /// Whether the German reading assistant should greet the learner.
+  bool _readingAssistantIntroPending = true;
+
   /// Whether the screen contents need a fresh render.
   bool _screenDirty = true;
 
@@ -212,6 +242,30 @@ private:
   /// Number of loaded conversation history entries.
   int _historyCount = 0;
 
+  /// Number of loaded German learning resources.
+  int _learningResourceCount = 0;
+
+  /// Selected roleplay resource waiting on the begin screen.
+  int _selectedLearningResourceIndex = -1;
+
+  /// Number of flashcards loaded for inbox review.
+  int _inboxCardCount = 0;
+
+  /// Current flashcard index while reviewing the inbox.
+  int _inboxIndex = 0;
+
+  /// Due flashcard count returned by the server.
+  int _inboxDueCount = 0;
+
+  /// Total flashcard count returned by the server.
+  int _inboxTotalCount = 0;
+
+  /// Whether the current inbox card back is visible.
+  bool _inboxShowingBack = false;
+
+  /// Inbox review filter: "due" or "all".
+  String _inboxMode = "due";
+
   /// Current load status for the resume-chat menu.
   MenuLoadStatus _historyLoadStatus = MenuLoadStatus::Idle;
 
@@ -244,6 +298,12 @@ private:
 
   /// Cached conversation history for the resume-chat menu.
   ConversationSummary _history[kMaxConversationHistory];
+
+  /// Cached German learning resources for lessons/readers/roleplays menus.
+  LearningResourceSummary _learningResources[kMaxLearningResources];
+
+  /// Cached flashcards for inbox review.
+  InboxFlashcardSummary _inboxCards[kMaxInboxFlashcards];
 
   /// Background task result buffer for conversation history.
   ConversationSummary _historyFetchResults[kMaxConversationHistory];
@@ -443,6 +503,9 @@ private:
   /// Handle buttons while in the chat screen.
   void handleChatButtons();
 
+  /// Handle buttons while reviewing flashcards.
+  void handleReviewButtons();
+
   /// Handle buttons while a menu is open.
   void handleMenuButtons();
 
@@ -503,6 +566,12 @@ private:
   /// Close the menu overlay and return to chat.
   void closeMenu();
 
+  /// Save a useful recent German exchange as a flashcard.
+  void saveFlashcardFromRoleplay();
+
+  /// Leave a roleplay/quiz mode and reconnect to the normal German assistant.
+  void returnToHomeChat();
+
   /// Navigate one level back from the current menu screen.
   void navigateBackFromMenu();
 
@@ -524,6 +593,27 @@ private:
   /// Load conversation history for the resume-chat menu.
   void startConversationHistoryLoad();
 
+  /// Load one of the German learning resource menus.
+  void loadLearningResourceMenu(MenuState targetState);
+
+  /// Start a selected lesson, reader, or roleplay.
+  void startLearningResource(int index);
+
+  /// Open the flashcard inbox menu.
+  void openInboxMenu();
+
+  /// Fetch flashcards and enter inbox review.
+  void startInboxReview(const String &mode);
+
+  /// Leave inbox review.
+  void exitInboxReview();
+
+  /// Advance to the next inbox card or finish review.
+  void advanceInboxCard();
+
+  /// Grade the current inbox card and advance.
+  void gradeCurrentInboxCard(const String &grade);
+
   /// Background worker body for conversation history fetches.
   void conversationHistoryLoadTask();
 
@@ -538,6 +628,18 @@ private:
 
   /// Start a new blank conversation.
   void startFreshConversation();
+
+  /// Switch between the normal German assistant and Quiz Masters.
+  void switchVoiceMode(const String &voiceMode);
+
+  /// Send the initial German reading assistant prompt when needed.
+  void maybeSendReadingAssistantIntro();
+
+  /// Send the initial Quiz Masters prompt when needed.
+  void maybeSendQuizIntro();
+
+  /// Human-readable current mode label.
+  String voiceModeLabel() const;
 
   /// Switch into WiFi provisioning mode.
   void startCaptivePortalFlow();

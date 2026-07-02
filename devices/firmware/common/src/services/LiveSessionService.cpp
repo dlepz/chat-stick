@@ -317,12 +317,15 @@ void LiveSessionService::connect() {
   const String path = String(SERVER_PATH) + "?device_id=" + DEVICE_ID;
   const String chatQuery = _chatId.isEmpty() ? "" : "&chat_id=" + _chatId;
   const String voiceQuery = _voice.isEmpty() ? "" : "&voice=" + _voice;
+  const String voiceModeQuery =
+      _voiceMode.isEmpty() ? "" : "&mode=" + _voiceMode;
   // Tell the server what pixel size to dither generated images to. Different
   // devices have different display sizes; see IMAGE_TARGET_* in Config.h.
   const String imageSizeQuery =
       "&image_w=" + String(IMAGE_TARGET_WIDTH) +
       "&image_h=" + String(IMAGE_TARGET_HEIGHT);
-  const String fullPath = path + chatQuery + voiceQuery + imageSizeQuery;
+  const String fullPath =
+      path + chatQuery + voiceQuery + voiceModeQuery + imageSizeQuery;
   const String host = endpointHostForConnection(endpoint);
   const char *scheme = wsSchemeForEndpoint(endpoint);
 
@@ -461,6 +464,20 @@ bool LiveSessionService::sendAudio(const int16_t *data, size_t len) {
 }
 
 /**
+ * @brief Send a text prompt into the active Gemini live session.
+ * @param content Prompt text.
+ * @return True when the WebSocket accepted the frame.
+ */
+bool LiveSessionService::sendText(const String &content) {
+  JsonDocument doc;
+  doc["type"] = "text";
+  doc["content"] = content;
+  String payload;
+  serializeJson(doc, payload);
+  return _ws.send(payload);
+}
+
+/**
  * @brief Fetch the last assistant message for the current chat from the server.
  * @param outMessage Receives the last assistant message text.
  * @return True when a message was retrieved.
@@ -559,6 +576,188 @@ bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries
         }
         return HttpGetDecision::Success;
       });
+}
+
+
+/**
+ * @brief Fetch learning resources from the server's German resource index.
+ */
+bool LiveSessionService::fetchLearningResources(
+    const String &source, const String &query,
+    LearningResourceSummary outEntries[], int maxEntries, int &outCount) {
+  outCount = 0;
+  if (maxEntries <= 0) {
+    return false;
+  }
+
+  String encodedQuery = query;
+  encodedQuery.replace(" ", "%20");
+  encodedQuery.replace("&", "%26");
+
+  return getFromConfiguredEndpoints(
+      "fetching learning resources from",
+      [this, source, encodedQuery, maxEntries](const ServerEndpoint &endpoint) {
+        String url = endpointBaseUrl(endpoint) +
+                     "/device/learning-resources?device_id=" + DEVICE_ID +
+                     "&limit=" + String(maxEntries) + "&q=" + encodedQuery;
+        if (!source.isEmpty()) {
+          url += "&source=" + source;
+        }
+        return url;
+      },
+      [this, outEntries, maxEntries, &outCount](
+          const HttpGetResponse &response) {
+        if (response.statusCode != 200 || response.body.isEmpty()) {
+          logClient("HTTP", "learning resources failed status=%d",
+                    response.statusCode);
+          return HttpGetDecision::Continue;
+        }
+
+        JsonDocument doc;
+        if (deserializeJson(doc, response.body)) {
+          logClient("HTTP", "learning resources invalid JSON");
+          return HttpGetDecision::Continue;
+        }
+
+        JsonArray rows = doc["results"].as<JsonArray>();
+        for (JsonVariant row : rows) {
+          if (outCount >= maxEntries) {
+            break;
+          }
+          outEntries[outCount].resourceId = row["resource_id"] | "";
+          outEntries[outCount].title = row["title"] | "Untitled";
+          outEntries[outCount].subtitle = row["subtitle"] | "";
+          outEntries[outCount].source = row["source"] | "";
+          outEntries[outCount].level = row["level"] | "";
+          if (!outEntries[outCount].resourceId.isEmpty()) {
+            outCount++;
+          }
+        }
+        return HttpGetDecision::Success;
+      });
+}
+
+/**
+ * @brief Fetch saved flashcards for the on-device inbox reviewer.
+ */
+bool LiveSessionService::fetchInboxFlashcards(const String &mode,
+                                              InboxFlashcardSummary outEntries[],
+                                              int maxEntries, int &outCount,
+                                              int &outDue, int &outTotal) {
+  outCount = 0;
+  outDue = 0;
+  outTotal = 0;
+  if (maxEntries <= 0) {
+    return false;
+  }
+
+  const String safeMode = mode == "all" ? "all" : "due";
+
+  return getFromConfiguredEndpoints(
+      "fetching inbox flashcards from",
+      [this, safeMode, maxEntries](const ServerEndpoint &endpoint) {
+        return endpointBaseUrl(endpoint) +
+               "/device/flashcards/inbox?device_id=" + DEVICE_ID +
+               "&mode=" + safeMode + "&limit=" + String(maxEntries);
+      },
+      [this, outEntries, maxEntries, &outCount, &outDue, &outTotal](
+          const HttpGetResponse &response) {
+        if (response.statusCode != 200 || response.body.isEmpty()) {
+          logClient("HTTP", "inbox fetch failed status=%d",
+                    response.statusCode);
+          return HttpGetDecision::Continue;
+        }
+
+        JsonDocument doc;
+        if (deserializeJson(doc, response.body)) {
+          logClient("HTTP", "inbox response invalid JSON");
+          return HttpGetDecision::Continue;
+        }
+
+        outDue = doc["counts"]["due"] | 0;
+        outTotal = doc["counts"]["total"] | 0;
+
+        JsonArray rows = doc["cards"].as<JsonArray>();
+        for (JsonVariant row : rows) {
+          if (outCount >= maxEntries) {
+            break;
+          }
+          const char *id = row["id"];
+          const char *front = row["front"];
+          const char *back = row["back"];
+          if (!id || !front || !back) {
+            continue;
+          }
+          outEntries[outCount].id = id;
+          outEntries[outCount].front = front;
+          outEntries[outCount].back = back;
+          outCount++;
+        }
+        return HttpGetDecision::Success;
+      });
+}
+
+/**
+ * @brief Grade one reviewed flashcard through the device API.
+ */
+bool LiveSessionService::gradeInboxFlashcard(const String &cardId,
+                                             const String &grade) {
+  if (cardId.isEmpty()) {
+    return false;
+  }
+
+  const String safeGrade = grade == "good" ? "good" : "again";
+  JsonDocument req;
+  req["device_id"] = DEVICE_ID;
+  req["card_id"] = cardId;
+  req["grade"] = safeGrade;
+  String payload;
+  serializeJson(req, payload);
+
+  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
+    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
+    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
+    const String url = endpointBaseUrl(endpoint) + "/device/flashcards/grade";
+
+    logClient("HTTP", "grading flashcard %s=%s via %s", cardId.c_str(),
+              safeGrade.c_str(), url.c_str());
+
+    int statusCode = -1;
+    HTTPClient http;
+    http.setTimeout(kHttpGetTimeoutMs);
+    if (urlUsesHttps(url)) {
+      WiFiClientSecure client;
+      if (endpoint.ca_cert) {
+        client.setCACert(endpoint.ca_cert);
+      } else {
+        client.setInsecure();
+      }
+      if (!http.begin(client, url)) {
+        continue;
+      }
+      http.addHeader("Content-Type", "application/json");
+      addDeviceAuthHeader(http);
+      statusCode = http.POST(payload);
+      http.end();
+    } else {
+      WiFiClient client;
+      if (!http.begin(client, url)) {
+        continue;
+      }
+      http.addHeader("Content-Type", "application/json");
+      addDeviceAuthHeader(http);
+      statusCode = http.POST(payload);
+      http.end();
+    }
+
+    if (statusCode == HTTP_CODE_OK) {
+      rememberSuccessfulEndpoint(index);
+      return true;
+    }
+    logClient("HTTP", "grade flashcard failed status=%d", statusCode);
+  }
+
+  return false;
 }
 
 /**

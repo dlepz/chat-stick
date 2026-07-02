@@ -91,8 +91,12 @@ void AppController::setup() {
     _settings.clearChatId();
   }
   _chatId = "";
+  _voiceMode = _settings.voiceMode();
+  _readingAssistantIntroPending = _voiceMode == "assistant";
+  _quizIntroPending = _voiceMode == "quiz_masters";
   _live.setChatId("");
   _live.setVoice(_settings.voice());
+  _live.setVoiceMode(_voiceMode);
   if (Board::capabilities().endpointPreference) {
     _live.setPreferredEndpointIndex(_settings.serverEndpointIndex());
   }
@@ -158,6 +162,7 @@ void AppController::setup() {
     _screenDirty = true;
   };
   callbacks.onShowText = [this](const String &text) {
+    _turn.noteResponseContent();
     _turn.clearPendingReset();
     startToolTextReveal(text);
   };
@@ -179,6 +184,7 @@ void AppController::setup() {
   callbacks.onShowImage = [this, applyPendingTurnReset](
                               const uint8_t *packed, size_t packedLen,
                               int width, int height) {
+    _turn.noteResponseContent();
     applyPendingTurnReset();
     if (_display.setImage(packed, packedLen, width, height)) {
       _imagePresent = true;
@@ -187,6 +193,7 @@ void AppController::setup() {
     }
   };
   callbacks.onShowImageFailed = [this]() {
+    _turn.noteResponseContent();
     if (_imagePresent) {
       _display.clearImage();
       _imagePresent = false;
@@ -199,6 +206,7 @@ void AppController::setup() {
     if (source != "model") {
       return;
     }
+    _turn.noteResponseContent();
     applyPendingTurnReset();
     const String basis =
         _toolTextRevealTarget.isEmpty() ? _toolText : _toolTextRevealTarget;
@@ -286,10 +294,12 @@ void AppController::setup() {
   callbacks.onPowerTimeouts =
       [this](unsigned long dimMs, unsigned long screenOffMs,
              unsigned long lightSleepMs, unsigned long powerOffMs) {
-        _powerManager.setTimeouts({.dimMs = dimMs,
-                                   .screenOffMs = screenOffMs,
-                                   .lightSleepMs = lightSleepMs,
-                                   .powerOffMs = powerOffMs});
+        PowerTimeouts timeouts;
+        timeouts.dimMs = dimMs;
+        timeouts.screenOffMs = screenOffMs;
+        timeouts.lightSleepMs = lightSleepMs;
+        timeouts.powerOffMs = powerOffMs;
+        _powerManager.setTimeouts(timeouts);
       };
   callbacks.getDeviceStatusJson = [this]() { return deviceStatusJson(); };
   callbacks.onVoiceChanged = [this](const String &voice) {
@@ -445,6 +455,8 @@ void AppController::handleInternetReady() {
   }
 
   setAppState(AppState::Ready, "Ready");
+  maybeSendReadingAssistantIntro();
+  maybeSendQuizIntro();
   startAutomaticFirmwareUpdateCheck();
 }
 
@@ -807,6 +819,11 @@ void AppController::handleButtons() {
     return;
   }
 
+  if (_appRegion == AppRegion::Review) {
+    handleReviewButtons();
+    return;
+  }
+
   handleChatButtons();
 }
 
@@ -829,7 +846,12 @@ void AppController::handleChatButtons() {
 
   if (_buttonB.consumeHoldStart() && _appState != AppState::Recording) {
     completeToolTextReveal();
-    openMenu(_appState == AppState::Error ? MenuState::Device : MenuState::Home);
+    if (_roleplayActive || _voiceMode == "quiz_masters") {
+      returnToHomeChat();
+    } else {
+      openMenu(_appState == AppState::Error ? MenuState::Device
+                                             : MenuState::Home);
+    }
     return;
   }
 
@@ -837,9 +859,20 @@ void AppController::handleChatButtons() {
     _powerManager.registerActivity();
     completeToolTextReveal();
     const int pageCount = currentBodyPageCount();
-    if (pageCount > 1) {
-      _bodyPageIndex = (_bodyPageIndex + 1) % pageCount;
-    } else if (!_toolText.isEmpty() || _imagePresent) {
+    if (pageCount > 1 && _bodyPageIndex < pageCount - 1) {
+      _bodyPageIndex++;
+      _screenDirty = true;
+      return;
+    }
+
+    if (_appState != AppState::Recording && _appState != AppState::Error &&
+        (!_toolText.isEmpty() || _imagePresent || _roleplayActive ||
+         _voiceMode == "quiz_masters")) {
+      openMenu(MenuState::RoleplayActions);
+      return;
+    }
+
+    if (!_toolText.isEmpty() || _imagePresent) {
       clearToolText();
     }
     _screenDirty = true;
@@ -855,6 +888,34 @@ void AppController::handleChatButtons() {
 
   if (_buttonA.consumeReleased() && _appState == AppState::Recording) {
     stopRecording();
+  }
+}
+
+void AppController::handleReviewButtons() {
+  if (_buttonB.consumeHoldStart()) {
+    _powerManager.registerActivity();
+    exitInboxReview();
+    return;
+  }
+
+  if (_buttonA.consumeClick()) {
+    _powerManager.registerActivity();
+    if (!_inboxShowingBack) {
+      _inboxShowingBack = true;
+      _screenDirty = true;
+    } else {
+      gradeCurrentInboxCard("again");
+    }
+    return;
+  }
+
+  if (_buttonB.consumeClick()) {
+    _powerManager.registerActivity();
+    if (!_inboxShowingBack) {
+      advanceInboxCard();
+    } else {
+      gradeCurrentInboxCard("good");
+    }
   }
 }
 
@@ -874,6 +935,7 @@ void AppController::handleMenuButtons() {
   if (_buttonA.consumeClick()) {
     _powerManager.registerActivity();
     selectCurrentMenuItem();
+    clearButtonEvents();
   }
 }
 
@@ -909,6 +971,42 @@ void AppController::closeMenu() {
   _screenDirty = true;
 }
 
+void AppController::saveFlashcardFromRoleplay() {
+  const bool sent = _live.sendText(
+      "Save the most useful item from our recent German practice exchange as a "
+      "flashcard. Pick either your last useful German phrase or my last "
+      "sentence with its correction. Call the save_flashcard tool if "
+      "available; otherwise briefly tell me what you would have saved.");
+  closeMenu();
+  _roleplayActive = true;
+  if (sent) {
+    _turn.beginThinking(millis());
+    setAppState(AppState::Thinking, "Saving card...");
+  } else if (_wifi.isConnected()) {
+    setAppState(AppState::Connecting, "Connecting...");
+    _live.connect();
+  }
+}
+
+void AppController::returnToHomeChat() {
+  Log::client("UI", "returning to home German assistant");
+  _powerManager.registerActivity();
+  _audio.stopPlayback();
+  _appRegion = AppRegion::Chat;
+  _menuState = MenuState::Home;
+  _menuSelection = 0;
+  _roleplayActive = false;
+  _turn.clearResponse();
+  _turn.clearPendingReset();
+  if (_voiceMode != "assistant") {
+    _voiceMode = "assistant";
+    _settings.setVoiceMode(_voiceMode);
+    _live.setVoiceMode(_voiceMode);
+  }
+  clearButtonEvents();
+  startFreshConversation();
+}
+
 void AppController::navigateBackFromMenu() {
   if (_menuState == MenuState::Home) {
     closeMenu();
@@ -917,6 +1015,21 @@ void AppController::navigateBackFromMenu() {
 
   if (_menuState == MenuState::Updates) {
     openMenu(MenuState::Device);
+    return;
+  }
+
+  if (_menuState == MenuState::RoleplayStart) {
+    openMenu(MenuState::Roleplays);
+    return;
+  }
+
+  if (_menuState == MenuState::RoleplayActions) {
+    returnToHomeChat();
+    return;
+  }
+
+  if (_menuState == MenuState::Inbox) {
+    openMenu(MenuState::Home);
     return;
   }
 
@@ -940,14 +1053,44 @@ void AppController::selectCurrentMenuItem() {
       closeMenu();
       return;
     case 1:
+      openMenu(MenuState::Modes);
+      return;
+    case 2:
       closeMenu();
       startFreshConversation();
       return;
-    case 2:
+    case 3:
       openMenu(MenuState::ResumeChat);
       return;
-    case 3:
+    case 4:
+      openInboxMenu();
+      return;
+    case 5:
+      loadLearningResourceMenu(MenuState::Lessons);
+      return;
+    case 6:
+      loadLearningResourceMenu(MenuState::Readers);
+      return;
+    case 7:
+      loadLearningResourceMenu(MenuState::Roleplays);
+      return;
+    case 8:
       openMenu(MenuState::Device);
+      return;
+    default:
+      return;
+    }
+
+  case MenuState::Modes:
+    switch (_menuSelection) {
+    case 0:
+      openMenu(MenuState::Home);
+      return;
+    case 1:
+      switchVoiceMode("assistant");
+      return;
+    case 2:
+      switchVoiceMode("quiz_masters");
       return;
     default:
       return;
@@ -1009,13 +1152,88 @@ void AppController::selectCurrentMenuItem() {
       installFirmwareUpdate();
     }
     return;
+
+  case MenuState::Lessons:
+  case MenuState::Readers:
+    if (_menuSelection == 0) {
+      openMenu(MenuState::Home);
+      return;
+    }
+    if (_learningResourceCount == 0) {
+      return;
+    }
+    startLearningResource(_menuSelection - 1);
+    return;
+
+  case MenuState::Roleplays:
+    if (_menuSelection == 0) {
+      openMenu(MenuState::Home);
+      return;
+    }
+    if (_learningResourceCount == 0) {
+      return;
+    }
+    _selectedLearningResourceIndex = _menuSelection - 1;
+    openMenu(MenuState::RoleplayStart);
+    return;
+
+  case MenuState::RoleplayStart:
+    if (_menuSelection == 0) {
+      openMenu(MenuState::Roleplays);
+      return;
+    }
+    if (_selectedLearningResourceIndex >= 0) {
+      startLearningResource(_selectedLearningResourceIndex);
+    }
+    return;
+
+  case MenuState::RoleplayActions:
+    switch (_menuSelection) {
+    case 0:
+      saveFlashcardFromRoleplay();
+      return;
+    case 1:
+      closeMenu();
+      _roleplayActive = true;
+      return;
+    case 2:
+      _audio.stopPlayback();
+      _roleplayActive = false;
+      _turn.clearResponse();
+      _turn.clearPendingReset();
+      clearToolText();
+      if (_appState == AppState::Thinking || _appState == AppState::Playing) {
+        setAppState(AppState::Ready, "Ready");
+      }
+      openMenu(MenuState::Modes);
+      return;
+    default:
+      return;
+    }
+
+  case MenuState::Inbox:
+    switch (_menuSelection) {
+    case 0:
+      openMenu(MenuState::Home);
+      return;
+    case 1:
+      startInboxReview("due");
+      return;
+    case 2:
+      startInboxReview("all");
+      return;
+    default:
+      return;
+    }
   }
 }
 
 int AppController::menuItemCount() const {
   switch (_menuState) {
   case MenuState::Home:
-    return 4;
+    return 9;
+  case MenuState::Modes:
+    return 3;
   case MenuState::Device:
     return Board::capabilities().externalSpeakerSwitch ? 5 : 4;
   case MenuState::ResumeChat:
@@ -1026,6 +1244,15 @@ int AppController::menuItemCount() const {
       return 3;
     }
     return 2;
+  case MenuState::Lessons:
+  case MenuState::Readers:
+  case MenuState::Roleplays:
+    return _learningResourceCount > 0 ? 1 + _learningResourceCount : 2;
+  case MenuState::RoleplayStart:
+    return 2;
+  case MenuState::RoleplayActions:
+  case MenuState::Inbox:
+    return 3;
   }
   return 0;
 }
@@ -1034,12 +1261,25 @@ String AppController::menuTitle() const {
   switch (_menuState) {
   case MenuState::Home:
     return "Menu";
+  case MenuState::Modes:
+    return "Modes";
   case MenuState::Device:
     return "Device";
   case MenuState::ResumeChat:
     return "Resume";
   case MenuState::Updates:
     return "Updates";
+  case MenuState::Lessons:
+    return "Lessons";
+  case MenuState::Readers:
+    return "Readers";
+  case MenuState::Roleplays:
+  case MenuState::RoleplayStart:
+    return "Roleplays";
+  case MenuState::RoleplayActions:
+    return "Practice";
+  case MenuState::Inbox:
+    return "Inbox";
   }
   return "";
 }
@@ -1051,11 +1291,34 @@ String AppController::menuItemLabel(int index) const {
     case 0:
       return "Go back";
     case 1:
-      return "New conversation";
+      return "Modes";
     case 2:
-      return "Resume chat";
+      return "New conversation";
     case 3:
+      return "Resume chat";
+    case 4:
+      return "Inbox";
+    case 5:
+      return "Lessons";
+    case 6:
+      return "Readers";
+    case 7:
+      return "Roleplays";
+    case 8:
       return "Device";
+    default:
+      return "";
+    }
+
+  case MenuState::Modes:
+    switch (index) {
+    case 0:
+      return "Go back";
+    case 1:
+      return _voiceMode == "assistant" ? "* Assistant" : "Assistant";
+    case 2:
+      return _voiceMode == "quiz_masters" ? "* Quiz Masters"
+                                           : "Quiz Masters";
     default:
       return "";
     }
@@ -1122,9 +1385,203 @@ String AppController::menuItemLabel(int index) const {
       return "Install v" + String(_firmwareInfo.latestVersion);
     }
     return _firmwareInfo.notes.substring(0, 26);
+
+  case MenuState::Lessons:
+  case MenuState::Readers:
+  case MenuState::Roleplays:
+    if (index == 0) {
+      return "Go back";
+    }
+    if (_learningResourceCount == 0 && index == 1) {
+      return _toolText.isEmpty() ? String("No resources")
+                                 : _toolText.substring(0, 26);
+    }
+    if (index - 1 < _learningResourceCount) {
+      const LearningResourceSummary &entry = _learningResources[index - 1];
+      String label = entry.title;
+      if (!entry.level.isEmpty()) {
+        label += " " + entry.level;
+      }
+      return label.substring(0, 26);
+    }
+    return "";
+
+  case MenuState::RoleplayStart:
+    if (index == 0) {
+      return "Go back";
+    }
+    return "Begin conversation";
+
+  case MenuState::RoleplayActions:
+    switch (index) {
+    case 0:
+      return "Save flashcard";
+    case 1:
+      return "Back to practice";
+    case 2:
+      return "Back to menu";
+    default:
+      return "";
+    }
+
+  case MenuState::Inbox:
+    switch (index) {
+    case 0:
+      return "Go back";
+    case 1:
+      return "Due cards";
+    case 2:
+      return "All cards";
+    default:
+      return "";
+    }
   }
 
   return "";
+}
+
+void AppController::loadLearningResourceMenu(MenuState targetState) {
+  _learningResourceCount = 0;
+  _selectedLearningResourceIndex = -1;
+  if (!_wifi.isConnected()) {
+    setToolTextImmediate("Connect WiFi first");
+    openMenu(targetState);
+    return;
+  }
+
+  const bool readers = targetState == MenuState::Readers;
+  const bool roleplays = targetState == MenuState::Roleplays;
+  const String source = readers ? "graded_reader"
+                                : (roleplays ? "roleplay" : "worksheet");
+  const String query =
+      readers ? "available graded readers transcripts videos"
+              : (roleplays ? "German roleplays speaking practice cafe doctor "
+                             "train station mock test"
+                           : "German lessons worksheets grammar vocabulary "
+                             "bildbeschreibung");
+  const String label = readers ? "Readers" : (roleplays ? "Roleplays" : "Lessons");
+
+  if (!_live.fetchLearningResources(source, query, _learningResources,
+                                    kMaxLearningResources,
+                                    _learningResourceCount)) {
+    setToolTextImmediate(label + " unavailable");
+  } else if (_learningResourceCount == 0) {
+    setToolTextImmediate("No " + label);
+  }
+
+  openMenu(targetState);
+}
+
+void AppController::startLearningResource(int index) {
+  if (index < 0 || index >= _learningResourceCount) {
+    return;
+  }
+
+  const LearningResourceSummary &entry = _learningResources[index];
+  _roleplayActive = true;
+  _readingAssistantIntroPending = false;
+  _quizIntroPending = false;
+  closeMenu();
+  _audio.stopPlayback();
+  _turn.clearResponse();
+  _turn.clearPendingReset();
+
+  String prompt = "Load learning resource " + entry.resourceId + " and start it. ";
+  if (entry.source == "roleplay") {
+    prompt += "Start a German-only roleplay immediately. Do not ask me what I "
+              "want to do. Speak first. In simple German, say who you are and "
+              "who I am, then begin the scene with your first in-character "
+              "German line or question. Speak German by default at all times "
+              "and do not switch to English unless I explicitly ask for "
+              "English help.";
+  } else if (entry.source == "graded_reader") {
+    prompt += "Briefly name it, then ask whether to read, search, discuss it, "
+              "or do checkpoint questions.";
+  } else {
+    prompt += "Briefly name the lesson, then start with one short guided "
+              "German practice question.";
+  }
+
+  if (!_live.sendText(prompt)) {
+    if (_wifi.isConnected()) {
+      setAppState(AppState::Connecting, "Connecting...");
+      _live.connect();
+    }
+    return;
+  }
+
+  _turn.beginThinking(millis());
+  setAppState(AppState::Thinking, "Loading...");
+}
+
+void AppController::openInboxMenu() { openMenu(MenuState::Inbox); }
+
+void AppController::startInboxReview(const String &mode) {
+  _inboxMode = mode == "all" ? "all" : "due";
+  _inboxCardCount = 0;
+  _inboxIndex = 0;
+  _inboxShowingBack = false;
+  _inboxDueCount = 0;
+  _inboxTotalCount = 0;
+
+  if (!_wifi.isConnected()) {
+    setToolTextImmediate("Connect WiFi first");
+    closeMenu();
+    return;
+  }
+
+  if (!_live.fetchInboxFlashcards(_inboxMode, _inboxCards, kMaxInboxFlashcards,
+                                  _inboxCardCount, _inboxDueCount,
+                                  _inboxTotalCount)) {
+    setToolTextImmediate("Inbox unavailable");
+    closeMenu();
+    return;
+  }
+
+  if (_inboxCardCount == 0) {
+    setToolTextImmediate(_inboxMode == "all" ? "Inbox empty" : "No cards due");
+    closeMenu();
+    return;
+  }
+
+  _appRegion = AppRegion::Review;
+  _menuState = MenuState::Home;
+  _menuSelection = 0;
+  clearButtonEvents();
+  _screenDirty = true;
+}
+
+void AppController::exitInboxReview() {
+  _appRegion = AppRegion::Chat;
+  _inboxShowingBack = false;
+  _inboxIndex = 0;
+  _inboxCardCount = 0;
+  clearButtonEvents();
+  _screenDirty = true;
+}
+
+void AppController::advanceInboxCard() {
+  _inboxShowingBack = false;
+  if (_inboxIndex + 1 >= _inboxCardCount) {
+    setToolTextImmediate("Reviewed " + String(_inboxIndex + 1) + " card" +
+                         (_inboxIndex == 0 ? "" : "s"));
+    exitInboxReview();
+    return;
+  }
+  _inboxIndex++;
+  _screenDirty = true;
+}
+
+void AppController::gradeCurrentInboxCard(const String &grade) {
+  if (_inboxIndex < 0 || _inboxIndex >= _inboxCardCount) {
+    return;
+  }
+  const String cardId = _inboxCards[_inboxIndex].id;
+  const bool ok = _live.gradeInboxFlashcard(cardId, grade);
+  if (!ok) {
+    Log::client("Inbox", "grade failed for %s", cardId.c_str());
+  }
+  advanceInboxCard();
 }
 
 void AppController::startConversationHistoryLoad() {
@@ -1221,13 +1678,108 @@ void AppController::resumeConversation(int index) {
 }
 
 void AppController::startFreshConversation() {
+  _roleplayActive = false;
   _chatId = "";
   _settings.clearChatId();
   _live.setChatId("");
+  _quizIntroPending = _voiceMode == "quiz_masters";
+  _readingAssistantIntroPending = _voiceMode == "assistant";
   clearToolText();
+  _turn.clearResponse();
+  _turn.clearPendingReset();
   _live.disconnect();
   setAppState(AppState::Connecting, "New chat...");
   _live.connect();
+}
+
+void AppController::switchVoiceMode(const String &voiceMode) {
+  const String normalized =
+      voiceMode == "quiz_masters" ? "quiz_masters" : "assistant";
+
+  closeMenu();
+  if (_voiceMode == normalized) {
+    setToolTextImmediate("Mode\n" + voiceModeLabel() + " selected");
+    _quizIntroPending = normalized == "quiz_masters";
+    _readingAssistantIntroPending = normalized == "assistant";
+    maybeSendReadingAssistantIntro();
+    maybeSendQuizIntro();
+    return;
+  }
+
+  _voiceMode = normalized;
+  _settings.setVoiceMode(_voiceMode);
+  _live.setVoiceMode(_voiceMode);
+  _chatId = "";
+  _settings.clearChatId();
+  _live.setChatId("");
+  _roleplayActive = false;
+  _quizIntroPending = _voiceMode == "quiz_masters";
+  _readingAssistantIntroPending = _voiceMode == "assistant";
+  setToolTextImmediate("Mode changed\n" + voiceModeLabel());
+  _live.disconnect();
+  if (_wifi.isConnected()) {
+    setAppState(AppState::Connecting, "Switching mode...");
+    _live.connect();
+  } else {
+    setAppState(AppState::Ready, "Ready");
+  }
+  _screenDirty = true;
+}
+
+void AppController::maybeSendReadingAssistantIntro() {
+  if (!_readingAssistantIntroPending || _voiceMode != "assistant" ||
+      _appState != AppState::Ready || !_live.isConnected()) {
+    return;
+  }
+
+  _readingAssistantIntroPending = false;
+  _roleplayActive = true;
+  setToolTextImmediate("Starting\nreading assistant...");
+
+  const char *hook =
+      "Hallo! Ich bin bereit. Was lesen wir heute zusammen? Gibt es ein Buch "
+      "oder einen Text, ueber den du sprechen moechtest?";
+
+  String prompt =
+      "For this conversation, become my German reading assistant and roleplay "
+      "partner. Start now with this exact hook sentence, then stop and wait for "
+      "me: \"";
+  prompt += hook;
+  prompt +=
+      "\" After that, help with German reading: vocabulary, grammar, "
+      "translation, pronunciation, and quick quiz questions when useful. Keep "
+      "the opening under 10 seconds.";
+
+  if (!_live.sendText(prompt)) {
+    _roleplayActive = false;
+    return;
+  }
+
+  _turn.beginThinking(millis());
+  setAppState(AppState::Thinking, "Reading...");
+}
+
+void AppController::maybeSendQuizIntro() {
+  if (!_quizIntroPending || _voiceMode != "quiz_masters" ||
+      _appState != AppState::Ready || !_live.isConnected()) {
+    return;
+  }
+
+  _quizIntroPending = false;
+  _roleplayActive = true;
+  if (!_live.sendText(
+          "For this conversation, become Quiz Masters: a cheerful, "
+          "kid-friendly nature quiz host. Ask one short question at a time, "
+          "wait for the child's answer, give kind hints, and keep it fun.")) {
+    return;
+  }
+
+  _turn.beginThinking(millis());
+  setAppState(AppState::Thinking, "Starting quiz...");
+}
+
+String AppController::voiceModeLabel() const {
+  return _voiceMode == "quiz_masters" ? "Quiz Masters" : "Assistant";
 }
 
 void AppController::startCaptivePortalFlow() {
@@ -1612,6 +2164,14 @@ void AppController::processPlayback() {
   // Only exit to Ready from Playing — a turnComplete that arrives while we're
   // still Thinking (e.g. a stale signal from a prior, interrupted turn) must
   // not short-circuit waiting for the new response's audio.
+  if (_appState == AppState::Thinking && _turn.complete() &&
+      !_turn.hasAudio()) {
+    _turn.clearResponse();
+    _audio.stopPlayback();
+    setAppState(AppState::Ready, "Ready");
+    return;
+  }
+
   if (_appState == AppState::Playing && _turn.complete() &&
       _audio.playbackIdle()) {
     _turn.clearResponse();
@@ -1769,6 +2329,25 @@ DisplayState AppController::buildDisplayState() const {
     return state;
   }
 
+  if (_appRegion == AppRegion::Review && _inboxCardCount > 0 &&
+      _inboxIndex >= 0 && _inboxIndex < _inboxCardCount) {
+    state.headerLeft = "Inbox " + String(_inboxIndex + 1) + "/" +
+                       String(_inboxCardCount);
+    const int battery = Board::batteryLevel();
+    if (battery >= 0 && battery <= 100) {
+      state.headerRight = String(battery) + "%";
+    }
+    const InboxFlashcardSummary &card = _inboxCards[_inboxIndex];
+    state.bodyText = _inboxShowingBack
+                         ? card.front + "\n---\n" + card.back
+                         : card.front;
+    state.footerLeft = _inboxShowingBack ? "A again" : "A flip";
+    state.footerRight = _inboxShowingBack ? "B good" : "B skip";
+    state.pageIndex = _bodyPageIndex;
+    state.pageCount = max(1, _display.pageCountForText(state.bodyText));
+    return state;
+  }
+
   const bool homeMenuVisible =
       _appRegion == AppRegion::Menu && _menuState == MenuState::Home;
   if (homeMenuVisible) {
@@ -1843,12 +2422,14 @@ String AppController::buildBodyText() const {
     return _statusText.isEmpty() ? String("Starting...") : _statusText;
 
   case AppState::Ready:
-    return "Hi, how can I help? Hold the big button and speak to get a "
-           "response.";
+    return _voiceMode == "quiz_masters"
+               ? String("Quiz Masters ready. Hold A to answer.")
+               : String("German assistant ready. Hold A and speak.");
 
   case AppState::Recording:
-    return "Hi, how can I help? Hold the big button and speak to get a "
-           "response.";
+    return _voiceMode == "quiz_masters"
+               ? String("Listening for your answer...")
+               : String("Listening...");
 
   case AppState::Thinking:
     return "Thinking...";
@@ -1935,6 +2516,7 @@ String AppController::deviceStatusJson() const {
   status["volume"] = _audio.volume();
   status["brightness"] = Board::displayBrightness();
   status["voice"] = _settings.voice();
+  status["voice_mode"] = _voiceMode;
   status["server_endpoint"] = _live.activeEndpointLabel();
   status["wifi_network"] = _wifi.isConnected() ? _wifi.ssid() : "disconnected";
   status["uptime_seconds"] = millis() / 1000;

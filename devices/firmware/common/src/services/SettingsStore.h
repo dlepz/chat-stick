@@ -29,6 +29,9 @@ public:
   /// Current Gemini voice identifier.
   const String &voice() const { return _voice; }
 
+  /// Current assistant persona mode.
+  const String &voiceMode() const { return _voiceMode; }
+
   /// Preferred server endpoint index.
   int serverEndpointIndex() const { return _serverEndpointIndex; }
 
@@ -83,6 +86,12 @@ public:
   void setVoice(const String &voice);
 
   /**
+   * @brief Set and persist the assistant persona mode.
+   * @param voiceMode "assistant" or "quiz_masters".
+   */
+  void setVoiceMode(const String &voiceMode);
+
+  /**
    * @brief Set and persist the preferred server endpoint index.
    * @param endpointIndex Endpoint index, clamped to zero or greater.
    */
@@ -135,6 +144,9 @@ private:
   /// Cached Gemini voice id.
   String _voice = kDefaultVoice;
 
+  /// Cached assistant persona mode.
+  String _voiceMode = "assistant";
+
   /// Cached preferred server endpoint index.
   int _serverEndpointIndex = 0;
 
@@ -170,6 +182,9 @@ private:
 
   /// Preferences key for Gemini voice id.
   static constexpr const char *kVoiceKey = "voice";
+
+  /// Preferences key for assistant persona mode.
+  static constexpr const char *kVoiceModeKey = "voice_mode";
 
   /// Preferences key for preferred server endpoint index.
   static constexpr const char *kServerEndpointKey = "server_idx";

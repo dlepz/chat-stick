@@ -28,6 +28,7 @@ bool endsWithIncomingPrefix(const String &current, const String &incoming,
 void TurnController::beginRecording(unsigned long nowMs) {
   _complete = false;
   _hasAudio = false;
+  _hasResponseContent = false;
   _audioChunksSent = 0;
   _audioChunksFailed = 0;
   _captureFailures = 0;
@@ -56,18 +57,24 @@ bool TurnController::thinkingTimedOut(unsigned long nowMs,
 }
 
 bool TurnController::noteTurnComplete() {
-  if (!_hasAudio) {
+  if (!_hasAudio && !_hasResponseContent) {
     return false;
   }
   _complete = true;
   return true;
 }
 
-void TurnController::noteAudioReceived() { _hasAudio = true; }
+void TurnController::noteAudioReceived() {
+  _hasAudio = true;
+  _hasResponseContent = true;
+}
+
+void TurnController::noteResponseContent() { _hasResponseContent = true; }
 
 void TurnController::clearResponse() {
   _complete = false;
   _hasAudio = false;
+  _hasResponseContent = false;
 }
 
 void TurnController::clearPendingReset() { _pendingReset = false; }
@@ -83,9 +90,11 @@ TurnController::noteCaptureFailure(unsigned long nowMs,
     _lastCaptureFailureLogMs = nowMs;
   }
 
-  return {.count = _captureFailures,
-          .shouldLog = shouldLog,
-          .firstFailure = _captureFailures == 1};
+  CaptureFailureReport report;
+  report.count = _captureFailures;
+  report.shouldLog = shouldLog;
+  report.firstFailure = _captureFailures == 1;
+  return report;
 }
 
 int TurnController::noteAudioSendFailed() { return ++_audioChunksFailed; }
