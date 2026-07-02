@@ -1686,8 +1686,8 @@ void AppController::startFreshConversation() {
   _chatId = "";
   _settings.clearChatId();
   _live.setChatId("");
-  _quizIntroPending = _voiceMode == "quiz_masters";
-  _readingAssistantIntroPending = _voiceMode == "assistant";
+  _quizIntroPending = false;
+  _readingAssistantIntroPending = false;
   clearToolText();
   _turn.clearResponse();
   _turn.clearPendingReset();
@@ -2428,12 +2428,14 @@ String AppController::buildBodyText() const {
   case AppState::Ready:
     return _voiceMode == "quiz_masters"
                ? String("Quiz Masters ready. Hold A to answer.")
-               : String("German assistant ready. Hold A and speak.");
+               : String("Hi, how can I help? Hold the big button and speak "
+                        "to get a response.");
 
   case AppState::Recording:
     return _voiceMode == "quiz_masters"
                ? String("Listening for your answer...")
-               : String("Listening...");
+               : String("Hi, how can I help? Hold the big button and speak "
+                        "to get a response.");
 
   case AppState::Thinking:
     return "Thinking...";
