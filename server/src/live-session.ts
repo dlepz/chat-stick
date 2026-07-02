@@ -1,5 +1,4 @@
-import { searchDocsKeyword, searchDocsVector } from './docs-search'
-import { type EmailEnv, emailEnabled, sendEmail } from './email'
+import { type EmailEnv, emailEnabled } from './email'
 import {
 	MAX_FILE_BYTES,
 	USER_INSTRUCTIONS_PATH,
@@ -38,6 +37,8 @@ import {
 	handleDebugAudioRequest,
 	saveDebugAudio,
 } from './debug-audio-store'
+import { handleDocsSearchTool } from './docs-tool'
+import { handleEmailTool } from './email-tool'
 import { type WebFetchArgs, fetchWebPage } from './web-fetch'
 
 interface Env extends EmailEnv, DebugAudioEnv {
@@ -1708,39 +1709,14 @@ export class LiveSession {
 				const startMs = Date.now()
 
 				if (call.name === 'search_docs') {
-					const query = (call.args as { query?: string }).query || ''
-					console.log(`[Gemini] Docs search: "${query}"`)
-
-					let results: { title: string; section: string; content: string; score: number }[] = []
-					let searchMode: 'vector' | 'keyword' = 'vector'
-
-					try {
-						results = await searchDocsVector(query, this.env, 3)
-					} catch (err) {
-						console.warn('[Gemini] Vector search failed, falling back to keyword search:', err)
-					}
-
-					if (results.length === 0) {
-						searchMode = 'keyword'
-						results = searchDocsKeyword(query, 3)
-					}
-
-					console.log(
-						`[Gemini] Found ${results.length} ${searchMode} results (top: ${results[0]?.title})`,
-					)
-					const searchResults = results.map((r) => ({
-						title: r.title,
-						section: r.section,
-						content: r.content.slice(0, 1000),
-						score: r.score,
-					}))
+					const result = await handleDocsSearchTool(this.env, call.args)
 					const payload = JSON.stringify({
 						toolResponse: {
 							functionResponses: [
 								{
 									name: call.name,
 									id: call.id,
-									response: { results: searchResults },
+									response: result.response,
 								},
 							],
 						},
@@ -1754,11 +1730,7 @@ export class LiveSession {
 					await this.logToolCall({
 						name: call.name,
 						args: call.args,
-						result: {
-							mode: searchMode,
-							count: searchResults.length,
-							titles: searchResults.map((r) => r.title),
-						},
+						result: result.logResult,
 						handledBy: 'server',
 						durationMs: Date.now() - startMs,
 					})
@@ -2403,25 +2375,20 @@ export class LiveSession {
 						})
 					}
 				} else if (call.name === 'email_me') {
-					const args = call.args as { subject?: string; body?: string }
-					const result = await sendEmail(this.env, args.subject || '', args.body || '')
-					const responsePayload =
-						'ok' in result
-							? { result: `email sent to ${result.recipient}` }
-							: { result: `email failed: ${result.error}` }
+					const result = await handleEmailTool(this.env, call.args)
 					const payload = JSON.stringify({
 						toolResponse: {
-							functionResponses: [{ name: call.name, id: call.id, response: responsePayload }],
+							functionResponses: [{ name: call.name, id: call.id, response: result.response }],
 						},
 					})
 					if (this.geminiWs) this.geminiWs.send(payload)
 					await this.logToolCall({
 						name: call.name,
-						args: { subject: args.subject, body_chars: (args.body || '').length },
-						result: 'ok' in result ? 'sent' : result.error,
+						args: result.logArgs,
+						result: result.logResult,
 						handledBy: 'server',
-						status: 'ok' in result ? 'ok' : 'error',
-						error: 'ok' in result ? undefined : result.error,
+						status: result.status,
+						error: result.error,
 						durationMs: Date.now() - startMs,
 					})
 				} else if (call.name === 'show_image') {
