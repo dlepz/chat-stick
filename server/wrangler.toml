@@ -28,9 +28,19 @@ database_name = "m5-live-conversations"
 database_id = "62046691-699e-438f-9b0a-f34435bcb3d3"
 migrations_dir = "migrations"
 
+[vars]
+# Override for local/staging as needed.
+FLASHCARD_APP_BASE_URL = "https://speakdoch.com"
+# Toggle finite German practice sessions that end with mistakes review + grade.
+# Accepted true values in code: 1, true, yes, on.
+CONVERSATION_END_REVIEW_ENABLED = "true"
+# Show a green/yellow/red grammar feedback indicator after each learner turn.
+TURN_FEEDBACK_ENABLED = "true"
+
 # Environment variables (set via wrangler secret)
 # wrangler secret put GEMINI_API_KEY
 # wrangler secret put HISTORY_API_TOKEN
+# wrangler secret put FLASHCARD_APP_BRIDGE_TOKEN
 # Optional OTA firmware support:
 # [r2_buckets]
 # binding = "OTA_BUCKET"

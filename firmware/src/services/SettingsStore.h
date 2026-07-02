@@ -10,11 +10,13 @@ public:
   int brightness() const { return _brightness; }
   int volume() const { return _volume; }
   const String &chatId() const { return _chatId; }
+  const String &voiceMode() const { return _voiceMode; }
 
   void setBrightness(int brightness);
   void setVolume(int volume);
   void setChatId(const String &chatId);
   void clearChatId();
+  void setVoiceMode(const String &voiceMode);
   void reset();
 
 private:
@@ -22,10 +24,12 @@ private:
   int _brightness = 80;
   int _volume = 255;
   String _chatId;
+  String _voiceMode = "assistant";
   bool _ready = false;
 
   static constexpr const char *kNamespace = "chat-stick";
   static constexpr const char *kBrightnessKey = "brightness";
   static constexpr const char *kVolumeKey = "volume";
   static constexpr const char *kChatIdKey = "chat_id";
+  static constexpr const char *kVoiceModeKey = "voice_mode";
 };

@@ -45,9 +45,12 @@ private:
   int _playReadPos = 0;
   bool _playbackStarted = false;
   bool _chunkInFlight = false;
+  bool _speakerReady = false;
   int _volume = DEFAULT_VOLUME;
 
   void beginSpeaker();
+  void endSpeaker();
+  void applyVolume();
   void compactPlaybackBuffer();
   bool playAvailableChunk();
   bool playToneSequence(const String &sequence);

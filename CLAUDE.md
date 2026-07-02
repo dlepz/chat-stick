@@ -25,7 +25,8 @@ Two independent codebases in one repo:
 ```bash
 cd server
 npm install
-npm run dev          # wrangler dev (local)
+npm run dev          # wrangler dev (local, localhost only depending on config)
+npm run dev:lan      # recommended for M5Stick dev: applies local D1 migrations, kills anything on :8787, restarts wrangler on 0.0.0.0:8787
 npm run deploy       # wrangler deploy (production)
 
 # D1 migrations
@@ -47,6 +48,29 @@ python monitor.py          # alternative serial monitor
 ```
 
 Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Update these when switching USB ports.
+
+### Local M5Stick Server Restart Notes
+
+When the device alternates between Connecting/Reconnecting during local dev, make sure Wrangler is listening on the LAN interface, not just `127.0.0.1`. The firmware development endpoint in `firmware/src/credentials.h` points at the Mac LAN IP on port `8787`.
+
+One-command restart:
+
+```bash
+cd server && npm run dev:lan
+```
+
+Equivalent commands previously used manually:
+
+```bash
+cd server
+npx wrangler d1 migrations apply m5-live-conversations-local --local -c wrangler.local.toml
+kill $(lsof -ti tcp:8787) 2>/dev/null || true
+npx wrangler dev -c wrangler.local.toml --ip 0.0.0.0 --port 8787
+curl http://127.0.0.1:8787/health
+curl http://$(ipconfig getifaddr en0):8787/health
+```
+
+Expected log line includes `Ready on http://0.0.0.0:8787` and a LAN URL such as `http://192.168.x.x:8787`.
 
 ## Architecture Details
 
@@ -77,6 +101,7 @@ Serial port is configured in `platformio.ini` (`upload_port`/`monitor_port`). Up
 1. **Voice exchange**: Button A press → mic capture at 16kHz → PCM chunks over WebSocket → server base64-encodes → Gemini `realtimeInput` → Gemini responds with audio parts → server decodes base64 → raw PCM binary frames back to device → speaker playback at 24kHz
 2. **Tool calls**: Gemini emits `toolCall` → server handles server-side tools directly, forwards device-side tools as JSON → device executes and sends `tool_response` → server relays `toolResponse` to Gemini
 3. **Session restore**: On boot, device sends saved `chat_id` → server fetches `last_message` from D1 → device displays previous conversation context
+4. **Flashcard inbox (SRS)**: External SvelteKit `flashcard-app` owns the `chat_stick_flashcards` table and SM-2-lite scheduling. Worker proxies via `flashcard-api.ts` (`saveFlashcard`, `listInboxFlashcards`, `gradeFlashcard`) using `FLASHCARD_APP_BASE_URL` + `FLASHCARD_APP_BRIDGE_TOKEN`. Save path: Gemini `save_flashcard` tool → worker → `POST /api/chat-stick/flashcards`. Review path: firmware Inbox menu (Due/All) → `GET /device/flashcards/inbox` → `POST /device/flashcards/grade` with `{again|good}`. Firmware review uses `AppRegion::Review`: A=flip→again, B=skip→good, B-hold=exit.
 
 ## Credentials
 

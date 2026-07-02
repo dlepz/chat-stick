@@ -98,7 +98,8 @@ bool AudioService::init() {
     return false;
   }
 
-  beginSpeaker();
+  // Keep the speaker amp/I2S off until we actually need to play audio.
+  // This reduces idle hiss/whine, especially while charging over USB.
   setVolume(_volume);
   Serial.printf("[Audio] Capture chunk: %d samples (%u bytes)\n", kChunkSamples,
                 static_cast<unsigned>(_chunkBytes));
@@ -108,13 +109,14 @@ bool AudioService::init() {
 
 void AudioService::setVolume(int level) {
   _volume = constrain(level, 0, 255);
-  M5.Speaker.setVolume(_volume);
-  M5.Speaker.setAllChannelVolume(_volume);
+  if (_speakerReady) {
+    applyVolume();
+  }
 }
 
 bool AudioService::startRecording() {
-  M5.Speaker.stop();
-  M5.Speaker.end();
+  stopPlayback();
+  endSpeaker();
   delay(20);
 
   resetPlayback();
@@ -126,8 +128,6 @@ bool AudioService::startRecording() {
 void AudioService::stopRecording() {
   M5.Mic.end();
   delay(20);
-  beginSpeaker();
-  setVolume(_volume);
 }
 
 bool AudioService::captureChunk() {
@@ -164,7 +164,9 @@ void AudioService::resetPlayback() {
   _playReadPos = 0;
   _playbackStarted = false;
   _chunkInFlight = false;
-  M5.Speaker.stop();
+  if (_speakerReady) {
+    M5.Speaker.stop();
+  }
 }
 
 bool AudioService::queuePlayback(const uint8_t *data, size_t len) {
@@ -214,15 +216,37 @@ bool AudioService::playbackIdle() const {
 }
 
 void AudioService::stopPlayback() {
-  M5.Speaker.stop();
+  if (_speakerReady) {
+    M5.Speaker.stop();
+  }
   _chunkInFlight = false;
   _playbackStarted = false;
   _playReadPos = 0;
   _playWritePos = 0;
+  endSpeaker();
 }
 
 void AudioService::beginSpeaker() {
+  if (_speakerReady) {
+    return;
+  }
   M5.Speaker.begin();
+  _speakerReady = true;
+  applyVolume();
+}
+
+void AudioService::endSpeaker() {
+  if (!_speakerReady) {
+    return;
+  }
+  M5.Speaker.stop();
+  M5.Speaker.end();
+  _speakerReady = false;
+}
+
+void AudioService::applyVolume() {
+  M5.Speaker.setVolume(_volume);
+  M5.Speaker.setAllChannelVolume(_volume);
 }
 
 void AudioService::compactPlaybackBuffer() {
@@ -245,6 +269,7 @@ bool AudioService::playAvailableChunk() {
     return false;
   }
 
+  beginSpeaker();
   auto *start = reinterpret_cast<int16_t *>(_playBuffer + _playReadPos);
   const int samples = available / static_cast<int>(sizeof(int16_t));
   M5.Speaker.playRaw(start, samples, PLAY_SAMPLE_RATE, false, 1, 0);
@@ -305,5 +330,6 @@ bool AudioService::playToneSequence(const String &sequence) {
     start = end + 1;
   }
 
+  endSpeaker();
   return played;
 }

@@ -10,12 +10,23 @@ using namespace websockets;
 
 void LiveSessionService::init(const LiveSessionCallbacks &callbacks) {
   _callbacks = callbacks;
+  attachWebsocketHandlers();
+}
+
+void LiveSessionService::attachWebsocketHandlers() {
   _ws.onMessage([this](WebsocketsMessage msg) { handleMessage(msg); });
   _ws.onEvent(
       [this](WebsocketsEvent event, String data) { handleEvent(event, data); });
 }
 
 void LiveSessionService::connect() {
+  if (_ws.available()) {
+    _ws.close();
+  }
+  _ws = WebsocketsClient();
+  attachWebsocketHandlers();
+  _connected = false;
+
   _activeServerIndex = _nextServerIndex;
   const ServerEndpoint &endpoint = SERVER_ENDPOINTS[_nextServerIndex];
   _nextServerIndex = (_nextServerIndex + 1) % SERVER_ENDPOINT_COUNT;
@@ -31,22 +42,27 @@ void LiveSessionService::connect() {
   Serial.printf("[WS] Connecting to %s://%s:%d%s\n", scheme, endpoint.host,
                 endpoint.port, (path + chatQuery).c_str());
 
-  if (endpoint.ca_cert) {
-    _ws.setCACert(endpoint.ca_cert);
-  } else {
-    _ws.setInsecure();
-  }
-
   if (endpoint.port == 443) {
+    if (endpoint.ca_cert) {
+      _ws.setCACert(endpoint.ca_cert);
+    } else {
+      _ws.setInsecure();
+    }
     _connected =
         _ws.connectSecure(endpoint.host, endpoint.port, (path + chatQuery).c_str());
   } else {
+    // Important: do not call setInsecure() for plain ws:// endpoints.
+    // ArduinoWebsockets may otherwise leave the client in a TLS mode and fail
+    // local dev connections with SSL EOF errors.
     _connected = _ws.connect(endpoint.host, endpoint.port, (path + chatQuery).c_str());
   }
 
   if (!_connected) {
     Serial.printf("[WS] Connect failed: %s://%s:%d — will retry\n", scheme,
                   endpoint.host, endpoint.port);
+  } else {
+    Serial.printf("[WS] Connected: %s://%s:%d\n", scheme, endpoint.host,
+                  endpoint.port);
   }
 }
 
@@ -88,6 +104,26 @@ String LiveSessionService::activeEndpointLabel() const {
 bool LiveSessionService::sendStart() { return _ws.send("{\"type\":\"start\"}"); }
 
 bool LiveSessionService::sendStop() { return _ws.send("{\"type\":\"stop\"}"); }
+
+bool LiveSessionService::sendCancelTurn(const String &reason) {
+  JsonDocument doc;
+  doc["type"] = "cancel_turn";
+  doc["reason"] = reason;
+
+  String payload;
+  serializeJson(doc, payload);
+  return _ws.send(payload);
+}
+
+bool LiveSessionService::sendText(const String &content) {
+  JsonDocument doc;
+  doc["type"] = "text";
+  doc["content"] = content;
+
+  String payload;
+  serializeJson(doc, payload);
+  return _ws.send(payload);
+}
 
 bool LiveSessionService::sendAudio(const int16_t *data, size_t len) {
   return _ws.sendBinary(reinterpret_cast<const char *>(data), len);
@@ -247,6 +283,240 @@ bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries
   return false;
 }
 
+bool LiveSessionService::fetchLearningResources(
+    const String &source, const String &query,
+    LearningResourceSummary outEntries[], int maxEntries, int &outCount) {
+  outCount = 0;
+  if (maxEntries <= 0) {
+    return false;
+  }
+
+  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
+    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
+    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
+    String encodedQuery = query;
+    encodedQuery.replace(" ", "%20");
+    encodedQuery.replace("&", "%26");
+    String url = endpointBaseUrl(endpoint) + "/device/learning-resources?device_id=" +
+                 DEVICE_ID + "&limit=" + String(maxEntries) + "&q=" + encodedQuery;
+    if (!source.isEmpty()) {
+      url += "&source=" + source;
+    }
+
+    Serial.printf("[HTTP] Fetching learning resources from %s\n", url.c_str());
+
+    int statusCode = -1;
+    String body;
+    {
+      HTTPClient http;
+      if (endpoint.port == 443) {
+        WiFiClientSecure client;
+        if (endpoint.ca_cert) {
+          client.setCACert(endpoint.ca_cert);
+        } else {
+          client.setInsecure();
+        }
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        statusCode = http.GET();
+        if (statusCode > 0) {
+          body = http.getString();
+        }
+        http.end();
+      } else {
+        WiFiClient client;
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        statusCode = http.GET();
+        if (statusCode > 0) {
+          body = http.getString();
+        }
+        http.end();
+      }
+    }
+
+    if (statusCode != 200 || body.isEmpty()) {
+      Serial.printf("[HTTP] Learning resources fetch failed: status=%d\n",
+                    statusCode);
+      continue;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, body)) {
+      Serial.println("[HTTP] Learning resources response invalid JSON");
+      continue;
+    }
+
+    JsonArray rows = doc["results"].as<JsonArray>();
+    for (JsonVariant row : rows) {
+      if (outCount >= maxEntries) {
+        break;
+      }
+      outEntries[outCount].resourceId = row["resource_id"] | "";
+      outEntries[outCount].title = row["title"] | "Untitled";
+      outEntries[outCount].subtitle = row["subtitle"] | "";
+      outEntries[outCount].source = row["source"] | "";
+      outEntries[outCount].level = row["level"] | "";
+      if (!outEntries[outCount].resourceId.isEmpty()) {
+        outCount++;
+      }
+    }
+    return true;
+  }
+
+  return false;
+}
+
+bool LiveSessionService::fetchInboxFlashcards(const String &mode,
+                                              InboxFlashcardSummary outEntries[],
+                                              int maxEntries, int &outCount,
+                                              int &outDue, int &outTotal) {
+  outCount = 0;
+  outDue = 0;
+  outTotal = 0;
+  if (maxEntries <= 0) {
+    return false;
+  }
+
+  const String safeMode = (mode == "all") ? "all" : "due";
+
+  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
+    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
+    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
+    const String url = endpointBaseUrl(endpoint) +
+                       "/device/flashcards/inbox?device_id=" + DEVICE_ID +
+                       "&mode=" + safeMode + "&limit=" + String(maxEntries);
+
+    Serial.printf("[HTTP] Fetching inbox flashcards from %s\n", url.c_str());
+
+    int statusCode = -1;
+    String body;
+    {
+      HTTPClient http;
+      if (endpoint.port == 443) {
+        WiFiClientSecure client;
+        if (endpoint.ca_cert) {
+          client.setCACert(endpoint.ca_cert);
+        } else {
+          client.setInsecure();
+        }
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        statusCode = http.GET();
+        if (statusCode > 0) {
+          body = http.getString();
+        }
+        http.end();
+      } else {
+        WiFiClient client;
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        statusCode = http.GET();
+        if (statusCode > 0) {
+          body = http.getString();
+        }
+        http.end();
+      }
+    }
+
+    if (statusCode != 200 || body.isEmpty()) {
+      Serial.printf("[HTTP] Inbox fetch failed: status=%d\n", statusCode);
+      continue;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, body)) {
+      Serial.println("[HTTP] Inbox response invalid JSON");
+      continue;
+    }
+
+    outDue = doc["counts"]["due"] | 0;
+    outTotal = doc["counts"]["total"] | 0;
+
+    JsonArray rows = doc["cards"].as<JsonArray>();
+    for (JsonVariant row : rows) {
+      if (outCount >= maxEntries) {
+        break;
+      }
+      const char *id = row["id"];
+      const char *front = row["front"];
+      const char *back = row["back"];
+      if (!id || !front || !back) {
+        continue;
+      }
+      outEntries[outCount].id = id;
+      outEntries[outCount].front = front;
+      outEntries[outCount].back = back;
+      outCount++;
+    }
+    return true;
+  }
+
+  return false;
+}
+
+bool LiveSessionService::gradeInboxFlashcard(const String &cardId,
+                                             const String &grade) {
+  if (cardId.isEmpty()) {
+    return false;
+  }
+  const String safeGrade = (grade == "good") ? "good" : "again";
+
+  JsonDocument req;
+  req["device_id"] = DEVICE_ID;
+  req["card_id"] = cardId;
+  req["grade"] = safeGrade;
+  String payload;
+  serializeJson(req, payload);
+
+  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
+    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
+    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
+    const String url =
+        endpointBaseUrl(endpoint) + "/device/flashcards/grade";
+
+    Serial.printf("[HTTP] Grading flashcard %s=%s via %s\n", cardId.c_str(),
+                  safeGrade.c_str(), url.c_str());
+
+    int statusCode = -1;
+    {
+      HTTPClient http;
+      if (endpoint.port == 443) {
+        WiFiClientSecure client;
+        if (endpoint.ca_cert) {
+          client.setCACert(endpoint.ca_cert);
+        } else {
+          client.setInsecure();
+        }
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        http.addHeader("Content-Type", "application/json");
+        statusCode = http.POST(payload);
+        http.end();
+      } else {
+        WiFiClient client;
+        if (!http.begin(client, url)) {
+          continue;
+        }
+        http.addHeader("Content-Type", "application/json");
+        statusCode = http.POST(payload);
+        http.end();
+      }
+    }
+
+    if (statusCode == 200) {
+      return true;
+    }
+    Serial.printf("[HTTP] Grade flashcard failed: status=%d\n", statusCode);
+  }
+  return false;
+}
+
 bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
   outInfo = FirmwareUpdateInfo{};
 
@@ -380,9 +650,20 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
   }
 
   if (strcmp(type, "turn_complete") == 0) {
-    Serial.println("[Server] Turn complete");
+    TurnCompleteInfo info;
+    info.turnId = doc["turn_id"] | 0;
+    info.hadAudio = doc["had_audio"] | false;
+    info.hadModelText = doc["had_model_text"] | false;
+    info.hadToolActivity = doc["had_tool_activity"] | false;
+    info.synthetic = doc["synthetic"] | false;
+    info.reason = String(doc["reason"] | "");
+
+    Serial.printf("[Server] Turn complete id=%lu audio=%d text=%d tool=%d synthetic=%d reason=%s\n",
+                  static_cast<unsigned long>(info.turnId), info.hadAudio,
+                  info.hadModelText, info.hadToolActivity, info.synthetic,
+                  info.reason.c_str());
     if (_callbacks.onTurnComplete) {
-      _callbacks.onTurnComplete();
+      _callbacks.onTurnComplete(info);
     }
     return;
   }
@@ -420,6 +701,42 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
                   text ? text : "");
     if (_callbacks.onTranscript && source && text) {
       _callbacks.onTranscript(String(source), String(text));
+    }
+    return;
+  }
+
+  if (strcmp(type, "turn_feedback") == 0) {
+    const char *color = doc["color"];
+    const char *correction = doc["correction"];
+    const char *reason = doc["reason"];
+    Serial.printf("[Feedback] %s fix=%s reason=%s\n", color ? color : "?",
+                  correction ? correction : "", reason ? reason : "");
+    if (_callbacks.onTurnFeedback && color) {
+      _callbacks.onTurnFeedback(String(color), String(correction ? correction : ""),
+                                String(reason ? reason : ""));
+    }
+    return;
+  }
+
+  if (strcmp(type, "face_emotion") == 0) {
+    const char *emotion = doc["emotion"];
+    Serial.printf("[Face] emotion=%s\n", emotion ? emotion : "?");
+    if (_callbacks.onFaceEmotion && emotion) {
+      _callbacks.onFaceEmotion(String(emotion));
+    }
+    return;
+  }
+
+  if (strcmp(type, "face_control") == 0) {
+    const char *emotion = doc["emotion"];
+    const float lookX = doc["look_x"].is<float>() ? doc["look_x"].as<float>() : 0.0f;
+    const float lookY = doc["look_y"].is<float>() ? doc["look_y"].as<float>() : 0.0f;
+    const float spacing = doc["eye_spacing"].is<float>() ? doc["eye_spacing"].as<float>() : 52.0f;
+    const float speed = doc["anim_speed"].is<float>() ? doc["anim_speed"].as<float>() : 1.0f;
+    Serial.printf("[Face] control emotion=%s look=(%.2f,%.2f) spacing=%.1f speed=%.2f\n",
+                  emotion ? emotion : "?", lookX, lookY, spacing, speed);
+    if (_callbacks.onFaceControl && emotion) {
+      _callbacks.onFaceControl(String(emotion), lookX, lookY, spacing, speed);
     }
     return;
   }

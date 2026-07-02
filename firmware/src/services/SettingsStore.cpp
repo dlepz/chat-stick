@@ -6,6 +6,7 @@ void SettingsStore::init() {
   _brightness = DEFAULT_BRIGHTNESS;
   _volume = DEFAULT_VOLUME;
   _chatId = "";
+  _voiceMode = "assistant";
 
   _ready = _prefs.begin(kNamespace, false);
   if (!_ready) {
@@ -17,10 +18,15 @@ void SettingsStore::init() {
       constrain(_prefs.getUChar(kBrightnessKey, DEFAULT_BRIGHTNESS), 0, 255);
   _volume = constrain(_prefs.getUChar(kVolumeKey, DEFAULT_VOLUME), 0, 255);
   _chatId = _prefs.getString(kChatIdKey, "");
+  _voiceMode = _prefs.getString(kVoiceModeKey, "assistant");
+  if (_voiceMode != "quiz_masters") {
+    _voiceMode = "assistant";
+  }
 
-  Serial.printf("[Settings] Loaded brightness=%d volume=%d chat=%s\n",
+  Serial.printf("[Settings] Loaded brightness=%d volume=%d chat=%s mode=%s\n",
                 _brightness, _volume,
-                _chatId.isEmpty() ? "(none)" : _chatId.c_str());
+                _chatId.isEmpty() ? "(none)" : _chatId.c_str(),
+                _voiceMode.c_str());
 }
 
 void SettingsStore::setBrightness(int brightness) {
@@ -51,10 +57,18 @@ void SettingsStore::clearChatId() {
   }
 }
 
+void SettingsStore::setVoiceMode(const String &voiceMode) {
+  _voiceMode = voiceMode == "quiz_masters" ? "quiz_masters" : "assistant";
+  if (_ready) {
+    _prefs.putString(kVoiceModeKey, _voiceMode);
+  }
+}
+
 void SettingsStore::reset() {
   _brightness = DEFAULT_BRIGHTNESS;
   _volume = DEFAULT_VOLUME;
   _chatId = "";
+  _voiceMode = "assistant";
 
   if (_ready) {
     _prefs.clear();

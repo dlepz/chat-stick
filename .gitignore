@@ -10,6 +10,12 @@ firmware/.pio/
 server/.wrangler/
 server/*.sqlite
 server/*.sqlite-*
+server/wrangler.local.toml
+
+# Local runtime files
+*.log
+*.pid
+.claude/
 
 # Node
 node_modules/

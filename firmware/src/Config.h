@@ -59,6 +59,8 @@ constexpr int SCREEN_WIDTH_PX = 240;
 constexpr int SCREEN_HEIGHT_PX = 135;
 constexpr int DEFAULT_BRIGHTNESS = 80;  // lower = longer battery; plenty readable indoors
 constexpr int DEFAULT_VOLUME = 255;
+// Gentler charging can reduce heat/whine on tiny 250mAh cells. Unsupported PMICs ignore this.
+constexpr int CHARGE_CURRENT_MA = 100;
 
 // ============= Hardware (M5StickS3) =============
 // StickS3 button pin map from M5Stack docs: KEY1=G11, KEY2=G12.

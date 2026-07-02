@@ -1,2 +1,6 @@
 GEMINI_API_KEY=your-gemini-api-key-here
 HISTORY_API_TOKEN=your-history-api-token-here
+FLASHCARD_APP_BASE_URL=http://localhost:5173
+FLASHCARD_APP_BRIDGE_TOKEN=dev-very-long-random-secret
+CONVERSATION_END_REVIEW_ENABLED=true
+TURN_FEEDBACK_ENABLED=true

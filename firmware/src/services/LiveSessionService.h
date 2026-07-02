@@ -6,16 +6,28 @@
 #include <ArduinoWebsockets.h>
 #include <functional>
 
+struct TurnCompleteInfo {
+  uint32_t turnId = 0;
+  bool hadAudio = false;
+  bool hadModelText = false;
+  bool hadToolActivity = false;
+  bool synthetic = false;
+  String reason;
+};
+
 struct LiveSessionCallbacks {
   std::function<void(const String &, const String &)> onError;
   std::function<void()> onActivity;
   std::function<void(const String &)> onStatus;
   std::function<void()> onReady;
-  std::function<void()> onTurnComplete;
+  std::function<void(const TurnCompleteInfo &)> onTurnComplete;
   std::function<void()> onDropAudio;
   std::function<void(const String &)> onChatId;
   std::function<void(const String &)> onShowText;
   std::function<void(const String &, const String &)> onTranscript;
+  std::function<void(const String &, const String &, const String &)> onTurnFeedback;
+  std::function<void(const String &)> onFaceEmotion;
+  std::function<void(const String &, float, float, float, float)> onFaceControl;
   std::function<void(const String &)> onIgnoredAudio;
   std::function<void(const uint8_t *, size_t)> onAudio;
   std::function<void(int)> onBrightness;
@@ -42,6 +54,20 @@ struct FirmwareUpdateInfo {
   String downloadUrl;
 };
 
+struct LearningResourceSummary {
+  String resourceId;
+  String title;
+  String subtitle;
+  String source;
+  String level;
+};
+
+struct InboxFlashcardSummary {
+  String id;
+  String front;
+  String back;
+};
+
 class LiveSessionService {
 public:
   void init(const LiveSessionCallbacks &callbacks);
@@ -50,6 +76,8 @@ public:
   void poll();
   void reconnectIfNeeded(bool enabled);
   void setChatId(const String &chatId) { _chatId = chatId; }
+  void setVoiceMode(const String &voiceMode) { _voiceMode = voiceMode; }
+  const String &voiceMode() const { return _voiceMode; }
 
   bool isConnected() const { return _connected; }
   int activeServerIndex() const { return _activeServerIndex; }
@@ -57,16 +85,26 @@ public:
 
   bool sendStart();
   bool sendStop();
+  bool sendCancelTurn(const String &reason);
+  bool sendText(const String &content);
   bool sendAudio(const int16_t *data, size_t len);
   bool fetchLastAssistantMessage(String &outMessage);
   bool fetchConversationHistory(ConversationSummary outEntries[], int maxEntries,
                                 int &outCount);
   bool checkFirmwareUpdate(FirmwareUpdateInfo &outInfo);
+  bool fetchLearningResources(const String &source, const String &query,
+                              LearningResourceSummary outEntries[],
+                              int maxEntries, int &outCount);
+  bool fetchInboxFlashcards(const String &mode,
+                            InboxFlashcardSummary outEntries[], int maxEntries,
+                            int &outCount, int &outDue, int &outTotal);
+  bool gradeInboxFlashcard(const String &cardId, const String &grade);
 
 private:
   websockets::WebsocketsClient _ws;
   LiveSessionCallbacks _callbacks;
   String _chatId;
+  String _voiceMode = "assistant";
   bool _connected = false;
   unsigned long _lastReconnectMs = 0;
   int _nextServerIndex = 0;
@@ -74,6 +112,7 @@ private:
 
   static constexpr unsigned long kReconnectMs = 5000;
 
+  void attachWebsocketHandlers();
   void handleMessage(websockets::WebsocketsMessage msg);
   void handleEvent(websockets::WebsocketsEvent event, String data);
   void handleToolCall(const ArduinoJson::JsonDocument &doc);
