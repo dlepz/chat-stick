@@ -92,8 +92,8 @@ void AppController::setup() {
   }
   _chatId = "";
   _voiceMode = _settings.voiceMode();
-  _readingAssistantIntroPending = _voiceMode == "assistant";
-  _quizIntroPending = _voiceMode == "quiz_masters";
+  _readingAssistantIntroPending = false;
+  _quizIntroPending = false;
   _live.setChatId("");
   _live.setVoice(_settings.voice());
   _live.setVoiceMode(_voiceMode);
