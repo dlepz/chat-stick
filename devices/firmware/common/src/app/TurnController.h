@@ -36,7 +36,7 @@ public:
   /// Whether the active thinking turn exceeded the configured duration.
   bool thinkingTimedOut(unsigned long nowMs, unsigned long maxMs) const;
 
-  /// Accept a remote turn-complete signal only after response audio arrives.
+  /// Accept a remote turn-complete signal once response content has arrived.
   bool noteTurnComplete();
 
   /// Mark that response audio has arrived for this turn.
@@ -91,6 +91,9 @@ public:
 private:
   /// Whether the current assistant turn has completed.
   bool _complete = false;
+
+  /// Whether the server already reported turn completion before content arrived.
+  bool _turnCompleteSeen = false;
 
   /// Whether the current assistant turn has produced audio.
   bool _hasAudio = false;

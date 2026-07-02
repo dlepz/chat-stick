@@ -27,6 +27,7 @@ bool endsWithIncomingPrefix(const String &current, const String &incoming,
 
 void TurnController::beginRecording(unsigned long nowMs) {
   _complete = false;
+  _turnCompleteSeen = false;
   _hasAudio = false;
   _hasResponseContent = false;
   _audioChunksSent = 0;
@@ -57,6 +58,7 @@ bool TurnController::thinkingTimedOut(unsigned long nowMs,
 }
 
 bool TurnController::noteTurnComplete() {
+  _turnCompleteSeen = true;
   if (!_hasAudio && !_hasResponseContent) {
     return false;
   }
@@ -67,12 +69,21 @@ bool TurnController::noteTurnComplete() {
 void TurnController::noteAudioReceived() {
   _hasAudio = true;
   _hasResponseContent = true;
+  if (_turnCompleteSeen) {
+    _complete = true;
+  }
 }
 
-void TurnController::noteResponseContent() { _hasResponseContent = true; }
+void TurnController::noteResponseContent() {
+  _hasResponseContent = true;
+  if (_turnCompleteSeen) {
+    _complete = true;
+  }
+}
 
 void TurnController::clearResponse() {
   _complete = false;
+  _turnCompleteSeen = false;
   _hasAudio = false;
   _hasResponseContent = false;
 }
