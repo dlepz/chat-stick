@@ -1,3 +1,4 @@
+import { type ToolLogEntry } from './conversation-store'
 import { generateAndProcessImage } from './image-gen'
 import {
 	type ImageSummary,
@@ -7,15 +8,7 @@ import {
 	searchImages,
 } from './images'
 
-type ServerToolLogEntry = {
-	name: string
-	args: unknown
-	result?: unknown
-	handledBy: 'server' | 'device'
-	status?: 'ok' | 'error'
-	error?: string
-	durationMs?: number
-}
+type ServerToolLogEntry = Omit<ToolLogEntry, 'deviceId' | 'chatId'>
 
 interface GenerateAndSendImageOptions {
 	prompt: string

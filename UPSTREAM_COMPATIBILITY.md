@@ -30,8 +30,8 @@ an older divergent shape that deletes the Reachy app, removes the current
   - transcript overlap/delta handling via `server/src/transcript-delta.ts`
   - low-amplitude audio turns are forwarded instead of discarded as silence
   - latest-turn debug audio endpoint: `/debug/audio/:deviceId/latest.wav|json`
-  - debug audio, web fetch, docs search, email, voice, and image tool handling are
-    split into focused helper modules
+  - conversation logging plus debug audio, web fetch, docs search, email, voice,
+    and image tool handling are split into focused helper modules
   - Imagen vocabulary requests explicitly call `show_image` with concrete
     visual prompts while preserving D1/R2 image history and recall
   - canonical aliases for `user-instructions.md`
