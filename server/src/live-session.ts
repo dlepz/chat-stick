@@ -30,6 +30,7 @@ import {
 	searchReaderPassages,
 } from './flashcard-api'
 import type { LessonContextBundle, LearningResourceSummary } from './learning-types'
+import { appendTranscriptDelta } from './transcript-delta'
 
 interface Env extends EmailEnv {
 	GEMINI_API_KEY: string
@@ -1595,23 +1596,29 @@ export class LiveSession {
 				this.sendToDevice({ type: 'drop_audio' })
 			}
 
-			// Transcriptions — accumulate for DB storage
+			// Transcriptions - accumulate append-only text for captions and DB storage.
 			if (sc.inputTranscription?.text) {
-				this.currentUserText += sc.inputTranscription.text
-				this.sendToDevice({
-					type: 'transcript',
-					source: 'user',
-					text: sc.inputTranscription.text,
-				})
+				const next = appendTranscriptDelta(this.currentUserText, sc.inputTranscription.text)
+				this.currentUserText = next.text
+				if (next.delta) {
+					this.sendToDevice({
+						type: 'transcript',
+						source: 'user',
+						text: next.delta,
+					})
+				}
 			}
 			if (sc.outputTranscription?.text) {
-				this.currentAssistantText += sc.outputTranscription.text
-				this.maybeSendReactiveFaceEmotion(sc.outputTranscription.text)
-				this.sendToDevice({
-					type: 'transcript',
-					source: 'model',
-					text: sc.outputTranscription.text,
-				})
+				const next = appendTranscriptDelta(this.currentAssistantText, sc.outputTranscription.text)
+				this.currentAssistantText = next.text
+				if (next.delta) {
+					this.maybeSendReactiveFaceEmotion(next.delta)
+					this.sendToDevice({
+						type: 'transcript',
+						source: 'model',
+						text: next.delta,
+					})
+				}
 			}
 
 			// Turn complete — save exchange to D1 after consuming all parts in this event.
