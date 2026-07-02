@@ -3,7 +3,10 @@ export interface TranscriptDelta {
 	delta: string
 }
 
-export function appendTranscriptDelta(current: string, incoming: string): TranscriptDelta {
+export function appendTranscriptDelta(
+	current: string,
+	incoming: string
+): TranscriptDelta {
 	if (!incoming) {
 		return { text: current, delta: '' }
 	}
@@ -11,8 +14,9 @@ export function appendTranscriptDelta(current: string, incoming: string): Transc
 		return { text: incoming, delta: incoming }
 	}
 
-	// Live transcription messages can arrive as true deltas or as cumulative /
-	// overlapping partial hypotheses. The device expects append-only text.
+	// Live transcription messages can arrive as either true deltas or as
+	// cumulative/overlapping partial hypotheses. The device reveal animation
+	// expects append-only deltas, so strip any already-emitted prefix here.
 	if (incoming === current || current.startsWith(incoming)) {
 		return { text: current, delta: '' }
 	}
