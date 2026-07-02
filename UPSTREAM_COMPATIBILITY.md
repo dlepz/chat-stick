@@ -34,6 +34,8 @@ an older divergent shape that deletes the Reachy app, removes the current
     voice, and image tool handling are split into focused helper modules
   - Imagen vocabulary requests explicitly call `show_image` with concrete
     visual prompts while preserving D1/R2 image history and recall
+  - Gemini tool response payload construction is centralized for extracted
+    server-side tools
   - canonical aliases for `user-instructions.md`
   - D1 write verification for file tools
 - Setup hygiene:

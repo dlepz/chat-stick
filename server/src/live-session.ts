@@ -18,6 +18,7 @@ import {
 	handleImageTool,
 	imagePromptFromArgs,
 } from './image-tool'
+import { buildToolResponsePayload } from './gemini-tools'
 import {
 	DEFAULT_VOICE,
 	VOICE_LIST_TEXT,
@@ -1664,17 +1665,7 @@ export class LiveSession {
 
 				if (call.name === 'search_docs') {
 					const result = await handleDocsSearchTool(this.env, call.args)
-					const payload = JSON.stringify({
-						toolResponse: {
-							functionResponses: [
-								{
-									name: call.name,
-									id: call.id,
-									response: result.response,
-								},
-							],
-						},
-					})
+					const payload = buildToolResponsePayload(call.name, call.id, result.response)
 					console.log(`[Gemini] Sending tool response: ${payload.length} bytes`)
 
 					if (this.geminiWs) {
@@ -2168,17 +2159,7 @@ export class LiveSession {
 					const url = args.url || ''
 					console.log(`[Gemini] Fetching: ${url}`)
 					const result = await fetchWebPage(url, args.max_chars)
-					const payload = JSON.stringify({
-						toolResponse: {
-							functionResponses: [
-								{
-									name: call.name,
-									id: call.id,
-									response: result,
-								},
-							],
-						},
-					})
+					const payload = buildToolResponsePayload(call.name, call.id, result)
 					if (this.geminiWs) {
 						this.geminiWs.send(payload)
 						console.log(`[Gemini] ${call.name} response sent (${result.content.length} chars)`)
@@ -2203,11 +2184,7 @@ export class LiveSession {
 						call.name,
 						call.args,
 					)
-					const payload = JSON.stringify({
-						toolResponse: {
-							functionResponses: [{ name: call.name, id: call.id, response }],
-						},
-					})
+					const payload = buildToolResponsePayload(call.name, call.id, response)
 					if (this.geminiWs) this.geminiWs.send(payload)
 					await this.logToolCall({
 						name: call.name,
@@ -2220,17 +2197,7 @@ export class LiveSession {
 				} else if (call.name === 'set_voice') {
 					const result = handleSetVoiceTool(call.args)
 					if (!result.ok) {
-						const payload = JSON.stringify({
-							toolResponse: {
-								functionResponses: [
-									{
-										name: call.name,
-										id: call.id,
-										response: result.response,
-									},
-								],
-							},
-						})
+						const payload = buildToolResponsePayload(call.name, call.id, result.response)
 						if (this.geminiWs) this.geminiWs.send(payload)
 						await this.logToolCall({
 							name: call.name,
@@ -2243,17 +2210,7 @@ export class LiveSession {
 					} else {
 						console.log(`[Gemini] Switching voice → ${result.voice}`)
 						this.currentVoice = result.voice
-						const payload = JSON.stringify({
-							toolResponse: {
-								functionResponses: [
-									{
-										name: call.name,
-										id: call.id,
-										response: result.response,
-									},
-								],
-							},
-						})
+						const payload = buildToolResponsePayload(call.name, call.id, result.response)
 						if (this.geminiWs) this.geminiWs.send(payload)
 						this.sendToDevice({ type: 'voice_changed', voice: result.voice })
 						await this.clearSessionResumptionHandle()
@@ -2279,18 +2236,8 @@ export class LiveSession {
 					const requested = (call.args as { level?: unknown }).level
 					const level = resolveThinkingLevel(requested)
 					if (!level) {
-						const payload = JSON.stringify({
-							toolResponse: {
-								functionResponses: [
-									{
-										name: call.name,
-										id: call.id,
-										response: {
-											result: `Unknown thinking level "${String(requested ?? '')}". Available: ${THINKING_LEVEL_LIST_TEXT}.`,
-										},
-									},
-								],
-							},
+						const payload = buildToolResponsePayload(call.name, call.id, {
+							result: `Unknown thinking level "${String(requested ?? '')}". Available: ${THINKING_LEVEL_LIST_TEXT}.`,
 						})
 						if (this.geminiWs) this.geminiWs.send(payload)
 						await this.logToolCall({
@@ -2305,18 +2252,8 @@ export class LiveSession {
 						this.currentThinkingLevel = level
 						await this.saveThinkingLevelForChat(level)
 						await this.clearSessionResumptionHandle()
-						const payload = JSON.stringify({
-							toolResponse: {
-								functionResponses: [
-									{
-										name: call.name,
-										id: call.id,
-										response: {
-											result: `Thinking level set to ${level}. It will apply on the next turn; new conversations still start at ${DEFAULT_THINKING_LEVEL}.`,
-										},
-									},
-								],
-							},
+						const payload = buildToolResponsePayload(call.name, call.id, {
+							result: `Thinking level set to ${level}. It will apply on the next turn; new conversations still start at ${DEFAULT_THINKING_LEVEL}.`,
 						})
 						if (this.geminiWs) this.geminiWs.send(payload)
 						this.pendingReconnectAfterTurn = true
@@ -2330,11 +2267,7 @@ export class LiveSession {
 					}
 				} else if (call.name === 'email_me') {
 					const result = await handleEmailTool(this.env, call.args)
-					const payload = JSON.stringify({
-						toolResponse: {
-							functionResponses: [{ name: call.name, id: call.id, response: result.response }],
-						},
-					})
+					const payload = buildToolResponsePayload(call.name, call.id, result.response)
 					if (this.geminiWs) this.geminiWs.send(payload)
 					await this.logToolCall({
 						name: call.name,
@@ -2348,16 +2281,8 @@ export class LiveSession {
 				} else if (call.name === 'show_image') {
 					const prompt = imagePromptFromArgs(call.args)
 					if (!prompt) {
-						const payload = JSON.stringify({
-							toolResponse: {
-								functionResponses: [
-									{
-										name: call.name,
-										id: call.id,
-										response: { result: 'no prompt provided' },
-									},
-								],
-							},
+						const payload = buildToolResponsePayload(call.name, call.id, {
+							result: 'no prompt provided',
 						})
 						if (this.geminiWs) this.geminiWs.send(payload)
 						await this.logToolCall({
@@ -2370,18 +2295,8 @@ export class LiveSession {
 						})
 					} else {
 						// Tell Gemini the image is on its way so it can keep talking.
-						const ackPayload = JSON.stringify({
-							toolResponse: {
-								functionResponses: [
-									{
-										name: call.name,
-										id: call.id,
-										response: {
-											result: 'image generation started; it will appear on screen shortly',
-										},
-									},
-								],
-							},
+						const ackPayload = buildToolResponsePayload(call.name, call.id, {
+							result: 'image generation started; it will appear on screen shortly',
 						})
 						if (this.geminiWs) this.geminiWs.send(ackPayload)
 						// Tell the device an image is coming so it can show the pulse animation.
@@ -2417,11 +2332,7 @@ export class LiveSession {
 						deviceId: this.deviceId,
 						sendToDevice: (msg) => this.sendToDevice(msg),
 					})
-					const payload = JSON.stringify({
-						toolResponse: {
-							functionResponses: [{ name: call.name, id: call.id, response }],
-						},
-					})
+					const payload = buildToolResponsePayload(call.name, call.id, response)
 					if (this.geminiWs) this.geminiWs.send(payload)
 					await this.logToolCall({
 						name: call.name,
