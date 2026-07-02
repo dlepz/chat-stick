@@ -50,13 +50,13 @@ import {
 import { handleDocsSearchTool } from './docs-tool'
 import { handleEmailTool } from './email-tool'
 import { type WebFetchArgs, fetchWebPage } from './web-fetch'
+import { GeminiClient } from './gemini-client'
 import {
 	GEMINI_LIVE_MODEL,
 	buildGeminiActivityStartPayload,
 	buildGeminiAudioStreamEndPayload,
 	buildGeminiRealtimeAudioPayload,
 	buildGeminiRealtimeTextPayload,
-	openGeminiLiveWebSocket,
 } from './gemini-live'
 
 interface Env extends EmailEnv, DebugAudioEnv {
@@ -141,9 +141,7 @@ export class LiveSession {
 	private state: DurableObjectState
 	private env: Env
 	private deviceWs: WebSocket | null = null
-	private geminiWs: WebSocket | null = null
-	private geminiReady = false
-	private geminiConnecting = false
+	private gemini = new GeminiClient()
 	private deviceId = 'unknown'
 	private chatId = ''
 	private imageTargetWidth: number = DEFAULT_IMAGE_WIDTH
@@ -294,20 +292,13 @@ export class LiveSession {
 	}
 
 	private async connectGemini(sessionGeneration = this.sessionGeneration) {
-		if (this.geminiConnecting) {
+		if (this.gemini.isConnecting) {
 			return
 		}
-		this.geminiConnecting = true
 
-		if (this.geminiWs) {
+		if (this.gemini.isConnected) {
 			console.log('[Gemini] Closing prior session before opening new one')
-			try {
-				this.geminiWs.close()
-			} catch {
-				// ignore
-			}
-			this.geminiWs = null
-			this.geminiReady = false
+			this.gemini.close()
 		}
 
 		const userInstructions = await this.getUserInstructionsForPrompt()
@@ -318,85 +309,16 @@ export class LiveSession {
 		this.activityOpen = false
 
 		try {
-			const ws = await openGeminiLiveWebSocket(this.env.GEMINI_API_KEY)
-			if (!ws) {
-				this.geminiConnecting = false
-				console.error('[Gemini] WebSocket upgrade failed')
-				this.sendToDevice({
-					type: 'error',
-					category: 'gemini_unavailable',
-					message: 'Failed to connect to AI',
-				})
-				return
-			}
-			if (sessionGeneration !== this.sessionGeneration) {
-				this.geminiConnecting = false
-				try {
-					ws.close()
-				} catch {
-					// ignore
-				}
-				return
-			}
-
-			ws.accept()
-			this.geminiWs = ws
-
-			ws.addEventListener('message', (event) => {
-				if (sessionGeneration !== this.sessionGeneration) return
-				if (this.geminiWs !== ws) return
-				const raw = event.data
-				const text = typeof raw === 'string' ? raw : new TextDecoder().decode(raw as ArrayBuffer)
-				this.onGeminiMessage(text).catch((err) => {
-					console.error('[Gemini] Message handler error:', err)
-				})
-			})
-
 			const resumptionHandleForAttempt = this.sessionResumptionHandle
-
-			ws.addEventListener('close', (event) => {
-				if (sessionGeneration !== this.sessionGeneration) return
-				if (this.geminiWs !== ws) return
-				const wasReady = this.geminiReady
-				console.log(
-					`[Gemini] Disconnected: code=${event.code} reason="${event.reason}" wasReady=${this.geminiReady}`,
-				)
-				this.geminiWs = null
-				this.geminiReady = false
-				this.geminiConnecting = false
-				this.activityOpen = false
-				// Don't send error if we haven't set up yet — connectGemini will retry
-				if (!wasReady && resumptionHandleForAttempt) {
-					this.clearSessionResumptionHandle()
-						.then(() => {
-							if (sessionGeneration === this.sessionGeneration) {
-								this.connectGemini(sessionGeneration).catch((err) => {
-									this.geminiConnecting = false
-									console.error('[Gemini] Failed to retry without session resumption:', err)
-								})
-							}
-						})
-						.catch((err) => {
-							console.error('[Gemini] Failed to clear bad session handle:', err)
-						})
-				}
-			})
-
-			ws.addEventListener('error', (event) => {
-				if (sessionGeneration !== this.sessionGeneration) return
-				if (this.geminiWs !== ws) return
-				this.geminiConnecting = false
-				console.error('[Gemini] WebSocket error:', event)
-			})
-
 			const voice = findVoice(this.currentVoice) ?? findVoice(DEFAULT_VOICE)!
+			const canEmail = emailEnabled(this.env)
 			const systemInstructionText = buildSystemInstructionText({
 				voice,
 				thinkingLevel: this.currentThinkingLevel,
 				voiceMode: this.voiceMode,
 				locationContext: this.locationContext,
 				userInstructions,
-				canEmail: emailEnabled(this.env),
+				canEmail,
 				activeLearningContext: this.activeLearningContext,
 				conversationEndReviewEnabled: this.conversationEndReviewEnabled,
 				recentConversationContext: this.recentConversationContext,
@@ -438,19 +360,61 @@ export class LiveSession {
 				setup.historyConfig = { initialHistoryInClientContent: true }
 			}
 
-			// Send session setup
-			ws.send(
-				JSON.stringify({
+			const result = await this.gemini.connect({
+				apiKey: this.env.GEMINI_API_KEY,
+				setupPayload: JSON.stringify({
 					setup: {
 						...setup,
-						tools: buildGeminiTools({ canEmail: emailEnabled(this.env) }),
+						tools: buildGeminiTools({ canEmail }),
 					},
 				}),
-			)
+				isCurrent: () => sessionGeneration === this.sessionGeneration,
+				onMessage: (text) => {
+					this.onGeminiMessage(text).catch((err) => {
+						console.error('[Gemini] Message handler error:', err)
+					})
+				},
+				onClose: (event, wasReady) => {
+					if (sessionGeneration !== this.sessionGeneration) return
+					console.log(
+						`[Gemini] Disconnected: code=${event.code} reason="${event.reason}" wasReady=${wasReady}`,
+					)
+					this.activityOpen = false
+					// Don't send error if we haven't set up yet — connectGemini will retry
+					if (!wasReady && resumptionHandleForAttempt) {
+						this.clearSessionResumptionHandle()
+							.then(() => {
+								if (sessionGeneration === this.sessionGeneration) {
+									this.connectGemini(sessionGeneration).catch((err) => {
+										console.error('[Gemini] Failed to retry without session resumption:', err)
+									})
+								}
+							})
+							.catch((err) => {
+								console.error('[Gemini] Failed to clear bad session handle:', err)
+							})
+					}
+				},
+				onError: (event) => {
+					if (sessionGeneration !== this.sessionGeneration) return
+					console.error('[Gemini] WebSocket error:', event)
+				},
+			})
 
-			console.log('[Gemini] Setup message sent')
+			if (result === 'unavailable') {
+				console.error('[Gemini] WebSocket upgrade failed')
+				this.sendToDevice({
+					type: 'error',
+					category: 'gemini_unavailable',
+					message: 'Failed to connect to AI',
+				})
+				return
+			}
+
+			if (result === 'connected') {
+				console.log('[Gemini] Setup message sent')
+			}
 		} catch (err) {
-			this.geminiConnecting = false
 			console.error('[Gemini] Connection error:', err)
 			this.sendToDevice({
 				type: 'error',
@@ -464,10 +428,9 @@ export class LiveSession {
 	private static readonly MIN_TURN_BYTES = 6400
 
 	private ensureGeminiSession(sessionGeneration = this.sessionGeneration) {
-		if (this.geminiWs || this.geminiConnecting) return
+		if (this.gemini.isConnected || this.gemini.isConnecting) return
 		console.log('[Gemini] Starting session on first device input')
 		this.connectGemini(sessionGeneration).catch((err) => {
-			this.geminiConnecting = false
 			console.error('[Gemini] Failed to start session:', err)
 		})
 	}
@@ -516,7 +479,7 @@ export class LiveSession {
 	}
 
 	private flushQueuedAudioToGemini() {
-		if (!this.geminiWs || !this.geminiReady || this.queuedAudioChunks.length === 0) {
+		if (!this.gemini.isReady || this.queuedAudioChunks.length === 0) {
 			return
 		}
 
@@ -531,25 +494,25 @@ export class LiveSession {
 	}
 
 	private sendActivityStartToGemini(): boolean {
-		if (!this.geminiWs || !this.geminiReady) return false
+		if (!this.gemini.isReady) return false
 		if (this.activityOpen) return true
-		this.geminiWs.send(buildGeminiActivityStartPayload())
+		this.gemini.send(buildGeminiActivityStartPayload())
 		this.activityOpen = true
 		console.log('[Bridge] Sent activityStart')
 		return true
 	}
 
 	private sendActivityEndToGemini(): boolean {
-		if (!this.geminiWs || !this.geminiReady) return false
+		if (!this.gemini.isReady) return false
 		if (!this.activityOpen) return true
-		this.geminiWs.send(buildGeminiAudioStreamEndPayload())
+		this.gemini.send(buildGeminiAudioStreamEndPayload())
 		this.activityOpen = false
 		console.log('[Bridge] Sent audioStreamEnd')
 		return true
 	}
 
 	private sendAudioChunkToGemini(data: ArrayBuffer): boolean {
-		if (!this.geminiWs || !this.geminiReady) {
+		if (!this.gemini.isReady) {
 			return false
 		}
 		if (!this.activityOpen) {
@@ -557,7 +520,7 @@ export class LiveSession {
 		}
 
 		const base64 = arrayBufferToBase64(data)
-		this.geminiWs.send(buildGeminiRealtimeAudioPayload(base64))
+		this.gemini.send(buildGeminiRealtimeAudioPayload(base64))
 		return true
 	}
 
@@ -596,7 +559,7 @@ export class LiveSession {
 		this.lastActivityMs = Date.now()
 		if (data instanceof ArrayBuffer) {
 			this.trackIncomingAudio(data)
-			if (!this.geminiWs || !this.geminiReady) {
+			if (!this.gemini.isReady) {
 				this.queueAudioChunk(data)
 				this.ensureGeminiSession()
 				return
@@ -616,21 +579,21 @@ export class LiveSession {
 					this.pendingStopAfterGeminiReady = false
 					this.pendingActivityStartAfterGeminiReady = true
 					this.ensureGeminiSession()
-					if (this.geminiWs && this.geminiReady) {
+					if (this.gemini.isReady) {
 						this.pendingActivityStartAfterGeminiReady = false
 						this.sendActivityStartToGemini()
 					}
 				}
 
 				// Forward tool response to Gemini
-				if (msg.type === 'tool_response' && this.geminiWs && this.geminiReady) {
+				if (msg.type === 'tool_response' && this.gemini.isReady) {
 					const pending = this.pendingDeviceCalls.get(msg.id)
 					if (!pending) {
 						console.warn(`[Bridge] Ignoring stale tool response: ${msg.name} (${msg.id})`)
 						return
 					}
 					console.log(`[Bridge] Tool response: ${msg.name} → Gemini`)
-					this.geminiWs.send(
+					this.gemini.send(
 						JSON.stringify({
 							toolResponse: {
 								functionResponses: [
@@ -654,14 +617,14 @@ export class LiveSession {
 				}
 
 				// Forward text input to Gemini
-				if (msg.type === 'text' && msg.content && this.geminiWs && this.geminiReady) {
+				if (msg.type === 'text' && msg.content && this.gemini.isReady) {
 					this.sendActivityStartToGemini()
-					this.geminiWs.send(buildGeminiRealtimeTextPayload(msg.content))
+					this.gemini.send(buildGeminiRealtimeTextPayload(msg.content))
 					this.sendActivityEndToGemini()
 				}
 
 				if (msg.type === 'stop') {
-					if (!this.geminiWs || !this.geminiReady) {
+					if (!this.gemini.isReady) {
 						this.pendingStopAfterGeminiReady = true
 						this.ensureGeminiSession()
 						return
@@ -695,10 +658,9 @@ export class LiveSession {
 		// Session ready
 		if (msg.setupComplete) {
 			console.log('[Gemini] Setup complete')
-			this.geminiReady = true
-			this.geminiConnecting = false
-			if (this.pendingInitialHistoryTurns.length > 0 && this.geminiWs) {
-				this.geminiWs.send(
+			this.gemini.markReady()
+			if (this.pendingInitialHistoryTurns.length > 0 && this.gemini.isConnected) {
+				this.gemini.send(
 					JSON.stringify({
 						clientContent: {
 							turns: this.pendingInitialHistoryTurns,
@@ -836,8 +798,7 @@ export class LiveSession {
 					const payload = buildToolResponsePayload(call.name, call.id, result.response)
 					console.log(`[Gemini] Sending tool response: ${payload.length} bytes`)
 
-					if (this.geminiWs) {
-						this.geminiWs.send(payload)
+					if (this.gemini.send(payload)) {
 						console.log(`[Gemini] Tool response sent`)
 					}
 					await this.logToolCall({
@@ -872,7 +833,7 @@ export class LiveSession {
 							matched_text: r.matchedText,
 							score: r.score,
 						}))
-						this.geminiWs?.send(
+						this.gemini.send(
 							JSON.stringify({
 								toolResponse: {
 									functionResponses: [
@@ -898,7 +859,7 @@ export class LiveSession {
 						})
 					} catch (err) {
 						const message = err instanceof Error ? err.message : String(err)
-						this.geminiWs?.send(
+						this.gemini.send(
 							JSON.stringify({
 								toolResponse: {
 									functionResponses: [
@@ -927,7 +888,7 @@ export class LiveSession {
 						})
 						this.activeLearningContext = context
 						await this.state.storage.put('activeLearningContext', context)
-						this.geminiWs?.send(
+						this.gemini.send(
 							JSON.stringify({
 								toolResponse: {
 									functionResponses: [
@@ -964,7 +925,7 @@ export class LiveSession {
 						})
 					} catch (err) {
 						const message = err instanceof Error ? err.message : String(err)
-						this.geminiWs?.send(
+						this.gemini.send(
 							JSON.stringify({
 								toolResponse: {
 									functionResponses: [
@@ -1001,7 +962,7 @@ export class LiveSession {
 							query: args.query || '',
 							limit: args.limit || 5,
 						})
-						this.geminiWs?.send(
+						this.gemini.send(
 							JSON.stringify({
 								toolResponse: {
 									functionResponses: [
@@ -1036,7 +997,7 @@ export class LiveSession {
 						})
 					} catch (err) {
 						const message = err instanceof Error ? err.message : String(err)
-						this.geminiWs?.send(
+						this.gemini.send(
 							JSON.stringify({
 								toolResponse: {
 									functionResponses: [
@@ -1072,7 +1033,7 @@ export class LiveSession {
 						})
 						this.activeLearningContext = context
 						await this.state.storage.put('activeLearningContext', context)
-						this.geminiWs?.send(
+						this.gemini.send(
 							JSON.stringify({
 								toolResponse: {
 									functionResponses: [
@@ -1107,7 +1068,7 @@ export class LiveSession {
 						})
 					} catch (err) {
 						const message = err instanceof Error ? err.message : String(err)
-						this.geminiWs?.send(
+						this.gemini.send(
 							JSON.stringify({
 								toolResponse: {
 									functionResponses: [
@@ -1130,7 +1091,7 @@ export class LiveSession {
 						})
 					}
 				} else if (call.name === 'get_current_learning_resource') {
-					this.geminiWs?.send(
+					this.gemini.send(
 						JSON.stringify({
 							toolResponse: {
 								functionResponses: [
@@ -1167,7 +1128,7 @@ export class LiveSession {
 					const previous = this.activeLearningContext?.resourceId
 					this.activeLearningContext = null
 					await this.state.storage.delete('activeLearningContext')
-					this.geminiWs?.send(
+					this.gemini.send(
 						JSON.stringify({
 							toolResponse: {
 								functionResponses: [
@@ -1213,7 +1174,7 @@ export class LiveSession {
 									: undefined),
 							note: args.note,
 						})
-						this.geminiWs?.send(
+						this.gemini.send(
 							JSON.stringify({
 								toolResponse: {
 									functionResponses: [
@@ -1240,7 +1201,7 @@ export class LiveSession {
 						})
 					} catch (err) {
 						const message = err instanceof Error ? err.message : String(err)
-						this.geminiWs?.send(
+						this.gemini.send(
 							JSON.stringify({
 								toolResponse: {
 									functionResponses: [
@@ -1266,7 +1227,7 @@ export class LiveSession {
 					try {
 						await this.commitExchange()
 						const review = await this.generatePracticeReview()
-						this.geminiWs?.send(
+						this.gemini.send(
 							JSON.stringify({
 								toolResponse: {
 									functionResponses: [
@@ -1292,7 +1253,7 @@ export class LiveSession {
 						})
 					} catch (err) {
 						const message = err instanceof Error ? err.message : String(err)
-						this.geminiWs?.send(
+						this.gemini.send(
 							JSON.stringify({
 								toolResponse: {
 									functionResponses: [
@@ -1328,8 +1289,7 @@ export class LiveSession {
 					console.log(`[Gemini] Fetching: ${url}`)
 					const result = await fetchWebPage(url, args.max_chars)
 					const payload = buildToolResponsePayload(call.name, call.id, result)
-					if (this.geminiWs) {
-						this.geminiWs.send(payload)
+					if (this.gemini.send(payload)) {
 						console.log(`[Gemini] ${call.name} response sent (${result.content.length} chars)`)
 					}
 					await this.logToolCall({
@@ -1353,7 +1313,7 @@ export class LiveSession {
 						call.args,
 					)
 					const payload = buildToolResponsePayload(call.name, call.id, response)
-					if (this.geminiWs) this.geminiWs.send(payload)
+					this.gemini.send(payload)
 					await this.logToolCall({
 						name: call.name,
 						args: call.args,
@@ -1366,7 +1326,7 @@ export class LiveSession {
 					const result = handleSetVoiceTool(call.args)
 					if (!result.ok) {
 						const payload = buildToolResponsePayload(call.name, call.id, result.response)
-						if (this.geminiWs) this.geminiWs.send(payload)
+						this.gemini.send(payload)
 						await this.logToolCall({
 							name: call.name,
 							args: call.args,
@@ -1379,7 +1339,7 @@ export class LiveSession {
 						console.log(`[Gemini] Switching voice → ${result.voice}`)
 						this.currentVoice = result.voice
 						const payload = buildToolResponsePayload(call.name, call.id, result.response)
-						if (this.geminiWs) this.geminiWs.send(payload)
+						this.gemini.send(payload)
 						this.sendToDevice({ type: 'voice_changed', voice: result.voice })
 						await this.clearSessionResumptionHandle()
 						await this.logToolCall({
@@ -1389,15 +1349,7 @@ export class LiveSession {
 							handledBy: 'server',
 							durationMs: Date.now() - startMs,
 						})
-						if (this.geminiWs) {
-							try {
-								this.geminiWs.close()
-							} catch {
-								/* ignore */
-							}
-							this.geminiWs = null
-							this.geminiReady = false
-						}
+						this.gemini.close()
 						await this.connectGemini()
 					}
 				} else if (call.name === 'set_thinking_level') {
@@ -1407,7 +1359,7 @@ export class LiveSession {
 						const payload = buildToolResponsePayload(call.name, call.id, {
 							result: `Unknown thinking level "${String(requested ?? '')}". Available: ${THINKING_LEVEL_LIST_TEXT}.`,
 						})
-						if (this.geminiWs) this.geminiWs.send(payload)
+						this.gemini.send(payload)
 						await this.logToolCall({
 							name: call.name,
 							args: call.args,
@@ -1423,7 +1375,7 @@ export class LiveSession {
 						const payload = buildToolResponsePayload(call.name, call.id, {
 							result: `Thinking level set to ${level}. It will apply on the next turn; new conversations still start at ${DEFAULT_THINKING_LEVEL}.`,
 						})
-						if (this.geminiWs) this.geminiWs.send(payload)
+						this.gemini.send(payload)
 						this.pendingReconnectAfterTurn = true
 						await this.logToolCall({
 							name: call.name,
@@ -1436,7 +1388,7 @@ export class LiveSession {
 				} else if (call.name === 'email_me') {
 					const result = await handleEmailTool(this.env, call.args)
 					const payload = buildToolResponsePayload(call.name, call.id, result.response)
-					if (this.geminiWs) this.geminiWs.send(payload)
+					this.gemini.send(payload)
 					await this.logToolCall({
 						name: call.name,
 						args: result.logArgs,
@@ -1452,7 +1404,7 @@ export class LiveSession {
 						const payload = buildToolResponsePayload(call.name, call.id, {
 							result: 'no prompt provided',
 						})
-						if (this.geminiWs) this.geminiWs.send(payload)
+						this.gemini.send(payload)
 						await this.logToolCall({
 							name: call.name,
 							args: call.args,
@@ -1466,7 +1418,7 @@ export class LiveSession {
 						const ackPayload = buildToolResponsePayload(call.name, call.id, {
 							result: 'image generation started; it will appear on screen shortly',
 						})
-						if (this.geminiWs) this.geminiWs.send(ackPayload)
+						this.gemini.send(ackPayload)
 						// Tell the device an image is coming so it can show the pulse animation.
 						this.sendToDevice({ type: 'show_image_pending' })
 						// Run the pipeline in the background and push the result when ready.
@@ -1501,7 +1453,7 @@ export class LiveSession {
 						sendToDevice: (msg) => this.sendToDevice(msg),
 					})
 					const payload = buildToolResponsePayload(call.name, call.id, response)
-					if (this.geminiWs) this.geminiWs.send(payload)
+					this.gemini.send(payload)
 					await this.logToolCall({
 						name: call.name,
 						args: call.args,
@@ -1533,15 +1485,7 @@ export class LiveSession {
 						chatId: this.chatId,
 						reset: true,
 					})
-					if (this.geminiWs) {
-						try {
-							this.geminiWs.close()
-						} catch {
-							/* ignore */
-						}
-						this.geminiWs = null
-						this.geminiReady = false
-					}
+					this.gemini.close()
 					await this.connectGemini()
 				} else {
 					// Forward tool call to device for execution — log when response arrives
@@ -1855,33 +1799,18 @@ export class LiveSession {
 		if (options.clearResumptionHandle) {
 			await this.clearSessionResumptionHandle()
 		}
-		if (this.geminiWs) {
-			try {
-				this.geminiWs.close()
-			} catch {
-				// ignore
-			}
-		}
-		this.geminiWs = null
-		this.geminiReady = false
-		this.geminiConnecting = false
+		this.gemini.close()
 		await this.connectGemini()
 	}
 
 	async alarm() {
-		if (!this.geminiWs && !this.deviceWs) return
+		if (!this.gemini.isConnected && !this.deviceWs) return
 		const idle = Date.now() - this.lastActivityMs
 		if (idle >= LiveSession.IDLE_CLOSE_MS) {
-			if (this.geminiWs) {
+			if (this.gemini.isConnected) {
 				console.log(`[Session] Idle ${Math.floor(idle / 1000)}s — closing Gemini`)
 				await this.commitExchange()
-				try {
-					this.geminiWs.close()
-				} catch {
-					// ignore
-				}
-				this.geminiWs = null
-				this.geminiReady = false
+				this.gemini.close()
 			}
 			return
 		}
@@ -1910,16 +1839,7 @@ export class LiveSession {
 		this.pendingInitialHistoryTurns = []
 		this.activityOpen = false
 
-		if (this.geminiWs) {
-			try {
-				this.geminiWs.close()
-			} catch {
-				// ignore
-			}
-			this.geminiWs = null
-			this.geminiReady = false
-		}
-		this.geminiConnecting = false
+		this.gemini.close()
 		if (this.deviceWs) {
 			try {
 				this.deviceWs.close()

@@ -42,6 +42,9 @@ an older divergent shape that deletes the Reachy app, removes the current
     while preserving local German-learning, vocab-image, file, and email tools
   - Gemini Live websocket URL/model and realtime audio/text/end payloads are
     centralized, with push-to-talk stop using `audioStreamEnd`
+  - Gemini websocket lifecycle handling is centralized in
+    `server/src/gemini-client.ts` while preserving local session resumption,
+    initial history seeding, thinking-level reconnects, and learning tools
   - canonical aliases for `user-instructions.md`
   - D1 write verification for file tools
 - Legacy firmware behavior:
