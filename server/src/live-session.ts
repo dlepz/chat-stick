@@ -139,6 +139,7 @@ export class LiveSession {
 	private static readonly IDLE_CLOSE_MS = 120_000
 	private static readonly MAX_QUEUED_AUDIO_BYTES = 1_000_000
 	private static readonly MAX_QUEUED_TEXT_INPUTS = 8
+	private static readonly SILENCE_AVG_ABS_THRESHOLD = 150
 	private state: DurableObjectState
 	private env: Env
 	private deviceWs: WebSocket | null = null
@@ -1777,7 +1778,7 @@ export class LiveSession {
 		await this.commitExchange()
 	}
 
-	private getIgnoredTurnReason(): 'too_short' | null {
+	private getIgnoredTurnReason(): 'too_short' | 'silent' | null {
 		if (this.currentTurnAudioBytes < LiveSession.MIN_TURN_BYTES) {
 			return 'too_short'
 		}
@@ -1786,7 +1787,8 @@ export class LiveSession {
 			return 'too_short'
 		}
 
-		return null
+		const averageAbs = this.currentTurnAbsSum / this.currentTurnSamples
+		return averageAbs < LiveSession.SILENCE_AVG_ABS_THRESHOLD ? 'silent' : null
 	}
 
 	private currentTurnAverageAbs() {
