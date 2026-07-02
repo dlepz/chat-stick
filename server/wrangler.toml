@@ -41,10 +41,18 @@ TURN_FEEDBACK_ENABLED = "true"
 # wrangler secret put GEMINI_API_KEY
 # wrangler secret put HISTORY_API_TOKEN
 # wrangler secret put FLASHCARD_APP_BRIDGE_TOKEN
-# Optional OTA firmware support:
-# [r2_buckets]
-# binding = "OTA_BUCKET"
-# bucket_name = "chat-stick-firmware"
-# wrangler secret put FIRMWARE_LATEST_VERSION
-# wrangler secret put FIRMWARE_NOTES
-# wrangler secret put FIRMWARE_OBJECT_KEY
+
+# R2 bucket layout (OTA picks the highest N from firmware-v<N>.bin):
+#   chat-stick/firmware/firmware-v<N>.bin
+#   chat-stick/assets/<device-id>/images/<key>.png
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "m5-stick-assets"
+
+# Outbound email via Cloudflare Email Routing.
+# steve@tldraw.com is verified as a destination.
+# wrangler secret put EMAIL_SENDER     # steve@teamldraw.com
+# wrangler secret put EMAIL_RECIPIENT  # steve@tldraw.com
+[[send_email]]
+name = "EMAIL"
+destination_address = "steve@tldraw.com"

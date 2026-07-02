@@ -1,6 +1,6 @@
 # Designs
 
-Design spec for the M5StickS3 live voice assistant firmware. Focuses on concrete patterns (typography, colors, spacing, effects) and all screens/states rendered by the UI layer. The AI responds via audio, not text; the screen only displays text when the model calls the `show_text` tool.
+Design spec for the M5StickS3 live voice assistant firmware. Focuses on concrete patterns (typography, colors, spacing, effects) and all screens/states rendered by the UI layer. The AI responds via audio, not text; the screen only displays text when the model calls the `show_text` tool, or an image when the model calls `show_image`.
 
 ## UX Guidance
 
@@ -42,6 +42,9 @@ Design spec for the M5StickS3 live voice assistant firmware. Focuses on concrete
   - Error states currently require power cycle. Should offer actions (Try again, Reset device) as designed.
 - Tool text persistence
   - Tool text should persist across turn completion until the next turn starts or the user dismisses it, not clear on every state change.
+- Images
+  - `show_image` is generated server-side via Imagen → Floyd-Steinberg dithered to a 232×112 1-bit bitmap → sent over the device WS. Generation is fire-and-forget (~10s); the device pulses while waiting.
+  - When a turn produces both an image and `show_text`, the image is page 0 and text starts at page 1. Paging between image and text pages uses Button B exactly like paging through text pages — there is no special interaction for the image page.
 
 ### Rendering Rules (TUI-first)
 
@@ -84,11 +87,13 @@ Constants (RGB565): BLACK 0x0000, WHITE 0xFFFF, GRAY 0x7BEF, LIGHT_GRAY 0xBDF7, 
 - Word wrapping at 29 chars; 7 lines per page.
 - Footer row (row 8): ▾ (more pages) or ● (last page), right-aligned. Optionally a left-aligned action label.
 - Tool text follows the same paging rules; Button B advances pages.
+- When the turn includes a `show_image` payload, the image counts as page 0 and `show_text` text begins at page 1. Switching between image and text pages is the same Button B paging — no special-case interaction.
 - Lists (e.g., WiFi networks, Resume Chat) follow the same paging rules and use Button B to advance pages.
 
 ### Effects
 
 - Shimmer (text): diagonal wave sweeping top-right → bottom-left over 6 gray→white steps. Used for "Starting...", "Thinking...", "Updating...", "Resetting..." and tool text while Generating.
+- Pulse (image): brightness breathing ~40%→100% applied to the image while it is rendering or while a follow-up turn is generating with the image still visible.
 - Animation step: ~80 ms per frame.
 
 ### Indicators & Icons
@@ -97,6 +102,17 @@ Constants (RGB565): BLACK 0x0000, WHITE 0xFFFF, GRAY 0x7BEF, LIGHT_GRAY 0xBDF7, 
 - Selection indicator: ▸ before the currently highlighted menu item.
 - Current item indicator: ● before the active item in a list (connected network, active chat session).
 - No on-screen recording dot/spinner. The device LED indicates recording.
+
+### Images
+
+- Source: model-generated via the `show_image` tool. The server calls Imagen, dithers (Floyd-Steinberg) to 1-bit, and pushes the packed bitmap as a `show_image` WebSocket frame. If the R2 `STORAGE` binding is configured, the dithered PNG is also persisted at `chat-stick/assets/<device-id>/images/<chat-id>-<stamp>.png`; otherwise the image is forgotten after display.
+- Format on device: 1-bit packed bitmap, MSB first, base64-encoded over WS. Decoded straight into the framebuffer — no resizing on device.
+- Bounding box: same as the chat text area — 232×112 px at (x:4, y:4), rows 1–7. Footer row (row 8) is reserved for the page indicator as on text pages.
+- Scaling: server emits exactly 232×112; cover-fit + clip is performed before dither. A 16:9 source crops a few pixels top/bottom — acceptable for monochrome output.
+- Pulse: applied to the image during generation and during any subsequent turn that is generating while the image is still visible.
+- Pagination: image is page 0 of the turn; `show_text` content starts at page 1. Page-switching uses Button B exactly as for text pages.
+- Persistence: same lifecycle as tool text — the image stays on screen across turn completion until the next turn produces new content or the user dismisses with Button B from the last page.
+- Pending state: between the model calling `show_image` and the bitmap arriving, the device may show its prior content with the pulse effect to signal that an image is on its way. On generation failure the device clears any pending state and returns to the prior content.
 
 ### Text Sanitization
 
@@ -384,6 +400,35 @@ Events:
 
 - TURN_COMPLETE + PLAYBACK_IDLE: Return to idle → CHAT-01 or CHAT-02
 - TOOL_TEXT: Update displayed tool text
+
+### Chat — Idle (image, single page or first page) — CHAT-09
+
+Shown when the model called `show_image` and the dithered bitmap has arrived. Image fills rows 1–7. Footer row shows ▾ if there is also `show_text` content in this turn (next page is text), or ● if this is the only page.
+
+```
+┌──────────────────────────────┐
+│ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ │
+│ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ │
+│ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ │
+│ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ │  ← dithered bitmap, 232×112
+│ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ │
+│ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ │
+│ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ │
+│                            ▾ │
+└──────────────────────────────┘
+```
+
+Interactions:
+
+- PRESS_A: Start recording → CHAT-05
+- PRESS_B: Next page — text page 1 if present, otherwise dismiss → CHAT-01
+- HOLD_B: Open menu → HOME-01
+
+Events:
+
+- INTERNET_LOST: Show inline message "Could not connect to the internet." with options "Set up WiFi", "Try again" (remain in Chat)
+- IMAGE_PENDING: While generating, render with pulse on whatever was last shown (prior tool text or idle copy).
+- IMAGE_FAILED: Clear pending state; return to prior content. No persistent error screen — the model can narrate the failure via audio.
 
 ### Chat — Transient failure — CHAT-08
 
@@ -1071,21 +1116,19 @@ Power management dims or disables the display based on idle time. Power timers o
 | Active     | User activity | Full brightness         | On   |
 | Dimmed     | 60s idle      | Reduced brightness (48) | On   |
 | ScreenOff  | 2 min idle    | Display off (0)         | On   |
-| LightSleep | 5 min idle    | Display off             | Off  |
-| PowerOff   | 10 min idle   | Device off              | Off  |
+| PowerOff   | 5 min idle    | Device off              | Off  |
 
-Waking from Dimmed/ScreenOff/LightSleep:
+Waking from Dimmed/ScreenOff:
 
 - Any button press begins waking (transitional Waking state)
 - Button release finishes waking, restores Active state and full brightness
-- If waking from LightSleep, WiFi reconnects and WebSocket re-establishes
 
 ## Controls
 
 - **Button A**: Start recording (or resume during grace); interrupt generation/playback and start recording; select in menus.
 - **Button B** (click): Paginate tool text and WiFi/Resume lists; cycle menu items; dismiss tool text.
 - **Button B** (hold): Open menu from chat; go back/close menu.
-- **During power-save** (Dimmed, ScreenOff, LightSleep): Either button press begins waking; release finishes.
+- **During power-save** (Dimmed, ScreenOff): Either button press begins waking; release finishes.
 
 ## Copy Reference
 

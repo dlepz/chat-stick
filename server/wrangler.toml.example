@@ -1,0 +1,68 @@
+name = "m5-live"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[durable_objects]
+bindings = [
+  { name = "LIVE_SESSION", class_name = "LiveSession" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["LiveSession"]
+
+# Workers AI for embeddings
+[ai]
+binding = "AI"
+
+# Vectorize for doc search
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "chat-stick-docs"
+
+# D1 Database for conversation history.
+# Create with `wrangler d1 create m5-live-conversations` and paste the
+# returned database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "m5-live-conversations"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+migrations_dir = "migrations"
+
+[vars]
+# Override for local/staging as needed.
+FLASHCARD_APP_BASE_URL = "https://speakdoch.com"
+# Toggle finite German practice sessions that end with mistakes review + grade.
+# Accepted true values in code: 1, true, yes, on.
+CONVERSATION_END_REVIEW_ENABLED = "true"
+# Show a green/yellow/red grammar feedback indicator after each learner turn.
+TURN_FEEDBACK_ENABLED = "true"
+
+# Environment variables (set via wrangler secret)
+# wrangler secret put GEMINI_API_KEY
+# wrangler secret put HISTORY_API_TOKEN
+# wrangler secret put ADMIN_API_TOKEN
+# wrangler secret put DEVICE_AUTH_TOKEN
+# wrangler secret put FLASHCARD_APP_BRIDGE_TOKEN
+
+# Optional R2 storage (OTA firmware + per-device assets).
+# Layout:
+#   chat-stick/firmware/m5-stick/firmware-v<N>.bin
+#   chat-stick/firmware/waveshare/firmware-v<N>.bin
+#   chat-stick/assets/<device-id>/images/<chat-id>-<stamp>.png
+# When STORAGE is unbound, OTA is disabled and generated images are still
+# rendered on the device but not persisted. The show_image tool works either way.
+# [[r2_buckets]]
+# binding = "STORAGE"
+# bucket_name = "your-bucket-name"
+
+# Optional outbound email (requires Email Routing enabled on a Cloudflare-managed domain).
+# Verify your destination address in the Cloudflare dashboard, uncomment below,
+# then set EMAIL_SENDER and EMAIL_RECIPIENT secrets. The model only sees an
+# `email_me` tool when all three are configured.
+# [[send_email]]
+# name = "EMAIL"
+# destination_address = "you@your-domain.com"
+# wrangler secret put EMAIL_SENDER     # e.g. "chat-stick@your-domain.com" — must be on your Cloudflare domain
+# wrangler secret put EMAIL_RECIPIENT  # must equal destination_address above

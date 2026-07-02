@@ -1,9 +1,12 @@
 # Credentials / secrets
 .env
 server/.dev.vars
+server/wrangler.toml
+devices/firmware/*/src/credentials.h
 firmware/src/credentials.h
 
 # PlatformIO
+devices/firmware/*/.pio/
 firmware/.pio/
 
 # Cloudflare / Wrangler
@@ -27,3 +30,5 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+.cache

@@ -7,8 +7,13 @@
     "dev:lan": "wrangler d1 migrations apply m5-live-conversations-local --local -c wrangler.local.toml && (kill $(lsof -ti tcp:8787) 2>/dev/null || true) && wrangler dev -c wrangler.local.toml --ip 0.0.0.0 --port 8787",
     "deploy": "wrangler deploy"
   },
+  "dependencies": {
+    "mimetext": "^3.0.28",
+    "upng-js": "^2.1.0"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241218.0",
+    "@types/upng-js": "^2.1.5",
     "typescript": "^5.0.0",
     "wrangler": "^4.0.0"
   }

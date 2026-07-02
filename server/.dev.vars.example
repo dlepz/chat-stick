@@ -4,3 +4,15 @@ FLASHCARD_APP_BASE_URL=http://localhost:5173
 FLASHCARD_APP_BRIDGE_TOKEN=dev-very-long-random-secret
 CONVERSATION_END_REVIEW_ENABLED=true
 TURN_FEEDBACK_ENABLED=true
+
+# Optional but recommended for deployed devices/admin endpoints.
+# If DEVICE_AUTH_TOKEN is set on the worker, set the same value in
+# firmware/src/credentials.h before flashing or publishing OTA.
+# ADMIN_API_TOKEN=your-admin-api-token-here
+# DEVICE_AUTH_TOKEN=your-device-auth-token-here
+
+# Optional: outbound email via Cloudflare Email Routing.
+# Required only if you uncommented the [[send_email]] block in wrangler.toml.
+# Note: wrangler dev does not actually deliver mail; deploy to test.
+# EMAIL_SENDER=chat-stick@your-domain.com
+# EMAIL_RECIPIENT=you@your-domain.com
