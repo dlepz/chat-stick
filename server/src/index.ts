@@ -65,6 +65,14 @@ export default {
 			return new Response(null, { headers: corsHeaders() })
 		}
 
+		const debugAudioMatch = url.pathname.match(/^\/debug\/audio\/([^/]+)\/latest\.(wav|json)$/)
+		if (debugAudioMatch) {
+			const deviceId = decodeURIComponent(debugAudioMatch[1])
+			const id = env.LIVE_SESSION.idFromName(deviceId)
+			const stub = env.LIVE_SESSION.get(id)
+			return stub.fetch(request)
+		}
+
 		switch (url.pathname) {
 			case '/device/face-control': {
 				if (request.method !== 'POST') {

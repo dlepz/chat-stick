@@ -283,7 +283,10 @@ Unknown server-side tool calls fall through as `tool_call` messages.
 - `GET /history/:deviceId?device_id=<device-id>`
 - `GET /firmware/check?version=<number>`
 - `GET /firmware/download`
+- `GET /debug/audio/:deviceId/latest.wav`
+- `GET /debug/audio/:deviceId/latest.json`
 - `POST /device/face-control`
 
 Session and history access require the matching device id or a configured
-history/admin token. OTA endpoints depend on the R2 `STORAGE` binding.
+history/admin token. Debug audio uses the history token. OTA endpoints depend on
+the R2 `STORAGE` binding.
