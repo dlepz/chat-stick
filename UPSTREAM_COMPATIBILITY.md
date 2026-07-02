@@ -32,6 +32,8 @@ an older divergent shape that deletes the Reachy app, removes the current
   - latest-turn debug audio endpoint: `/debug/audio/:deviceId/latest.wav|json`
   - conversation logging plus file, debug audio, web fetch, docs search, email,
     voice, and image tool handling are split into focused helper modules
+  - system prompt construction is split into `server/src/prompt-builder.ts`
+    while preserving the local German-learning, vocab-image, and review rules
   - Imagen vocabulary requests explicitly call `show_image` with concrete
     visual prompts while preserving D1/R2 image history and recall
   - Gemini tool response payload construction is centralized for extracted
