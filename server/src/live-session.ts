@@ -12,17 +12,14 @@ import {
 	writeFile,
 } from './files'
 import {
-	generateAndProcessImage,
 	DEFAULT_IMAGE_WIDTH,
 	DEFAULT_IMAGE_HEIGHT,
 } from './image-gen'
 import {
-	type ImageSummary,
-	getImageById,
-	listRecentImages,
-	recordImage,
-	searchImages,
-} from './images'
+	generateAndSendImage,
+	handleImageTool,
+	imagePromptFromArgs,
+} from './image-tool'
 import {
 	loadLearningResourceContext,
 	saveFlashcard,
@@ -284,7 +281,7 @@ function buildSystemInstructionText({
 		'- set_voice: change the voice used for speech output',
 		'- set_thinking_level: change reasoning depth for the current conversation only',
 		'- show_text: display a message on the screen',
-		'- show_image: generate and display an image on the screen (1-bit dithered, ~10s to generate). Use only when the user explicitly asks for a picture, drawing, or image. After calling, give a brief one-line acknowledgement like "Sure, here it comes" or "Coming right up" — do NOT explain how image generation works, what the prompt was, or that it takes a moment. The device shows a pulse animation; the user does not need narration. Past images are saved automatically and can be recalled later.',
+		'- show_image: generate and display an image on the screen (1-bit dithered, ~10s to generate). Use only when the user explicitly asks for a picture, drawing, visual, or an image of a vocabulary word/phrase. For vocabulary images, make the prompt a concrete visual scene for the word, not text/lettering. After calling, give a brief one-line acknowledgement like "Sure, here it comes" or "Coming right up" — do NOT explain how image generation works, what the prompt was, or that it takes a moment. The device shows a pulse animation; the user does not need narration. Past images are saved automatically and can be recalled later.',
 		'- list_recent_images: list the most recently generated images for this device (id + prompt + timestamp). Use when the user asks "what was that picture from earlier?" or wants to revisit a recent visual.',
 		'- search_images: keyword search across past image prompts. Use when the user references an old image by topic ("the mountain one", "that cat I asked for") and you need to find it.',
 		'- show_saved_image: re-display a previously generated image on the device by id. Use after list_recent_images / search_images when the user wants to see it again — instantly, no regeneration.',
@@ -318,6 +315,7 @@ function buildSystemInstructionText({
 		'If the user asks to list, browse, or choose available graded readers/books/stories/transcripts/videos, call search_learning_resources with source="graded_reader" and a query like "available graded readers".',
 		'If a graded reader is active and the user asks to find the part where it says something, search for a topic inside the book, or read the relevant section, call search_reader_passages first, then load_reader_passage for the best match.',
 		'If the user clearly asks to start a specific lesson or the best search result is obvious, call load_learning_resource immediately after search instead of asking for confirmation. Prefer a worksheet result over a duplicate roleplay result for the same lesson.',
+		'If the learner asks for an image of a vocabulary word or phrase, call show_image. Use a concrete visual prompt that depicts the meaning (object, action, or scene); avoid asking for text labels or spelling in the image.',
 		'When a lesson is loaded: act as a German tutor and roleplay partner; ask one question at a time; keep responses concise; prefer German with short English explanations when needed; correct mistakes gently by recasting.',
 		'For roleplays/dialogue practice: stay in German by default. Speak German-only unless the learner explicitly asks for English, translation, or explanation. When a roleplay starts, initiate it with the first in-character German line.',
 		conversationEndReviewEnabled
@@ -802,14 +800,14 @@ export class LiveSession {
 									{
 										name: 'show_image',
 										description:
-											"Generate and display an image on the device screen as a 1-bit dithered bitmap. Provide a detailed visual description. Use only when the user explicitly asks for a picture, drawing, or visual — examples: 'a cute cartoon cat sitting', 'a simple mountain landscape'. Generation takes ~10 seconds; you can keep talking while it generates and the device shows a pulse animation. The image and any text from this turn are paged together. Past images are saved automatically; use list_recent_images / search_images / show_saved_image to recall them.",
+											"Generate and display an image on the device screen as a 1-bit dithered bitmap. Provide a detailed visual description. Use when the user explicitly asks for a picture, drawing, visual, or an image of a vocabulary word — examples: 'a cute cartoon cat sitting', 'a simple mountain landscape', 'a bitten apple on a table for the German word Apfel'. For vocab words, depict the meaning as an object/action/scene; do not ask for text labels. Generation takes ~10 seconds; you can keep talking while it generates and the device shows a pulse animation. The image and any text from this turn are paged together. Past images are saved automatically; use list_recent_images / search_images / show_saved_image to recall them.",
 										parameters: {
 											type: 'OBJECT',
 											properties: {
 												prompt: {
 													type: 'STRING',
 													description:
-														'Visual description for the image. Be specific and concrete — output is monochrome with high contrast.',
+														'Visual description for the image. Be specific and concrete — output is monochrome with high contrast. For vocab words, describe the thing or action, not written text.',
 												},
 											},
 											required: ['prompt'],
@@ -2392,8 +2390,7 @@ export class LiveSession {
 						durationMs: Date.now() - startMs,
 					})
 				} else if (call.name === 'show_image') {
-					const args = call.args as { prompt?: string }
-					const prompt = (args.prompt || '').trim()
+					const prompt = imagePromptFromArgs(call.args)
 					if (!prompt) {
 						const payload = JSON.stringify({
 							toolResponse: {
@@ -2434,7 +2431,21 @@ export class LiveSession {
 						// Tell the device an image is coming so it can show the pulse animation.
 						this.sendToDevice({ type: 'show_image_pending' })
 						// Run the pipeline in the background and push the result when ready.
-						this.generateAndSendImage(prompt, call.name, call.args, startMs).catch((err) => {
+						generateAndSendImage({
+							prompt,
+							geminiApiKey: this.env.GEMINI_API_KEY,
+							db: this.env.DB,
+							storage: this.env.STORAGE,
+							deviceId: this.deviceId,
+							chatId: this.chatId,
+							targetWidth: this.imageTargetWidth,
+							targetHeight: this.imageTargetHeight,
+							toolName: call.name,
+							toolArgs: call.args,
+							startMs,
+							sendToDevice: (msg) => this.sendToDevice(msg),
+							logToolCall: (entry) => this.logToolCall(entry),
+						}).catch((err) => {
 							console.error('[ImageGen] Background generation failed:', err)
 						})
 					}
@@ -2443,7 +2454,13 @@ export class LiveSession {
 					call.name === 'search_images' ||
 					call.name === 'show_saved_image'
 				) {
-					const response = await this.handleImageTool(call.name, call.args)
+					const response = await handleImageTool({
+						name: call.name,
+						args: call.args,
+						db: this.env.DB,
+						deviceId: this.deviceId,
+						sendToDevice: (msg) => this.sendToDevice(msg),
+					})
 					const payload = JSON.stringify({
 						toolResponse: {
 							functionResponses: [{ name: call.name, id: call.id, response }],
@@ -2609,106 +2626,6 @@ export class LiveSession {
 
 	private sendToDevice(msg: Record<string, unknown>) {
 		this.deviceWs?.send(JSON.stringify(msg))
-	}
-
-	private async generateAndSendImage(
-		prompt: string,
-		toolName: string,
-		toolArgs: unknown,
-		startMs: number,
-	): Promise<void> {
-		const turnChatId = this.chatId
-		const result = await generateAndProcessImage(
-			prompt,
-			this.env.GEMINI_API_KEY,
-			this.imageTargetWidth,
-			this.imageTargetHeight
-		)
-		if (!result) {
-			this.sendToDevice({ type: 'show_image_failed' })
-			await this.logToolCall({
-				name: toolName,
-				args: toolArgs,
-				result: 'generation failed',
-				handledBy: 'server',
-				status: 'error',
-				durationMs: Date.now() - startMs,
-			})
-			return
-		}
-
-		// Persist the dithered PNG (what the device shows) and the original full-color
-		// PNG (for archival / future re-dither) to R2 if STORAGE is bound. Best-effort;
-		// failure here doesn't block sending to the device.
-		let ditheredKey: string | undefined
-		let originalKey: string | undefined
-		if (this.env.STORAGE) {
-			const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-			const basePath = `chat-stick/assets/${this.deviceId}/images/${turnChatId}-${stamp}`
-			ditheredKey = `${basePath}.png`
-			originalKey = `${basePath}-original.png`
-			try {
-				await this.env.STORAGE.put(ditheredKey, result.ditheredPng, {
-					httpMetadata: { contentType: 'image/png' },
-				})
-				console.log(`[ImageGen] Stored dithered PNG at ${ditheredKey}`)
-			} catch (err) {
-				console.error('[ImageGen] R2 upload (dithered) failed:', err)
-				ditheredKey = undefined
-			}
-			try {
-				await this.env.STORAGE.put(originalKey, result.originalPng, {
-					httpMetadata: { contentType: 'image/png' },
-				})
-				console.log(`[ImageGen] Stored original PNG at ${originalKey}`)
-			} catch (err) {
-				console.error('[ImageGen] R2 upload (original) failed:', err)
-				originalKey = undefined
-			}
-		}
-
-		// Record the image in D1 so the model can recall it later by prompt search
-		// or re-display by id. Packed bits are kept inline so re-display is a single
-		// DB read with no R2 round-trip or PNG decode.
-		let imageId: number | undefined
-		try {
-			imageId = await recordImage(this.env.DB, {
-				deviceId: this.deviceId,
-				chatId: turnChatId || null,
-				prompt,
-				enhancedPrompt: result.enhancedPrompt,
-				ditheredKey: ditheredKey ?? null,
-				originalKey: originalKey ?? null,
-				packedBits: result.data,
-				width: result.width,
-				height: result.height,
-			})
-		} catch (err) {
-			console.error('[ImageGen] Failed to record image in D1:', err)
-		}
-
-		this.sendToDevice({
-			type: 'show_image',
-			data: result.data,
-			width: result.width,
-			height: result.height,
-			...(ditheredKey ? { key: ditheredKey } : {}),
-			...(imageId ? { image_id: imageId } : {}),
-		})
-
-		await this.logToolCall({
-			name: toolName,
-			args: toolArgs,
-			result: {
-				width: result.width,
-				height: result.height,
-				key: ditheredKey ?? null,
-				original_key: originalKey ?? null,
-				image_id: imageId ?? null,
-			},
-			handledBy: 'server',
-			durationMs: Date.now() - startMs,
-		})
 	}
 
 	private async getUserInstructionsForPrompt(): Promise<string> {
@@ -2957,68 +2874,6 @@ export class LiveSession {
 			}
 			default:
 				return { error: `unknown file tool: ${name}` }
-		}
-	}
-
-	private async handleImageTool(
-		name: string,
-		args: Record<string, unknown>,
-	): Promise<Record<string, unknown>> {
-		const formatSummary = (img: ImageSummary) => ({
-			id: img.id,
-			prompt: img.prompt,
-			created_at: img.created_at,
-			chat_id: img.chat_id,
-			width: img.width,
-			height: img.height,
-		})
-
-		switch (name) {
-			case 'list_recent_images': {
-				const rawLimit = args.limit
-				const limit = typeof rawLimit === 'number' ? rawLimit : 10
-				const images = await listRecentImages(this.env.DB, this.deviceId, limit)
-				return { images: images.map(formatSummary), count: images.length }
-			}
-			case 'search_images': {
-				const query = typeof args.query === 'string' ? args.query : ''
-				if (!query.trim()) return { error: 'query is required' }
-				const rawLimit = args.limit
-				const limit = typeof rawLimit === 'number' ? rawLimit : 10
-				const hits = await searchImages(this.env.DB, this.deviceId, query, limit)
-				return {
-					hits: hits.map((hit) => ({
-						...formatSummary(hit),
-						snippet: hit.snippet,
-						match_count: hit.match_count,
-					})),
-					count: hits.length,
-				}
-			}
-			case 'show_saved_image': {
-				const idArg = args.id ?? (args as { image_id?: unknown }).image_id
-				const id = typeof idArg === 'number' ? idArg : Number(idArg)
-				if (!Number.isFinite(id) || id <= 0) return { error: 'id is required' }
-				const image = await getImageById(this.env.DB, this.deviceId, id)
-				if (!image) return { error: `image not found: ${id}` }
-				this.sendToDevice({
-					type: 'show_image',
-					data: image.packed_bits,
-					width: image.width,
-					height: image.height,
-					image_id: image.id,
-					...(image.dithered_key ? { key: image.dithered_key } : {}),
-				})
-				return {
-					result: 'ok',
-					id: image.id,
-					prompt: image.prompt,
-					width: image.width,
-					height: image.height,
-				}
-			}
-			default:
-				return { error: `unknown image tool: ${name}` }
 		}
 	}
 
