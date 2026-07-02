@@ -53,8 +53,8 @@ import { type WebFetchArgs, fetchWebPage } from './web-fetch'
 import { GeminiClient } from './gemini-client'
 import {
 	GEMINI_LIVE_MODEL,
+	buildGeminiActivityEndPayload,
 	buildGeminiActivityStartPayload,
-	buildGeminiAudioStreamEndPayload,
 	buildGeminiRealtimeAudioPayload,
 	buildGeminiRealtimeTextPayload,
 } from './gemini-live'
@@ -537,9 +537,9 @@ export class LiveSession {
 	private sendActivityEndToGemini(): boolean {
 		if (!this.gemini.isReady) return false
 		if (!this.activityOpen) return true
-		this.gemini.send(buildGeminiAudioStreamEndPayload())
+		this.gemini.send(buildGeminiActivityEndPayload())
 		this.activityOpen = false
-		console.log('[Bridge] Sent audioStreamEnd')
+		console.log('[Bridge] Sent activityEnd')
 		return true
 	}
 

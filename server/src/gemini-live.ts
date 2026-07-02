@@ -34,10 +34,8 @@ export function buildGeminiRealtimeTextPayload(content: string): string {
 	})
 }
 
-export function buildGeminiAudioStreamEndPayload(): string {
+export function buildGeminiActivityEndPayload(): string {
 	return JSON.stringify({
-		realtimeInput: {
-			audioStreamEnd: true,
-		},
+		realtimeInput: { activityEnd: {} },
 	})
 }
