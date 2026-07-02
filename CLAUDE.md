@@ -99,7 +99,7 @@ All deployment-specific config is gitignored. Templates exist at:
 
 - Input (mic → Gemini): 16-bit PCM, 16kHz, mono
 - Output (Gemini → speaker): 16-bit PCM, 24kHz, mono
-- Short/silent clips are detected and ignored (MIN_TURN_BYTES, SILENCE_AVG_ABS_THRESHOLD)
+- Very short clips are ignored (`MIN_TURN_BYTES`); low-amplitude clips are still forwarded so Gemini can handle device-specific mic gain
 
 ## Convenience Scripts (repo root)
 

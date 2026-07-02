@@ -144,7 +144,7 @@ Tells firmware to discard queued model playback after interruption.
 ### `ignore_audio`
 
 ```json
-{ "type": "ignore_audio", "reason": "too_short" }
+{ "type": "ignore_audio", "reason": "too_short", "bytes": 3200, "avg_abs": 17, "chunks": 1 }
 ```
 
 Sent when the server intentionally ignores a captured turn.

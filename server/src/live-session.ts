@@ -1308,7 +1308,6 @@ export class LiveSession {
 
 	private audioChunkCount = 0
 	private static readonly MIN_TURN_BYTES = 6400
-	private static readonly SILENCE_AVG_ABS_THRESHOLD = 150
 
 	private ensureGeminiSession(sessionGeneration = this.sessionGeneration) {
 		if (this.geminiWs || this.geminiConnecting) return
@@ -1419,16 +1418,28 @@ export class LiveSession {
 	private handleStopSignal() {
 		const ignoreReason = this.getIgnoredTurnReason()
 		if (ignoreReason) {
-			console.log(`[Bridge] Ignoring accidental clip (${ignoreReason})`)
+			const avgAbs = this.currentTurnAverageAbs()
+			console.log(
+				`[Bridge] Ignoring accidental clip (${ignoreReason}, bytes=${this.currentTurnAudioBytes}, avg_abs=${avgAbs}, chunks=${this.audioChunkCount})`,
+			)
 			this.currentUserText = ''
 			this.currentAssistantText = ''
-			this.sendToDevice({ type: 'ignore_audio', reason: ignoreReason })
+			this.sendToDevice({
+				type: 'ignore_audio',
+				reason: ignoreReason,
+				bytes: this.currentTurnAudioBytes,
+				avg_abs: avgAbs,
+				chunks: this.audioChunkCount,
+			})
 			this.reconnectGeminiSession({ clearResumptionHandle: true }).catch((err) => {
 				console.error('[Gemini] Failed to reset ignored turn:', err)
 			})
 			return
 		}
 
+		console.log(
+			`[Bridge] Ending audio stream bytes=${this.currentTurnAudioBytes} avg_abs=${this.currentTurnAverageAbs()} chunks=${this.audioChunkCount}`,
+		)
 		this.audioChunkCount = 0
 		this.sendActivityEndToGemini()
 		this.resetCurrentTurnMetrics()
@@ -3064,7 +3075,7 @@ export class LiveSession {
 		await this.commitExchange()
 	}
 
-	private getIgnoredTurnReason(): 'too_short' | 'silent' | null {
+	private getIgnoredTurnReason(): 'too_short' | null {
 		if (this.currentTurnAudioBytes < LiveSession.MIN_TURN_BYTES) {
 			return 'too_short'
 		}
@@ -3073,8 +3084,12 @@ export class LiveSession {
 			return 'too_short'
 		}
 
-		const averageAbs = this.currentTurnAbsSum / this.currentTurnSamples
-		return averageAbs < LiveSession.SILENCE_AVG_ABS_THRESHOLD ? 'silent' : null
+		return null
+	}
+
+	private currentTurnAverageAbs() {
+		if (this.currentTurnSamples === 0) return 0
+		return Math.round(this.currentTurnAbsSum / this.currentTurnSamples)
 	}
 
 	private resetCurrentTurnMetrics() {

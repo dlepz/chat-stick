@@ -755,6 +755,8 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
 
   if (strcmp(type, "ignore_audio") == 0) {
     const char *reason = doc["reason"];
+    Serial.printf("[Server] Gemini ignored audio: %s\n",
+                  reason ? reason : "ignored");
     if (_callbacks.onIgnoredAudio) {
       _callbacks.onIgnoredAudio(reason ? reason : "ignored");
     }
