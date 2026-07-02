@@ -21,6 +21,14 @@ import {
 	imagePromptFromArgs,
 } from './image-tool'
 import {
+	DEFAULT_VOICE,
+	VOICE_LIST_TEXT,
+	findVoice,
+	handleSetVoiceTool,
+	resolveVoice,
+	type VoiceOption,
+} from './voice-tool'
+import {
 	loadLearningResourceContext,
 	saveFlashcard,
 	searchLearningResources,
@@ -114,60 +122,15 @@ interface PracticeReview {
 
 type VoiceMode = 'assistant' | 'quiz_masters'
 
-const AVAILABLE_VOICES = [
-	{ name: 'Zephyr', description: 'Bright' },
-	{ name: 'Puck', description: 'Upbeat' },
-	{ name: 'Charon', description: 'Informative' },
-	{ name: 'Kore', description: 'Firm' },
-	{ name: 'Fenrir', description: 'Excitable' },
-	{ name: 'Leda', description: 'Youthful' },
-	{ name: 'Orus', description: 'Firm' },
-	{ name: 'Aoede', description: 'Breezy' },
-	{ name: 'Callirrhoe', description: 'Easy-going' },
-	{ name: 'Autonoe', description: 'Bright' },
-	{ name: 'Enceladus', description: 'Breathy' },
-	{ name: 'Iapetus', description: 'Clear' },
-	{ name: 'Umbriel', description: 'Easy-going' },
-	{ name: 'Algieba', description: 'Smooth' },
-	{ name: 'Despina', description: 'Smooth' },
-	{ name: 'Erinome', description: 'Clear' },
-	{ name: 'Algenib', description: 'Gravelly' },
-	{ name: 'Rasalgethi', description: 'Informative' },
-	{ name: 'Laomedeia', description: 'Upbeat' },
-	{ name: 'Achernar', description: 'Soft' },
-	{ name: 'Alnilam', description: 'Firm' },
-	{ name: 'Schedar', description: 'Even' },
-	{ name: 'Gacrux', description: 'Mature' },
-	{ name: 'Pulcherrima', description: 'Forward' },
-	{ name: 'Achird', description: 'Friendly' },
-	{ name: 'Zubenelgenubi', description: 'Casual' },
-	{ name: 'Vindemiatrix', description: 'Gentle' },
-	{ name: 'Sadachbia', description: 'Lively' },
-	{ name: 'Sadaltager', description: 'Knowledgeable' },
-	{ name: 'Sulafat', description: 'Warm' },
-] as const
-
-const DEFAULT_VOICE = 'Aoede'
-const VOICE_NAMES = new Set<string>(AVAILABLE_VOICES.map((v) => v.name))
-const VOICE_LIST_TEXT = AVAILABLE_VOICES.map((v) => `${v.name} (${v.description})`).join(', ')
 const THINKING_LEVELS = ['minimal', 'low', 'medium', 'high'] as const
 type ThinkingLevel = (typeof THINKING_LEVELS)[number]
 const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'minimal'
 const THINKING_LEVEL_LIST_TEXT = THINKING_LEVELS.join(', ')
 
-function resolveVoice(requested: string | null | undefined): string {
-	if (requested && VOICE_NAMES.has(requested)) return requested
-	return DEFAULT_VOICE
-}
-
 function parsePositiveInt(value: string | null | undefined, fallback: number): number {
 	if (!value) return fallback
 	const parsed = Number.parseInt(value, 10)
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
-}
-
-function findVoice(name: string): (typeof AVAILABLE_VOICES)[number] | undefined {
-	return AVAILABLE_VOICES.find((v) => v.name === name)
 }
 
 function resolveThinkingLevel(value: unknown): ThinkingLevel | null {
@@ -184,7 +147,7 @@ function resolveThinkingLevel(value: unknown): ThinkingLevel | null {
 }
 
 interface SystemInstructionOptions {
-	voice: (typeof AVAILABLE_VOICES)[number]
+	voice: VoiceOption
 	thinkingLevel: ThinkingLevel
 	voiceMode: VoiceMode
 	locationContext: string
@@ -2257,18 +2220,15 @@ export class LiveSession {
 						durationMs: Date.now() - startMs,
 					})
 				} else if (call.name === 'set_voice') {
-					const requested = (call.args as { name?: string }).name || ''
-					const match = findVoice(requested)
-					if (!match) {
+					const result = handleSetVoiceTool(call.args)
+					if (!result.ok) {
 						const payload = JSON.stringify({
 							toolResponse: {
 								functionResponses: [
 									{
 										name: call.name,
 										id: call.id,
-										response: {
-											result: `Unknown voice "${requested}". Available: ${AVAILABLE_VOICES.map((v) => v.name).join(', ')}.`,
-										},
+										response: result.response,
 									},
 								],
 							},
@@ -2277,34 +2237,32 @@ export class LiveSession {
 						await this.logToolCall({
 							name: call.name,
 							args: call.args,
-							result: `unknown voice: ${requested}`,
+							result: result.logResult,
 							handledBy: 'server',
-							status: 'error',
+							status: result.status,
 							durationMs: Date.now() - startMs,
 						})
 					} else {
-						console.log(`[Gemini] Switching voice → ${match.name}`)
-						this.currentVoice = match.name
+						console.log(`[Gemini] Switching voice → ${result.voice}`)
+						this.currentVoice = result.voice
 						const payload = JSON.stringify({
 							toolResponse: {
 								functionResponses: [
 									{
 										name: call.name,
 										id: call.id,
-										response: {
-											result: `Voice set to ${match.name} (${match.description}). Reconnecting.`,
-										},
+										response: result.response,
 									},
 								],
 							},
 						})
 						if (this.geminiWs) this.geminiWs.send(payload)
-						this.sendToDevice({ type: 'voice_changed', voice: match.name })
+						this.sendToDevice({ type: 'voice_changed', voice: result.voice })
 						await this.clearSessionResumptionHandle()
 						await this.logToolCall({
 							name: call.name,
 							args: call.args,
-							result: match.name,
+							result: result.logResult,
 							handledBy: 'server',
 							durationMs: Date.now() - startMs,
 						})
