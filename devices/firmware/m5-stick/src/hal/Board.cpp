@@ -12,6 +12,7 @@ bool pm1Ready = false;
 unsigned long lastPm1PollMs = 0;
 uint8_t currentBrightness = DEFAULT_BRIGHTNESS;
 m5pm1_pwr_src_t currentPowerSource = M5PM1_PWR_SRC_UNKNOWN;
+constexpr uint16_t kUsbPresentMv = 4000;
 
 const DeviceCapabilities kCapabilities = []() {
   DeviceCapabilities caps;
@@ -38,6 +39,15 @@ const char *sourceLabel(m5pm1_pwr_src_t source) {
   default:
     return "?";
   }
+}
+
+bool vinLooksConnected(uint16_t vinMv) { return vinMv >= kUsbPresentMv; }
+
+const char *sourceLabel(m5pm1_pwr_src_t source, uint16_t vinMv) {
+  if (source == M5PM1_PWR_SRC_UNKNOWN && vinLooksConnected(vinMv)) {
+    return "USB";
+  }
+  return sourceLabel(source);
 }
 
 uint64_t gpioWakeMask(gpio_num_t pin) {
@@ -112,7 +122,7 @@ void update() {
   Serial.printf("[%s] [Pwr] vbat=%u mV level=%d vin=%u v5out=%u src=%s "
                 "heap=%uK\n",
                 ts, vbat, batteryLevel(), vin, v5,
-                sourceLabel(currentPowerSource),
+                sourceLabel(currentPowerSource, vin),
                 static_cast<unsigned>(ESP.getFreeHeap() / 1024));
 }
 
@@ -156,8 +166,13 @@ bool usbConnected() {
     return false;
   }
   pm1.getPowerSource(&currentPowerSource);
-  return currentPowerSource == M5PM1_PWR_SRC_5VIN ||
-         currentPowerSource == M5PM1_PWR_SRC_5VINOUT;
+  if (currentPowerSource == M5PM1_PWR_SRC_5VIN ||
+      currentPowerSource == M5PM1_PWR_SRC_5VINOUT) {
+    return true;
+  }
+  uint16_t vin = 0;
+  pm1.readVin(&vin);
+  return vinLooksConnected(vin);
 }
 
 const char *powerSourceLabel() {
@@ -165,7 +180,9 @@ const char *powerSourceLabel() {
     return "?";
   }
   pm1.getPowerSource(&currentPowerSource);
-  return sourceLabel(currentPowerSource);
+  uint16_t vin = 0;
+  pm1.readVin(&vin);
+  return sourceLabel(currentPowerSource, vin);
 }
 
 LightSleepWakeReason enterLightSleep(unsigned long wakeIntervalMs) {
