@@ -44,6 +44,10 @@ an older divergent shape that deletes the Reachy app, removes the current
     centralized, with push-to-talk stop using `audioStreamEnd`
   - canonical aliases for `user-instructions.md`
   - D1 write verification for file tools
+- Legacy firmware behavior:
+  - `firmware/src/services/LiveSessionService.*` uses the upstream configured
+    endpoint HTTP GET retry helper for session restore, history, firmware
+    update checks, and the local learning-resource / flashcard inbox GETs
 - Setup hygiene:
   - `.clangd` compile flag removals
   - generated `compile_commands.json` ignores

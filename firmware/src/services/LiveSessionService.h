@@ -101,6 +101,22 @@ public:
   bool gradeInboxFlashcard(const String &cardId, const String &grade);
 
 private:
+  struct HttpGetResponse {
+    int endpointIndex = -1;
+    int statusCode = -1;
+    String body;
+  };
+
+  enum class HttpGetDecision {
+    Continue,
+    Success,
+    Stop,
+  };
+
+  using EndpointUrlBuilder = std::function<String(const ServerEndpoint &)>;
+  using HttpGetHandler =
+      std::function<HttpGetDecision(const HttpGetResponse &)>;
+
   websockets::WebsocketsClient _ws;
   LiveSessionCallbacks _callbacks;
   String _chatId;
@@ -118,4 +134,10 @@ private:
   void handleToolCall(const ArduinoJson::JsonDocument &doc);
   void sendToolResponse(const char *name, const char *id, const String &result);
   String endpointBaseUrl(const ServerEndpoint &endpoint) const;
+  bool performEndpointGet(const ServerEndpoint &endpoint, const String &url,
+                          int &statusCode, String &body) const;
+  bool getFromConfiguredEndpoints(const char *logAction,
+                                  const EndpointUrlBuilder &buildUrl,
+                                  const HttpGetHandler &handleResponse);
+  void rememberSuccessfulEndpoint(int endpointIndex);
 };

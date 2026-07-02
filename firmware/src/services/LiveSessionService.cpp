@@ -8,6 +8,10 @@
 
 using namespace websockets;
 
+namespace {
+constexpr uint16_t kHttpGetTimeoutMs = 3000;
+}
+
 void LiveSessionService::init(const LiveSessionCallbacks &callbacks) {
   _callbacks = callbacks;
   attachWebsocketHandlers();
@@ -135,71 +139,39 @@ bool LiveSessionService::fetchLastAssistantMessage(String &outMessage) {
     return false;
   }
 
-  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
-    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
-    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
-    const String url = endpointBaseUrl(endpoint) + "/session/" + _chatId +
-                       "?device_id=" + DEVICE_ID;
-
-    Serial.printf("[HTTP] Restoring session from %s\n", url.c_str());
-
-    int statusCode = -1;
-    String body;
-    {
-      HTTPClient http;
-      if (endpoint.port == 443) {
-        WiFiClientSecure client;
-        if (endpoint.ca_cert) {
-          client.setCACert(endpoint.ca_cert);
-        } else {
-          client.setInsecure();
+  return getFromConfiguredEndpoints(
+      "Restoring session from",
+      [this](const ServerEndpoint &endpoint) {
+        return endpointBaseUrl(endpoint) + "/session/" + _chatId +
+               "?device_id=" + DEVICE_ID;
+      },
+      [&outMessage](const HttpGetResponse &response) {
+        if (response.statusCode == 404) {
+          Serial.printf("[HTTP] Session not found at endpoint %d\n",
+                        response.endpointIndex);
+          return HttpGetDecision::Continue;
         }
-        if (!http.begin(client, url)) {
-          continue;
+
+        if (response.statusCode != 200 || response.body.isEmpty()) {
+          Serial.printf("[HTTP] Session restore failed: status=%d\n",
+                        response.statusCode);
+          return HttpGetDecision::Continue;
         }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
+
+        JsonDocument doc;
+        if (deserializeJson(doc, response.body)) {
+          Serial.println("[HTTP] Session restore returned invalid JSON");
+          return HttpGetDecision::Continue;
         }
-        http.end();
-      } else {
-        WiFiClient client;
-        if (!http.begin(client, url)) {
-          continue;
+
+        const char *lastMessage = doc["last_message"];
+        if (!lastMessage || !lastMessage[0]) {
+          return HttpGetDecision::Stop;
         }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
-        }
-        http.end();
-      }
-    }
 
-    if (statusCode == 404) {
-      return false;
-    }
-
-    if (statusCode != 200 || body.isEmpty()) {
-      Serial.printf("[HTTP] Session restore failed: status=%d\n", statusCode);
-      continue;
-    }
-
-    JsonDocument doc;
-    if (deserializeJson(doc, body)) {
-      Serial.println("[HTTP] Session restore returned invalid JSON");
-      continue;
-    }
-
-    const char *lastMessage = doc["last_message"];
-    if (!lastMessage || !lastMessage[0]) {
-      return false;
-    }
-
-    outMessage = lastMessage;
-    return true;
-  }
-
-  return false;
+        outMessage = lastMessage;
+        return HttpGetDecision::Success;
+      });
 }
 
 bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries[],
@@ -210,77 +182,43 @@ bool LiveSessionService::fetchConversationHistory(ConversationSummary outEntries
     return false;
   }
 
-  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
-    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
-    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
-    const String url = endpointBaseUrl(endpoint) + "/history/" + DEVICE_ID +
-                       "?device_id=" + DEVICE_ID;
-
-    Serial.printf("[HTTP] Fetching history from %s\n", url.c_str());
-
-    int statusCode = -1;
-    String body;
-    {
-      HTTPClient http;
-      if (endpoint.port == 443) {
-        WiFiClientSecure client;
-        if (endpoint.ca_cert) {
-          client.setCACert(endpoint.ca_cert);
-        } else {
-          client.setInsecure();
+  return getFromConfiguredEndpoints(
+      "Fetching history from",
+      [this](const ServerEndpoint &endpoint) {
+        return endpointBaseUrl(endpoint) + "/history/" + DEVICE_ID +
+               "?device_id=" + DEVICE_ID;
+      },
+      [outEntries, maxEntries, &outCount](const HttpGetResponse &response) {
+        if (response.statusCode != 200 || response.body.isEmpty()) {
+          Serial.printf("[HTTP] History fetch failed: status=%d\n",
+                        response.statusCode);
+          return HttpGetDecision::Continue;
         }
-        if (!http.begin(client, url)) {
-          continue;
+
+        JsonDocument doc;
+        if (deserializeJson(doc, response.body) || !doc.is<JsonArray>()) {
+          Serial.println("[HTTP] History response invalid");
+          return HttpGetDecision::Continue;
         }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
+
+        JsonArray rows = doc.as<JsonArray>();
+        for (JsonVariant row : rows) {
+          if (outCount >= maxEntries) {
+            break;
+          }
+
+          const char *chatId = row["chat_id"];
+          if (!chatId || !chatId[0]) {
+            continue;
+          }
+
+          outEntries[outCount].chatId = chatId;
+          outEntries[outCount].lastMessage = row["last_message"] | "";
+          outEntries[outCount].updatedAt = row["updated_at"] | "";
+          outCount++;
         }
-        http.end();
-      } else {
-        WiFiClient client;
-        if (!http.begin(client, url)) {
-          continue;
-        }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
-        }
-        http.end();
-      }
-    }
-
-    if (statusCode != 200 || body.isEmpty()) {
-      Serial.printf("[HTTP] History fetch failed: status=%d\n", statusCode);
-      continue;
-    }
-
-    JsonDocument doc;
-    if (deserializeJson(doc, body) || !doc.is<JsonArray>()) {
-      Serial.println("[HTTP] History response invalid");
-      continue;
-    }
-
-    JsonArray rows = doc.as<JsonArray>();
-    for (JsonVariant row : rows) {
-      if (outCount >= maxEntries) {
-        break;
-      }
-
-      const char *chatId = row["chat_id"];
-      if (!chatId || !chatId[0]) {
-        continue;
-      }
-
-      outEntries[outCount].chatId = chatId;
-      outEntries[outCount].lastMessage = row["last_message"] | "";
-      outEntries[outCount].updatedAt = row["updated_at"] | "";
-      outCount++;
-    }
-    return true;
-  }
-
-  return false;
+        return HttpGetDecision::Success;
+      });
 }
 
 bool LiveSessionService::fetchLearningResources(
@@ -291,82 +229,50 @@ bool LiveSessionService::fetchLearningResources(
     return false;
   }
 
-  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
-    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
-    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
-    String encodedQuery = query;
-    encodedQuery.replace(" ", "%20");
-    encodedQuery.replace("&", "%26");
-    String url = endpointBaseUrl(endpoint) + "/device/learning-resources?device_id=" +
-                 DEVICE_ID + "&limit=" + String(maxEntries) + "&q=" + encodedQuery;
-    if (!source.isEmpty()) {
-      url += "&source=" + source;
-    }
+  String encodedQuery = query;
+  encodedQuery.replace(" ", "%20");
+  encodedQuery.replace("&", "%26");
 
-    Serial.printf("[HTTP] Fetching learning resources from %s\n", url.c_str());
-
-    int statusCode = -1;
-    String body;
-    {
-      HTTPClient http;
-      if (endpoint.port == 443) {
-        WiFiClientSecure client;
-        if (endpoint.ca_cert) {
-          client.setCACert(endpoint.ca_cert);
-        } else {
-          client.setInsecure();
+  return getFromConfiguredEndpoints(
+      "Fetching learning resources from",
+      [this, source, encodedQuery, maxEntries](const ServerEndpoint &endpoint) {
+        String url = endpointBaseUrl(endpoint) +
+                     "/device/learning-resources?device_id=" + DEVICE_ID +
+                     "&limit=" + String(maxEntries) + "&q=" + encodedQuery;
+        if (!source.isEmpty()) {
+          url += "&source=" + source;
         }
-        if (!http.begin(client, url)) {
-          continue;
+        return url;
+      },
+      [outEntries, maxEntries, &outCount](const HttpGetResponse &response) {
+        if (response.statusCode != 200 || response.body.isEmpty()) {
+          Serial.printf("[HTTP] Learning resources fetch failed: status=%d\n",
+                        response.statusCode);
+          return HttpGetDecision::Continue;
         }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
+
+        JsonDocument doc;
+        if (deserializeJson(doc, response.body)) {
+          Serial.println("[HTTP] Learning resources response invalid JSON");
+          return HttpGetDecision::Continue;
         }
-        http.end();
-      } else {
-        WiFiClient client;
-        if (!http.begin(client, url)) {
-          continue;
+
+        JsonArray rows = doc["results"].as<JsonArray>();
+        for (JsonVariant row : rows) {
+          if (outCount >= maxEntries) {
+            break;
+          }
+          outEntries[outCount].resourceId = row["resource_id"] | "";
+          outEntries[outCount].title = row["title"] | "Untitled";
+          outEntries[outCount].subtitle = row["subtitle"] | "";
+          outEntries[outCount].source = row["source"] | "";
+          outEntries[outCount].level = row["level"] | "";
+          if (!outEntries[outCount].resourceId.isEmpty()) {
+            outCount++;
+          }
         }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
-        }
-        http.end();
-      }
-    }
-
-    if (statusCode != 200 || body.isEmpty()) {
-      Serial.printf("[HTTP] Learning resources fetch failed: status=%d\n",
-                    statusCode);
-      continue;
-    }
-
-    JsonDocument doc;
-    if (deserializeJson(doc, body)) {
-      Serial.println("[HTTP] Learning resources response invalid JSON");
-      continue;
-    }
-
-    JsonArray rows = doc["results"].as<JsonArray>();
-    for (JsonVariant row : rows) {
-      if (outCount >= maxEntries) {
-        break;
-      }
-      outEntries[outCount].resourceId = row["resource_id"] | "";
-      outEntries[outCount].title = row["title"] | "Untitled";
-      outEntries[outCount].subtitle = row["subtitle"] | "";
-      outEntries[outCount].source = row["source"] | "";
-      outEntries[outCount].level = row["level"] | "";
-      if (!outEntries[outCount].resourceId.isEmpty()) {
-        outCount++;
-      }
-    }
-    return true;
-  }
-
-  return false;
+        return HttpGetDecision::Success;
+      });
 }
 
 bool LiveSessionService::fetchInboxFlashcards(const String &mode,
@@ -382,81 +288,48 @@ bool LiveSessionService::fetchInboxFlashcards(const String &mode,
 
   const String safeMode = (mode == "all") ? "all" : "due";
 
-  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
-    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
-    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
-    const String url = endpointBaseUrl(endpoint) +
-                       "/device/flashcards/inbox?device_id=" + DEVICE_ID +
-                       "&mode=" + safeMode + "&limit=" + String(maxEntries);
-
-    Serial.printf("[HTTP] Fetching inbox flashcards from %s\n", url.c_str());
-
-    int statusCode = -1;
-    String body;
-    {
-      HTTPClient http;
-      if (endpoint.port == 443) {
-        WiFiClientSecure client;
-        if (endpoint.ca_cert) {
-          client.setCACert(endpoint.ca_cert);
-        } else {
-          client.setInsecure();
+  return getFromConfiguredEndpoints(
+      "Fetching inbox flashcards from",
+      [this, safeMode, maxEntries](const ServerEndpoint &endpoint) {
+        return endpointBaseUrl(endpoint) +
+               "/device/flashcards/inbox?device_id=" + DEVICE_ID +
+               "&mode=" + safeMode + "&limit=" + String(maxEntries);
+      },
+      [outEntries, maxEntries, &outCount, &outDue, &outTotal](
+          const HttpGetResponse &response) {
+        if (response.statusCode != 200 || response.body.isEmpty()) {
+          Serial.printf("[HTTP] Inbox fetch failed: status=%d\n",
+                        response.statusCode);
+          return HttpGetDecision::Continue;
         }
-        if (!http.begin(client, url)) {
-          continue;
+
+        JsonDocument doc;
+        if (deserializeJson(doc, response.body)) {
+          Serial.println("[HTTP] Inbox response invalid JSON");
+          return HttpGetDecision::Continue;
         }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
+
+        outDue = doc["counts"]["due"] | 0;
+        outTotal = doc["counts"]["total"] | 0;
+
+        JsonArray rows = doc["cards"].as<JsonArray>();
+        for (JsonVariant row : rows) {
+          if (outCount >= maxEntries) {
+            break;
+          }
+          const char *id = row["id"];
+          const char *front = row["front"];
+          const char *back = row["back"];
+          if (!id || !front || !back) {
+            continue;
+          }
+          outEntries[outCount].id = id;
+          outEntries[outCount].front = front;
+          outEntries[outCount].back = back;
+          outCount++;
         }
-        http.end();
-      } else {
-        WiFiClient client;
-        if (!http.begin(client, url)) {
-          continue;
-        }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
-        }
-        http.end();
-      }
-    }
-
-    if (statusCode != 200 || body.isEmpty()) {
-      Serial.printf("[HTTP] Inbox fetch failed: status=%d\n", statusCode);
-      continue;
-    }
-
-    JsonDocument doc;
-    if (deserializeJson(doc, body)) {
-      Serial.println("[HTTP] Inbox response invalid JSON");
-      continue;
-    }
-
-    outDue = doc["counts"]["due"] | 0;
-    outTotal = doc["counts"]["total"] | 0;
-
-    JsonArray rows = doc["cards"].as<JsonArray>();
-    for (JsonVariant row : rows) {
-      if (outCount >= maxEntries) {
-        break;
-      }
-      const char *id = row["id"];
-      const char *front = row["front"];
-      const char *back = row["back"];
-      if (!id || !front || !back) {
-        continue;
-      }
-      outEntries[outCount].id = id;
-      outEntries[outCount].front = front;
-      outEntries[outCount].back = back;
-      outCount++;
-    }
-    return true;
-  }
-
-  return false;
+        return HttpGetDecision::Success;
+      });
 }
 
 bool LiveSessionService::gradeInboxFlashcard(const String &cardId,
@@ -520,69 +393,35 @@ bool LiveSessionService::gradeInboxFlashcard(const String &cardId,
 bool LiveSessionService::checkFirmwareUpdate(FirmwareUpdateInfo &outInfo) {
   outInfo = FirmwareUpdateInfo{};
 
-  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
-    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
-    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
-    const String url = endpointBaseUrl(endpoint) + "/firmware/check?version=" +
-                       String(FIRMWARE_VERSION);
-
-    Serial.printf("[HTTP] Checking firmware at %s\n", url.c_str());
-
-    int statusCode = -1;
-    String body;
-    {
-      HTTPClient http;
-      if (endpoint.port == 443) {
-        WiFiClientSecure client;
-        if (endpoint.ca_cert) {
-          client.setCACert(endpoint.ca_cert);
-        } else {
-          client.setInsecure();
+  return getFromConfiguredEndpoints(
+      "Checking firmware at",
+      [this](const ServerEndpoint &endpoint) {
+        return endpointBaseUrl(endpoint) + "/firmware/check?version=" +
+               String(FIRMWARE_VERSION);
+      },
+      [&outInfo](const HttpGetResponse &response) {
+        if (response.statusCode == 404) {
+          return HttpGetDecision::Continue;
         }
-        if (!http.begin(client, url)) {
-          continue;
+
+        if (response.statusCode != 200 || response.body.isEmpty()) {
+          Serial.printf("[HTTP] Firmware check failed: status=%d\n",
+                        response.statusCode);
+          return HttpGetDecision::Continue;
         }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
+
+        JsonDocument doc;
+        if (deserializeJson(doc, response.body)) {
+          Serial.println("[HTTP] Firmware check invalid JSON");
+          return HttpGetDecision::Continue;
         }
-        http.end();
-      } else {
-        WiFiClient client;
-        if (!http.begin(client, url)) {
-          continue;
-        }
-        statusCode = http.GET();
-        if (statusCode > 0) {
-          body = http.getString();
-        }
-        http.end();
-      }
-    }
 
-    if (statusCode == 404) {
-      continue;
-    }
-
-    if (statusCode != 200 || body.isEmpty()) {
-      Serial.printf("[HTTP] Firmware check failed: status=%d\n", statusCode);
-      continue;
-    }
-
-    JsonDocument doc;
-    if (deserializeJson(doc, body)) {
-      Serial.println("[HTTP] Firmware check invalid JSON");
-      continue;
-    }
-
-    outInfo.available = doc["available"] | false;
-    outInfo.latestVersion = doc["latest_version"] | FIRMWARE_VERSION;
-    outInfo.notes = doc["notes"] | "";
-    outInfo.downloadUrl = doc["download_url"] | "";
-    return true;
-  }
-
-  return false;
+        outInfo.available = doc["available"] | false;
+        outInfo.latestVersion = doc["latest_version"] | FIRMWARE_VERSION;
+        outInfo.notes = doc["notes"] | "";
+        outInfo.downloadUrl = doc["download_url"] | "";
+        return HttpGetDecision::Success;
+      });
 }
 
 void LiveSessionService::handleEvent(WebsocketsEvent event, String data) {
@@ -844,4 +683,82 @@ String LiveSessionService::endpointBaseUrl(const ServerEndpoint &endpoint) const
     url += ":" + String(endpoint.port);
   }
   return url;
+}
+
+bool LiveSessionService::performEndpointGet(const ServerEndpoint &endpoint,
+                                            const String &url,
+                                            int &statusCode,
+                                            String &body) const {
+  statusCode = -1;
+  body = "";
+
+  HTTPClient http;
+  http.setTimeout(kHttpGetTimeoutMs);
+  if (endpoint.port == 443) {
+    WiFiClientSecure client;
+    if (endpoint.ca_cert) {
+      client.setCACert(endpoint.ca_cert);
+    } else {
+      client.setInsecure();
+    }
+    if (!http.begin(client, url)) {
+      Serial.printf("[HTTP] Begin failed for %s\n", url.c_str());
+      return false;
+    }
+    statusCode = http.GET();
+    if (statusCode > 0) {
+      body = http.getString();
+    }
+    http.end();
+    return true;
+  }
+
+  WiFiClient client;
+  if (!http.begin(client, url)) {
+    Serial.printf("[HTTP] Begin failed for %s\n", url.c_str());
+    return false;
+  }
+  statusCode = http.GET();
+  if (statusCode > 0) {
+    body = http.getString();
+  }
+  http.end();
+  return true;
+}
+
+bool LiveSessionService::getFromConfiguredEndpoints(
+    const char *logAction, const EndpointUrlBuilder &buildUrl,
+    const HttpGetHandler &handleResponse) {
+  for (int offset = 0; offset < SERVER_ENDPOINT_COUNT; offset++) {
+    const int index = (_nextServerIndex + offset) % SERVER_ENDPOINT_COUNT;
+    const ServerEndpoint &endpoint = SERVER_ENDPOINTS[index];
+    const String url = buildUrl(endpoint);
+
+    Serial.printf("[HTTP] %s %s\n", logAction, url.c_str());
+
+    HttpGetResponse response;
+    response.endpointIndex = index;
+    if (!performEndpointGet(endpoint, url, response.statusCode,
+                            response.body)) {
+      continue;
+    }
+
+    const HttpGetDecision decision = handleResponse(response);
+    if (decision == HttpGetDecision::Success) {
+      rememberSuccessfulEndpoint(index);
+      return true;
+    }
+    if (decision == HttpGetDecision::Stop) {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+void LiveSessionService::rememberSuccessfulEndpoint(int endpointIndex) {
+  if (endpointIndex < 0 || endpointIndex >= SERVER_ENDPOINT_COUNT) {
+    return;
+  }
+  _nextServerIndex = endpointIndex;
 }
