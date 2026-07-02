@@ -206,7 +206,6 @@ void AppController::setup() {
     if (source != "model") {
       return;
     }
-    _turn.noteResponseContent();
     applyPendingTurnReset();
     const String basis =
         _toolTextRevealTarget.isEmpty() ? _toolText : _toolTextRevealTarget;
