@@ -36,6 +36,20 @@ an older divergent shape that deletes the Reachy app, removes the current
   - `.clangd` compile flag removals
   - generated `compile_commands.json` ignores
 
+## Refreshed Audit: 2026-07-02
+
+After fetching `origin` and `upstream`, local `main` is synced with
+`origin/main`. `upstream/main` and `upstream/reachy` have no unmerged commits
+relative to this repo. The remaining upstream-only work is on
+`upstream/waveshare`, which is still a divergent branch rather than a direct
+successor to this repo's current shape.
+
+The `upstream/waveshare` branch was rechecked for portable behavior. Its useful
+runtime changes have either already been merged from `upstream/main` /
+`upstream/reachy` or ported manually into this repo. The remaining differences
+are primarily broad extractions and older layout changes that would remove or
+replace local behavior if merged directly.
+
 ## Intentionally Not Merged Into `main`
 
 - The branch-wide Waveshare firmware layout. Current `main` keeps both:
@@ -45,9 +59,13 @@ an older divergent shape that deletes the Reachy app, removes the current
   `gemini-client`, etc.). They are useful refactor candidates, but they must be
   ported one at a time so the language-learning tools stay intact.
 - The older `upstream/waveshare` image pipeline shape. Current `main` keeps the
-  newer device-size-aware Imagen path and original/dithered archival metadata.
+  newer device-size-aware Imagen path, original/dithered archival metadata, and
+  saved-image recall through D1/R2.
 - The older `upstream/waveshare` router shape, which predates local auth,
   learning endpoints, flashcard endpoints, and multi-device OTA paths.
+- The older `upstream/waveshare` deploy and firmware scripts, which assume the
+  top-level Waveshare-only firmware layout rather than this repo's
+  `devices/firmware/` layout plus local compatibility tree.
 
 ## Safe Future Path
 
