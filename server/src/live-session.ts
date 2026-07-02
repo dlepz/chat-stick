@@ -4,6 +4,7 @@ import {
 	MAX_FILE_BYTES,
 	USER_INSTRUCTIONS_PATH,
 	appendFile,
+	canonicalFilePath,
 	ensureUserInstructionsFile,
 	listFiles,
 	readFile,
@@ -2819,6 +2820,7 @@ export class LiveSession {
 	private async getUserInstructionsForPrompt(): Promise<string> {
 		try {
 			const file = await ensureUserInstructionsFile(this.env.DB, this.deviceId)
+			console.log(`[Files] Loaded ${USER_INSTRUCTIONS_PATH}: ${file.content.length} bytes`)
 			return file.content
 		} catch (err) {
 			console.error(`[Files] Failed to load ${USER_INSTRUCTIONS_PATH}:`, err)
@@ -2970,7 +2972,8 @@ export class LiveSession {
 		name: string,
 		args: Record<string, unknown>,
 	): Promise<Record<string, unknown>> {
-		const path = typeof args.path === 'string' ? args.path.trim() : ''
+		const requestedPath = typeof args.path === 'string' ? args.path.trim() : ''
+		const path = requestedPath ? canonicalFilePath(requestedPath) : ''
 		const content = typeof args.content === 'string' ? args.content : ''
 		const query = typeof args.query === 'string' ? args.query : ''
 		try {
@@ -3019,11 +3022,16 @@ export class LiveSession {
 					}
 				}
 				await writeFile(this.env.DB, this.deviceId, path, content)
+				const saved = await readFile(this.env.DB, this.deviceId, path)
+				if (!saved || saved.content !== content) {
+					return { error: `failed to verify saved file: ${path}` }
+				}
 				return {
 					ok: true,
 					path,
+					...(requestedPath && requestedPath !== path ? { requested_path: requestedPath } : {}),
 					size: content.length,
-					...(path === USER_INSTRUCTIONS_PATH ? { applies_to: 'future conversations' } : {}),
+					...(path === USER_INSTRUCTIONS_PATH ? { applies_to: 'next Gemini session/reconnect' } : {}),
 				}
 			}
 			case 'append_to_file': {
@@ -3036,11 +3044,16 @@ export class LiveSession {
 					}
 				}
 				await appendFile(this.env.DB, this.deviceId, path, content)
+				const saved = await readFile(this.env.DB, this.deviceId, path)
+				if (!saved || saved.content.length !== projectedSize) {
+					return { error: `failed to verify appended file: ${path}` }
+				}
 				return {
 					ok: true,
 					path,
+					...(requestedPath && requestedPath !== path ? { requested_path: requestedPath } : {}),
 					size: projectedSize,
-					...(path === USER_INSTRUCTIONS_PATH ? { applies_to: 'future conversations' } : {}),
+					...(path === USER_INSTRUCTIONS_PATH ? { applies_to: 'next Gemini session/reconnect' } : {}),
 				}
 			}
 			case 'search_files': {

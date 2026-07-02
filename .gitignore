@@ -7,7 +7,9 @@ firmware/src/credentials.h
 
 # PlatformIO
 devices/firmware/*/.pio/
+devices/firmware/*/compile_commands.json
 firmware/.pio/
+firmware/compile_commands.json
 
 # Cloudflare / Wrangler
 server/.wrangler/

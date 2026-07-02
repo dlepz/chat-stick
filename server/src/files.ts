@@ -3,6 +3,7 @@
 
 export const MAX_FILE_BYTES = 100_000
 export const USER_INSTRUCTIONS_PATH = 'user-instructions.md'
+const USER_INSTRUCTIONS_KEYS = new Set(['userinstructions', 'userinstructionsmd'])
 
 export interface FileSummary {
 	path: string
@@ -56,6 +57,13 @@ export async function readFile(
 // and "TO_DO.MD" all collapse to the same key.
 function normalizePath(path: string): string {
 	return path.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+export function canonicalFilePath(path: string): string {
+	const trimmed = path.trim()
+	return USER_INSTRUCTIONS_KEYS.has(normalizePath(trimmed))
+		? USER_INSTRUCTIONS_PATH
+		: trimmed
 }
 
 function levenshtein(a: string, b: string): number {
@@ -127,6 +135,22 @@ export async function ensureUserInstructionsFile(
 	if (!file) {
 		throw new Error(`failed to ensure ${USER_INSTRUCTIONS_PATH}`)
 	}
+
+	if (!file.content) {
+		const alias = (await listFiles(db, deviceId)).find(
+			(f) =>
+				f.path !== USER_INSTRUCTIONS_PATH &&
+				canonicalFilePath(f.path) === USER_INSTRUCTIONS_PATH
+		)
+		if (alias) {
+			const aliasFile = await readFile(db, deviceId, alias.path)
+			if (aliasFile?.content) {
+				await writeFile(db, deviceId, USER_INSTRUCTIONS_PATH, aliasFile.content)
+				return (await readFile(db, deviceId, USER_INSTRUCTIONS_PATH)) ?? aliasFile
+			}
+		}
+	}
+
 	return file
 }
 
