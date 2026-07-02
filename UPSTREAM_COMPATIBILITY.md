@@ -74,9 +74,11 @@ replace local behavior if merged directly.
 - The branch-wide Waveshare firmware layout. Current `main` keeps both:
   - newer Ruiz multi-device firmware under `devices/firmware/`
   - local legacy firmware under `firmware/`
-- The remaining broader server extraction commits (`tool-router`,
-  `gemini-client`, etc.). They are useful refactor candidates, but they must be
-  ported one at a time so the language-learning tools stay intact.
+- The upstream `tool-router` extraction is not a safe drop-in. It predates the
+  local German-learning tools, saved image recall, target-size Imagen pipeline,
+  thinking-level reconnects, and practice review flow. A future port should
+  extract those local branches into a router-shaped module rather than replacing
+  them with the smaller upstream router.
 - The older `upstream/waveshare` image pipeline shape. Current `main` keeps the
   newer device-size-aware Imagen path, original/dithered archival metadata, and
   saved-image recall through D1/R2.
