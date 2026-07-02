@@ -38,6 +38,8 @@ an older divergent shape that deletes the Reachy app, removes the current
     visual prompts while preserving D1/R2 image history and recall
   - Gemini tool response payload construction is centralized for extracted
     server-side tools
+  - Gemini tool declarations are centralized in `server/src/gemini-tools.ts`
+    while preserving local German-learning, vocab-image, file, and email tools
   - Gemini Live websocket URL/model and realtime audio/text/end payloads are
     centralized, with push-to-talk stop using `audioStreamEnd`
   - canonical aliases for `user-instructions.md`
@@ -65,7 +67,7 @@ replace local behavior if merged directly.
 - The branch-wide Waveshare firmware layout. Current `main` keeps both:
   - newer Ruiz multi-device firmware under `devices/firmware/`
   - local legacy firmware under `firmware/`
-- The server extraction commits (`prompt-builder`, `tool-router`,
+- The remaining broader server extraction commits (`tool-router`,
   `gemini-client`, etc.). They are useful refactor candidates, but they must be
   ported one at a time so the language-learning tools stay intact.
 - The older `upstream/waveshare` image pipeline shape. Current `main` keeps the
