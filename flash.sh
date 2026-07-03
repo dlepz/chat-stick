@@ -2,9 +2,10 @@
 # Build and flash firmware to a USB-connected device.
 #
 # Usage:
-#   ./flash.sh [m5-stick|waveshare] [--monitor] [--port /dev/cu.usbmodem101]
+#   ./flash.sh [m5-stick|waveshare] [--monitor] [--wait] [--port /dev/cu.usbmodem101]
 #   PORT=/dev/cu.usbmodem101 ./flash.sh waveshare
 # Pass --monitor to also open the serial monitor after flashing.
+# Pass --wait to wait for a candidate ESP serial port before flashing.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -12,15 +13,20 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 DEVICE="${FIRMWARE_DEVICE:-m5-stick}"
 PORT="${FIRMWARE_PORT:-${PORT:-}}"
 MONITOR=false
+WAIT=false
+WAIT_SECONDS="${FLASH_WAIT_SECONDS:-0}"
 
 usage() {
-  echo "Usage: $0 [m5-stick|waveshare] [--monitor] [--port /dev/cu.usbmodem101]" >&2
+  echo "Usage: $0 [m5-stick|waveshare] [--monitor] [--wait] [--port /dev/cu.usbmodem101]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --monitor)
       MONITOR=true
+      ;;
+    --wait)
+      WAIT=true
       ;;
     --device)
       shift
@@ -57,9 +63,30 @@ if [[ ! -d "$FIRMWARE_DIR" ]]; then
 fi
 
 if [[ -z "$PORT" ]]; then
-  shopt -s nullglob
-  PORT_CANDIDATES=(/dev/cu.usbmodem* /dev/cu.SLAB_USBtoUART* /dev/cu.wchusbserial*)
-  shopt -u nullglob
+  started_at="$(date +%s)"
+  while true; do
+    shopt -s nullglob
+    PORT_CANDIDATES=(/dev/cu.usbmodem* /dev/cu.SLAB_USBtoUART* /dev/cu.wchusbserial*)
+    shopt -u nullglob
+
+    if [[ ${#PORT_CANDIDATES[@]} -gt 0 ]]; then
+      break
+    fi
+
+    if ! $WAIT; then
+      break
+    fi
+
+    if [[ "$WAIT_SECONDS" != "0" ]]; then
+      now="$(date +%s)"
+      if (( now - started_at >= WAIT_SECONDS )); then
+        break
+      fi
+    fi
+
+    echo "Waiting for ESP serial port... (wake/replug the device, Ctrl-C to cancel)" >&2
+    sleep 1
+  done
 
   if [[ ${#PORT_CANDIDATES[@]} -eq 0 ]]; then
     echo "Error: no ESP serial port found." >&2
