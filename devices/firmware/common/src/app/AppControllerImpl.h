@@ -273,13 +273,16 @@ void AppController::setup() {
   callbacks.onAudio = [this](const uint8_t *data, size_t len) {
     if (_appState != AppState::Recording) {
       clearDebugText();
+      const bool hadAudio = _turn.hasAudio();
       const bool queued = _audio.queuePlayback(data, len);
       _turn.noteAudioReceived();
-      Log::client("Playback",
-                  "audio len=%u state=%s queued=%d buffered=%d volume=%d",
-                  static_cast<unsigned>(len), appStateName(_appState),
-                  queued ? 1 : 0, _audio.bufferedPlaybackBytes(),
-                  _settings.volume());
+      if (!hadAudio || !queued) {
+        Log::client("Playback",
+                    "audio len=%u state=%s queued=%d buffered=%d volume=%d",
+                    static_cast<unsigned>(len), appStateName(_appState),
+                    queued ? 1 : 0, _audio.bufferedPlaybackBytes(),
+                    _settings.volume());
+      }
     }
   };
   callbacks.onBrightness = [this](int level) {
@@ -2243,11 +2246,8 @@ void AppController::processPlayback() {
     }
   }
 
-  if (_appState == AppState::Playing && _audio.advancePlayback()) {
-    Log::client("Playback", "advanced buffered=%d busy=%d",
-                _audio.bufferedPlaybackBytes(),
-                _audio.speakerBusy() ? 1 : 0);
-    _screenDirty = true;
+  if (_appState == AppState::Playing) {
+    _audio.advancePlayback();
   }
 
   // Only exit to Ready from Playing — a turnComplete that arrives while we're

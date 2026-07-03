@@ -4,8 +4,9 @@
 # Usage:
 #   ./verify-stick.sh [--flash] [--port /dev/cu.usbmodem101] [--timeout 60]
 #
-# After the monitor opens, hold A, speak a short phrase, release A, and wait for
-# the assistant audio. Press Ctrl-C when finished; the serial log is saved.
+# After the serial capture opens, hold A, speak a short phrase, release A, and
+# wait for the assistant audio. Press Ctrl-C when finished; the serial log is
+# saved.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -107,5 +108,58 @@ echo "  2. Hold A, speak: 'hello can you hear me', then release A."
 echo "  3. Wait for Speaking / turn complete / Ready, then press Ctrl-C."
 echo
 
-(cd "$ROOT_DIR/devices/firmware/$DEVICE" && \
-  pio device monitor --port "$PORT" --baud 115200) | tee "$LOG_PATH"
+VERIFY_PORT="$PORT" VERIFY_LOG_PATH="$LOG_PATH" python3 - <<'PY'
+import os
+import select
+import sys
+import termios
+import time
+from datetime import datetime
+
+port = os.environ["VERIFY_PORT"]
+log_path = os.environ["VERIFY_LOG_PATH"]
+
+fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+try:
+    attrs = termios.tcgetattr(fd)
+    attrs[0] = 0
+    attrs[1] = 0
+    attrs[2] = attrs[2] | termios.CLOCAL | termios.CREAD
+    attrs[3] = 0
+    attrs[4] = termios.B115200
+    attrs[5] = termios.B115200
+    attrs[6][termios.VMIN] = 0
+    attrs[6][termios.VTIME] = 1
+    termios.tcsetattr(fd, termios.TCSANOW, attrs)
+
+    buffer = b""
+    with open(log_path, "w", encoding="utf-8", errors="replace") as log:
+        while True:
+            try:
+                readable, _, _ = select.select([fd], [], [], 0.2)
+            except KeyboardInterrupt:
+                print(f"\nSerial capture stopped; log saved to {log_path}")
+                break
+            if not readable:
+                continue
+            try:
+                chunk = os.read(fd, 4096)
+            except BlockingIOError:
+                continue
+            except OSError as exc:
+                print(f"\nSerial read stopped: {exc}", file=sys.stderr)
+                break
+            if not chunk:
+                time.sleep(0.05)
+                continue
+            buffer += chunk
+            while b"\n" in buffer:
+                raw, buffer = buffer.split(b"\n", 1)
+                text = raw.decode("utf-8", errors="replace").rstrip("\r")
+                line = f"{datetime.now().strftime('%H:%M:%S')} {text}"
+                print(line, flush=True)
+                log.write(line + "\n")
+                log.flush()
+finally:
+    os.close(fd)
+PY
