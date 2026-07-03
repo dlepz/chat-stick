@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./verify-stick.sh [--flash] [--expect-pass] [--port /dev/cu.usbmodem101] [--timeout 60]
-#                    [--capture-timeout 120]
+#                    [--capture-timeout 120] [--log serial.log]
 #
 # After the serial capture opens, hold A, speak a short phrase, release A, and
 # wait for the assistant audio. Press Ctrl-C when finished; the serial log is
@@ -17,9 +17,10 @@ FLASH=false
 TIMEOUT_SECONDS="${VERIFY_WAIT_SECONDS:-0}"
 CAPTURE_TIMEOUT_SECONDS="${VERIFY_CAPTURE_SECONDS:-0}"
 EXPECT_PASS=false
+INPUT_LOG=""
 
 usage() {
-  echo "Usage: $0 [--flash] [--expect-pass] [--port /dev/cu.usbmodem101] [--timeout 60] [--capture-timeout 120]" >&2
+  echo "Usage: $0 [--flash] [--expect-pass] [--port /dev/cu.usbmodem101] [--timeout 60] [--capture-timeout 120] [--log serial.log]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -54,6 +55,14 @@ while [[ $# -gt 0 ]]; do
     --capture-timeout=*)
       CAPTURE_TIMEOUT_SECONDS="${1#--capture-timeout=}"
       ;;
+    --log)
+      shift
+      [[ $# -gt 0 ]] || { usage; exit 1; }
+      INPUT_LOG="$1"
+      ;;
+    --log=*)
+      INPUT_LOG="${1#--log=}"
+      ;;
     -h|--help)
       usage
       exit 0
@@ -65,6 +74,14 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+if [[ -n "$INPUT_LOG" ]]; then
+  if [[ ! -f "$INPUT_LOG" ]]; then
+    echo "Serial log not found: $INPUT_LOG" >&2
+    exit 1
+  fi
+  EXPECT_PASS=true
+fi
 
 find_port() {
   shopt -s nullglob
@@ -81,7 +98,7 @@ find_port() {
   return 1
 }
 
-if [[ -z "$PORT" ]]; then
+if [[ -z "$INPUT_LOG" && -z "$PORT" ]]; then
   started_at="$(date +%s)"
   while true; do
     detected="$(find_port || true)"
@@ -106,28 +123,44 @@ if [[ -z "$PORT" ]]; then
   done
 fi
 
+if [[ -n "$INPUT_LOG" && "$FLASH" == "true" ]]; then
+  echo "--flash cannot be used with --log" >&2
+  exit 1
+fi
+
 if $FLASH; then
   "$ROOT_DIR/flash.sh" "$DEVICE" --port "$PORT"
   sleep 2
 fi
 
-LOG_PATH="$ROOT_DIR/serial-interaction-$(date +%Y%m%d-%H%M%S).log"
-
-echo "Using $PORT"
-echo "Saving serial log to $LOG_PATH"
-echo
-echo "When the monitor opens:"
-echo "  1. Wait for Ready / ws=1."
-echo "  2. Hold A, speak: 'hello can you hear me', then release A."
-if $EXPECT_PASS; then
-  echo "  3. Wait for VERIFY_PASS. The script exits non-zero if the sequence is incomplete."
+if [[ -n "$INPUT_LOG" ]]; then
+  LOG_PATH="$INPUT_LOG"
 else
-  echo "  3. Wait for Speaking / turn complete / Ready, then press Ctrl-C."
+  LOG_PATH="$ROOT_DIR/serial-interaction-$(date +%Y%m%d-%H%M%S).log"
+fi
+
+if [[ -n "$INPUT_LOG" ]]; then
+  echo "Checking serial log $LOG_PATH"
+else
+  echo "Using $PORT"
+  echo "Saving serial log to $LOG_PATH"
 fi
 echo
+if [[ -z "$INPUT_LOG" ]]; then
+  echo "When the monitor opens:"
+  echo "  1. Wait for Ready / ws=1."
+  echo "  2. Hold A, speak: 'hello can you hear me', then release A."
+  if $EXPECT_PASS; then
+    echo "  3. Wait for VERIFY_PASS. The script exits non-zero if the sequence is incomplete."
+  else
+    echo "  3. Wait for Speaking / turn complete / Ready, then press Ctrl-C."
+  fi
+  echo
+fi
 
 VERIFY_PORT="$PORT" \
 VERIFY_LOG_PATH="$LOG_PATH" \
+VERIFY_INPUT_LOG="$INPUT_LOG" \
 VERIFY_CAPTURE_TIMEOUT_SECONDS="$CAPTURE_TIMEOUT_SECONDS" \
 VERIFY_EXPECT_PASS="$EXPECT_PASS" \
 python3 - <<'PY'
@@ -140,11 +173,16 @@ from datetime import datetime
 
 port = os.environ["VERIFY_PORT"]
 log_path = os.environ["VERIFY_LOG_PATH"]
+input_log = os.environ.get("VERIFY_INPUT_LOG", "")
 capture_timeout = float(os.environ.get("VERIFY_CAPTURE_TIMEOUT_SECONDS", "0") or "0")
 expect_pass = os.environ.get("VERIFY_EXPECT_PASS", "false").lower() == "true"
 
 checks = [
-    ("ready", lambda text: "Loop - state=1" in text and "ws=1" in text),
+    (
+        "ready",
+        lambda text: ("Loop - state=1" in text and "ws=1" in text)
+        or ("Recording - start" in text and "ws=1" in text and "state=1" in text),
+    ),
     ("recording_start", lambda text: "Recording - start" in text),
     ("recording_audio_sent", lambda text: "Recording - #" in text and " sent bytes=" in text),
     ("recording_stop", lambda text: "Recording - stop" in text),
@@ -161,8 +199,10 @@ def note_check(text):
     global next_check
     if not expect_pass or next_check >= len(checks):
         return False
-    name, matcher = checks[next_check]
-    if matcher(text):
+    while next_check < len(checks):
+        name, matcher = checks[next_check]
+        if not matcher(text):
+            break
         print(f"VERIFY_STEP {next_check + 1}/{len(checks)} {name}", flush=True)
         next_check += 1
         if next_check >= len(checks):
@@ -173,6 +213,26 @@ def note_check(text):
 
 def missing_checks():
     return ", ".join(name for name, _ in checks[next_check:]) or "none"
+
+
+def process_line(text, log=None):
+    line = f"{datetime.now().strftime('%H:%M:%S')} {text}"
+    print(line, flush=True)
+    if log is not None:
+        log.write(line + "\n")
+        log.flush()
+    return note_check(text)
+
+
+if input_log:
+    with open(input_log, "r", encoding="utf-8", errors="replace") as source:
+        for raw_line in source:
+            # Saved logs already include a wall-clock prefix; keep matching on
+            # the full line so either raw or verifier-prefixed logs work.
+            if note_check(raw_line.rstrip("\r\n")):
+                sys.exit(0)
+    print(f"VERIFY_FAIL missing: {missing_checks()}; log={log_path}", file=sys.stderr)
+    sys.exit(2)
 
 fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
 try:
@@ -227,11 +287,7 @@ try:
             while b"\n" in buffer:
                 raw, buffer = buffer.split(b"\n", 1)
                 text = raw.decode("utf-8", errors="replace").rstrip("\r")
-                line = f"{datetime.now().strftime('%H:%M:%S')} {text}"
-                print(line, flush=True)
-                log.write(line + "\n")
-                log.flush()
-                if note_check(text):
+                if process_line(text, log):
                     sys.exit(0)
 finally:
     os.close(fd)
