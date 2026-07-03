@@ -6,6 +6,7 @@
     "dev": "wrangler dev",
     "dev:lan": "wrangler d1 migrations apply m5-live-conversations-local --local -c wrangler.local.toml && (kill $(lsof -ti tcp:8787) 2>/dev/null || true) && wrangler dev -c wrangler.local.toml --ip 0.0.0.0 --port 8787",
     "deploy": "node scripts/deploy-worker.mjs",
+    "smoke:turns": "node scripts/smoke-turns.mjs",
     "worker:name": "node scripts/worker-name.mjs"
   },
   "dependencies": {
