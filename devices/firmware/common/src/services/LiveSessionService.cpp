@@ -984,6 +984,45 @@ void LiveSessionService::handleMessage(WebsocketsMessage msg) {
     return;
   }
 
+  if (strcmp(type, "turn_feedback") == 0) {
+    const char *color = doc["color"];
+    const char *correction = doc["correction"];
+    const char *reason = doc["reason"];
+    logServer("Feedback", "%s fix=%s reason=%s", color ? color : "?",
+              correction ? correction : "", reason ? reason : "");
+    if (_callbacks.onTurnFeedback && color) {
+      _callbacks.onTurnFeedback(String(color),
+                                String(correction ? correction : ""),
+                                String(reason ? reason : ""));
+    }
+    return;
+  }
+
+  if (strcmp(type, "face_emotion") == 0) {
+    const char *emotion = doc["emotion"];
+    logServer("Face", "emotion=%s", emotion ? emotion : "?");
+    if (_callbacks.onFaceEmotion && emotion) {
+      _callbacks.onFaceEmotion(String(emotion));
+    }
+    return;
+  }
+
+  if (strcmp(type, "face_control") == 0) {
+    const char *emotion = doc["emotion"];
+    const float lookX = doc["look_x"] | 0.0f;
+    const float lookY = doc["look_y"] | 0.0f;
+    const float spacing = doc["eye_spacing"] | 52.0f;
+    const float speed = doc["anim_speed"] | 1.0f;
+    logServer("Face",
+              "control emotion=%s look=(%.2f,%.2f) spacing=%.1f speed=%.2f",
+              emotion ? emotion : "default", lookX, lookY, spacing, speed);
+    if (_callbacks.onFaceControl) {
+      _callbacks.onFaceControl(String(emotion ? emotion : "default"), lookX,
+                               lookY, spacing, speed);
+    }
+    return;
+  }
+
   if (strcmp(type, "error") == 0) {
     const char *category = doc["category"];
     const char *message = doc["message"];

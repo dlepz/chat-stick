@@ -249,6 +249,38 @@ void AppController::setup() {
     }
     appendToolTextReveal(delta);
   };
+  callbacks.onTurnFeedback = [this](const String &color,
+                                    const String &correction,
+                                    const String &reason) {
+    (void)correction;
+    (void)reason;
+    _turnFeedbackColor = color;
+    _screenDirty = true;
+  };
+  auto applyFaceEmotion = [this](const String &emotion) {
+    if (emotion == "angry" || emotion == "focused") {
+      _faceEmotion = 1;
+    } else if (emotion == "eepy" || emotion == "thinking") {
+      _faceEmotion = 2;
+    } else {
+      _faceEmotion = 0;
+    }
+  };
+  callbacks.onFaceEmotion = [this, applyFaceEmotion](const String &emotion) {
+    applyFaceEmotion(emotion);
+    _screenDirty = true;
+  };
+  callbacks.onFaceControl = [this, applyFaceEmotion](const String &emotion,
+                                                     float lookX, float lookY,
+                                                     float spacing,
+                                                     float speed) {
+    applyFaceEmotion(emotion);
+    _eyeLookX = constrain(lookX, -1.0f, 1.0f);
+    _eyeLookY = constrain(lookY, -1.0f, 1.0f);
+    _faceEyeSpacing = constrain(spacing, 36.0f, 70.0f);
+    _faceAnimSpeed = constrain(speed, 0.25f, 3.0f);
+    _screenDirty = true;
+  };
   callbacks.onError = [this](const String &category, const String &error) {
     const ErrorCategory mapped = category == "gemini_unavailable"
                                      ? ErrorCategory::GeminiUnavailable
@@ -413,6 +445,22 @@ void AppController::loop() {
     _screenDirty = true;
   }
 
+  const bool reactiveFaceVisible =
+      _appState == AppState::Recording ||
+      (_faceOnlyMode && _appRegion == AppRegion::Chat &&
+       _appState != AppState::Connecting && _appState != AppState::Error &&
+       _appState != AppState::ConfirmReset);
+  if ((_appRegion == AppRegion::Scene || reactiveFaceVisible) &&
+      millis() - _lastSceneFrameMs > 140) {
+    _lastSceneFrameMs = millis();
+    _sceneFrame++;
+    _screenDirty = true;
+  }
+  if (reactiveFaceVisible && millis() - _lastFaceRenderMs > 33) {
+    _lastFaceRenderMs = millis();
+    _screenDirty = true;
+  }
+
   if (!audioActive) {
     _wifi.poll();
   }
@@ -491,15 +539,22 @@ void AppController::connectNetworkStack() {
 void AppController::handleInternetReady() {
   _startupInternetDone = true;
   _startupChecklistVisible = false;
-  _appRegion = AppRegion::Chat;
+  if (_appRegion != AppRegion::Scene) {
+    _appRegion = AppRegion::Chat;
+  }
 
   if (installPendingFirmwareUpdate()) {
     return;
   }
 
   setAppState(AppState::Ready, "Ready");
-  maybeSendReadingAssistantIntro();
-  maybeSendQuizIntro();
+  if (_scenePromptPending && _appRegion == AppRegion::Scene) {
+    _scenePromptPending = false;
+    promptSceneConversation();
+  } else {
+    maybeSendReadingAssistantIntro();
+    maybeSendQuizIntro();
+  }
   startAutomaticFirmwareUpdateCheck();
 }
 
@@ -869,6 +924,11 @@ void AppController::handleButtons() {
     return;
   }
 
+  if (_appRegion == AppRegion::Scene) {
+    handleSceneButtons();
+    return;
+  }
+
   if (_appRegion == AppRegion::Review) {
     handleReviewButtons();
     return;
@@ -991,6 +1051,35 @@ void AppController::handleMenuButtons() {
     _powerManager.registerActivity();
     selectCurrentMenuItem();
     clearButtonEvents();
+  }
+}
+
+void AppController::handleSceneButtons() {
+  if (_appState != AppState::Recording) {
+    if (_buttonB.consumeClick() || _buttonB.consumeHoldStart()) {
+      _powerManager.registerActivity();
+      _appRegion = AppRegion::Chat;
+      clearButtonEvents();
+      _screenDirty = true;
+      return;
+    }
+
+    if (_buttonA.consumeClick()) {
+      _powerManager.registerActivity();
+      promptSceneConversation();
+      return;
+    }
+  }
+
+  if (_buttonA.consumeHoldStart() &&
+      (_appState == AppState::Ready || _appState == AppState::Playing ||
+       _appState == AppState::Thinking)) {
+    startRecording();
+    return;
+  }
+
+  if (_buttonA.consumeReleased() && _appState == AppState::Recording) {
+    stopRecording();
   }
 }
 
@@ -1147,6 +1236,17 @@ void AppController::selectCurrentMenuItem() {
     case 2:
       switchVoiceMode("quiz_masters");
       return;
+    case 3:
+      _faceOnlyMode = !_faceOnlyMode;
+      closeMenu();
+      _screenDirty = true;
+      return;
+    case 4:
+      openScene(0);
+      return;
+    case 5:
+      openScene(1);
+      return;
     default:
       return;
     }
@@ -1288,7 +1388,7 @@ int AppController::menuItemCount() const {
   case MenuState::Home:
     return 9;
   case MenuState::Modes:
-    return 3;
+    return 6;
   case MenuState::Device:
     return Board::capabilities().externalSpeakerSwitch ? 5 : 4;
   case MenuState::ResumeChat:
@@ -1374,6 +1474,12 @@ String AppController::menuItemLabel(int index) const {
     case 2:
       return _voiceMode == "quiz_masters" ? "* Quiz Masters"
                                            : "Quiz Masters";
+    case 3:
+      return _faceOnlyMode ? "* Face-only chat" : "Face-only chat";
+    case 4:
+      return "Little guy scene";
+    case 5:
+      return "German flag";
     default:
       return "";
     }
@@ -1781,6 +1887,60 @@ void AppController::switchVoiceMode(const String &voiceMode) {
   _screenDirty = true;
 }
 
+void AppController::ensureQuizModeForScene() {
+  if (_voiceMode == "quiz_masters") {
+    _roleplayActive = true;
+    return;
+  }
+
+  _voiceMode = "quiz_masters";
+  _settings.setVoiceMode(_voiceMode);
+  _live.setVoiceMode(_voiceMode);
+  _chatId = "";
+  _settings.clearChatId();
+  _live.setChatId("");
+  _roleplayActive = true;
+  _quizIntroPending = false;
+  _readingAssistantIntroPending = false;
+  _turn.clearResponse();
+  _turn.clearPendingReset();
+  _live.disconnect();
+  if (_wifi.isConnected()) {
+    setAppState(AppState::Connecting, "Starting game...");
+    _live.connect();
+  }
+}
+
+void AppController::promptSceneConversation() {
+  if (_appState != AppState::Ready) {
+    if (_appState == AppState::Connecting) {
+      _scenePromptPending = true;
+    }
+    return;
+  }
+
+  _audio.stopPlayback();
+  _turn.clearResponse();
+  _turn.clearPendingReset();
+  _roleplayActive = true;
+
+  const bool sent = _live.sendText(
+      "Start or continue Quiz Masters, a kid-friendly nature quiz game. Ask "
+      "one short nature question, wait for my answer, and be cheerful.");
+  if (!sent) {
+    _scenePromptPending = true;
+    if (_wifi.isConnected()) {
+      setAppState(AppState::Connecting, "Connecting...");
+      _live.disconnect();
+      _live.connect();
+    }
+    return;
+  }
+
+  _turn.beginThinking(millis());
+  setAppState(AppState::Thinking, "Starting quiz...");
+}
+
 void AppController::maybeSendReadingAssistantIntro() {
   if (!_readingAssistantIntroPending || _voiceMode != "assistant" ||
       _appState != AppState::Ready || !_live.isConnected()) {
@@ -1857,6 +2017,25 @@ void AppController::maybeSendQuizIntro() {
   Log::client("Mode", "quiz intro sent");
   _turn.beginThinking(millis());
   setAppState(AppState::Thinking, "Starting quiz...");
+}
+
+void AppController::openScene(int sceneKind) {
+  closeMenu();
+  _audio.stopPlayback();
+  _turn.clearResponse();
+  _turn.clearPendingReset();
+  if (_appState == AppState::Playing || _appState == AppState::Thinking) {
+    setAppState(AppState::Ready, "Ready");
+  }
+  _appRegion = AppRegion::Scene;
+  _sceneKind = sceneKind;
+  if (_sceneKind == 0) {
+    ensureQuizModeForScene();
+  }
+  _sceneFrame = 0;
+  _lastSceneFrameMs = millis();
+  clearButtonEvents();
+  _screenDirty = true;
 }
 
 String AppController::voiceModeLabel() const {
@@ -2064,6 +2243,7 @@ void AppController::startRecording() {
   }
   _turn.beginRecording(millis());
   _recordingCommitted = false;
+  _recordingVoiceLevel = 0.0f;
   _preCommitAudioChunkCount = 0;
   setAppState(AppState::Recording, "Listening...");
   renderIfNeeded();
@@ -2177,6 +2357,34 @@ bool AppController::sendAudioChunk(const int16_t *data, size_t bytes) {
   return true;
 }
 
+void AppController::updateRecordingFaceFromCapture() {
+  const float avgLevel =
+      constrain((_audio.lastCaptureAverageAbs() - 80.0f) / 1400.0f, 0.0f,
+                1.0f);
+  const float peakLevel =
+      constrain((_audio.lastCapturePeak() - 500.0f) / 9000.0f, 0.0f, 1.0f);
+  const float targetLevel = max(avgLevel, peakLevel * 0.65f);
+  _recordingVoiceLevel =
+      (_recordingVoiceLevel * 0.65f) + (targetLevel * 0.35f);
+  updateReactiveFaceTilt();
+  _screenDirty = true;
+}
+
+void AppController::updateReactiveFaceTilt() {
+  float ax = 0.0f;
+  float ay = 0.0f;
+  float az = 0.0f;
+  if (!Board::readAccel(ax, ay, az)) {
+    (void)az;
+    return;
+  }
+
+  const float targetX = constrain(-ay * 1.2f, -1.0f, 1.0f);
+  const float targetY = constrain(ax * 1.2f, -1.0f, 1.0f);
+  _eyeLookX = (_eyeLookX * 0.78f) + (targetX * 0.22f);
+  _eyeLookY = (_eyeLookY * 0.78f) + (targetY * 0.22f);
+}
+
 void AppController::processRecording() {
   if (_appState != AppState::Recording) {
     return;
@@ -2211,6 +2419,8 @@ void AppController::processRecording() {
     }
     return;
   }
+
+  updateRecordingFaceFromCapture();
 
   if (!_recordingCommitted) {
     bufferPreCommitAudio(_audio.captureData());
@@ -2420,6 +2630,13 @@ DisplayState AppController::buildDisplayState() const {
     return state;
   }
 
+  state.sceneFrame = _sceneFrame;
+  if (_appRegion == AppRegion::Scene) {
+    state.showScene = true;
+    state.sceneKind = _sceneKind;
+    return state;
+  }
+
   if (_appRegion == AppRegion::Review && _inboxCardCount > 0 &&
       _inboxIndex >= 0 && _inboxIndex < _inboxCardCount) {
     state.headerLeft = "Inbox " + String(_inboxIndex + 1) + "/" +
@@ -2452,6 +2669,22 @@ DisplayState AppController::buildDisplayState() const {
   state.bodyText = buildBodyText();
   state.bodyDim = _appState == AppState::Recording ||
                   _appState == AppState::Thinking;
+  const bool faceOnlyChat = _faceOnlyMode && _appRegion == AppRegion::Chat &&
+                            _appState != AppState::Connecting &&
+                            _appState != AppState::Error &&
+                            _appState != AppState::ConfirmReset;
+  state.showReactiveFace = _appState == AppState::Recording || faceOnlyChat;
+  state.turnFeedbackColor = _turnFeedbackColor;
+  state.showRecordingProgress = _appState == AppState::Recording;
+  state.recordingProgress = recordingProgress();
+  state.voiceLevel =
+      _appState == AppState::Recording ? _recordingVoiceLevel : 0.0f;
+  state.eyeLookX = _eyeLookX;
+  state.eyeLookY = _eyeLookY;
+  state.faceEmotion = _faceEmotion;
+  state.faceEyeSpacing = _faceEyeSpacing;
+  state.faceAnimSpeed = _faceAnimSpeed;
+  state.facePerspective = _facePerspective;
   state.imagePresent = _imagePresent;
   state.pageIndex = _bodyPageIndex;
   state.pageCount = currentBodyPageCount();
@@ -2578,6 +2811,16 @@ int AppController::currentBodyPageCount() const {
   const int textPages = body.isEmpty() ? 0 : _display.pageCountForText(body);
   const int total = (_imagePresent ? 1 : 0) + textPages;
   return max(1, total);
+}
+
+float AppController::recordingProgress() const {
+  if (_appState != AppState::Recording) {
+    return 0.0f;
+  }
+  return constrain(
+      static_cast<float>(_turn.recordingDurationMs(millis())) /
+          static_cast<float>(kMaxRecordingMs),
+      0.0f, 1.0f);
 }
 
 String AppController::currentTimeString() const {

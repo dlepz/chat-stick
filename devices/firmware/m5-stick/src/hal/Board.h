@@ -11,6 +11,7 @@ void update();
 M5GFX &display();
 bool buttonAIsPressed();
 bool buttonBIsPressed();
+bool readAccel(float &x, float &y, float &z);
 void setDisplayBrightness(uint8_t brightness);
 uint8_t displayBrightness();
 void setAudioAmpEnabled(bool enabled);

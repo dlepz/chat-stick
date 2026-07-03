@@ -57,6 +57,16 @@ struct LiveSessionCallbacks {
   /// Invoked for transcript updates from user or assistant.
   std::function<void(const String &, const String &)> onTranscript;
 
+  /// Invoked when the server sends instant turn feedback.
+  std::function<void(const String &, const String &, const String &)>
+      onTurnFeedback;
+
+  /// Invoked when the server sends a simple face emotion update.
+  std::function<void(const String &)> onFaceEmotion;
+
+  /// Invoked when the server sends reactive face control parameters.
+  std::function<void(const String &, float, float, float, float)> onFaceControl;
+
   /// Invoked when the server reports audio was ignored.
   std::function<void(const String &)> onIgnoredAudio;
 

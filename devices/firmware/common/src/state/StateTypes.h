@@ -56,11 +56,53 @@ struct DisplayState {
   /// Right-aligned footer text.
   String footerRight;
 
+  /// Color name for the small instant-feedback indicator.
+  String turnFeedbackColor;
+
+  /// Whether to show the recording duration indicator.
+  bool showRecordingProgress = false;
+
+  /// Recording progress from 0.0 to 1.0.
+  float recordingProgress = 0.0f;
+
+  /// Recent microphone energy from 0.0 to 1.0 for reactive face motion.
+  float voiceLevel = 0.0f;
+
+  /// Reactive face horizontal gaze target from -1.0 to 1.0.
+  float eyeLookX = 0.0f;
+
+  /// Reactive face vertical gaze target from -1.0 to 1.0.
+  float eyeLookY = 0.0f;
+
+  /// Reactive face emotion: 0=default, 1=focused, 2=sleepy/thinking.
+  int faceEmotion = 0;
+
+  /// Horizontal spacing between the two reactive eyes.
+  float faceEyeSpacing = 65.0f;
+
+  /// Animation speed multiplier for the reactive face.
+  float faceAnimSpeed = 1.0f;
+
+  /// Pseudo-3D perspective strength for the reactive face.
+  float facePerspective = 3.0f;
+
+  /// Whether TextDisplay should render the reactive eyes instead of text.
+  bool showReactiveFace = false;
+
   /// Whether body text should be rendered dimmed.
   bool bodyDim = false;
 
   /// Whether the menu overlay is currently visible.
   bool showMenu = false;
+
+  /// Whether TextDisplay should render one of the pixel-art scenes.
+  bool showScene = false;
+
+  /// Animation frame for scene and reactive-face rendering.
+  int sceneFrame = 0;
+
+  /// Scene kind: 0=little guy scene, 1=German flag pixel art.
+  int sceneKind = 0;
 
   /// Visible menu item labels.
   String menuItems[MAX_MENU_VISIBLE_ITEMS];

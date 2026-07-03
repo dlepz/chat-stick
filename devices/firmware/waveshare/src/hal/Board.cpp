@@ -148,6 +148,13 @@ bool buttonAIsPressed() { return digitalRead(BUTTON_A_PIN) == LOW; }
  */
 bool buttonBIsPressed() { return pwrPressed || millis() < pwrPulseUntilMs; }
 
+bool readAccel(float &x, float &y, float &z) {
+  (void)x;
+  (void)y;
+  (void)z;
+  return false;
+}
+
 /**
  * @brief Apply display brightness and cache the requested value.
  * @param brightness Brightness level to apply.

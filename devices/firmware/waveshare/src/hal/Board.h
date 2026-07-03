@@ -26,6 +26,9 @@ bool buttonAIsPressed();
 /// Whether button B is currently pressed.
 bool buttonBIsPressed();
 
+/// Read accelerometer gravity vector when available.
+bool readAccel(float &x, float &y, float &z);
+
 /**
  * @brief Set display backlight brightness.
  * @param brightness Backlight level.

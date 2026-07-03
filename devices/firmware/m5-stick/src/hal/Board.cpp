@@ -77,6 +77,7 @@ namespace Board {
 bool init() {
   auto cfg = M5.config();
   cfg.serial_baudrate = 115200;
+  cfg.internal_imu = true;
   M5.begin(cfg);
 
   const m5pm1_err_t pm1BeginRc = pm1.begin(&M5.In_I2C);
@@ -137,6 +138,13 @@ M5GFX &display() { return M5.Display; }
 bool buttonAIsPressed() { return M5.BtnA.isPressed(); }
 
 bool buttonBIsPressed() { return M5.BtnB.isPressed(); }
+
+bool readAccel(float &x, float &y, float &z) {
+  if (!M5.Imu.isEnabled()) {
+    return false;
+  }
+  return M5.Imu.getAccel(&x, &y, &z);
+}
 
 void setDisplayBrightness(uint8_t brightness) {
   currentBrightness = brightness;

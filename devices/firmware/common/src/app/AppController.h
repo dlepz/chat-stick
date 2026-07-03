@@ -31,7 +31,7 @@ private:
   /**
    * @brief High-level screen region currently being rendered.
    */
-  enum class AppRegion { Initializing, Chat, Menu, Review };
+  enum class AppRegion { Initializing, Chat, Menu, Scene, Review };
 
   /**
    * @brief Categories of user-visible error states.
@@ -191,6 +191,9 @@ private:
   /// Whether an image is currently available for the body area.
   bool _imagePresent = false;
 
+  /// Whether chat should show only the reactive face instead of text.
+  bool _faceOnlyMode = false;
+
   /// Whether the current conversation is a lesson, reader, roleplay, or quiz.
   bool _roleplayActive = false;
 
@@ -199,6 +202,33 @@ private:
 
   /// Whether the German reading assistant should greet the learner.
   bool _readingAssistantIntroPending = true;
+
+  /// Whether a scene prompt should be sent once reconnect finishes.
+  bool _scenePromptPending = false;
+
+  /// Latest instant-feedback color from the server.
+  String _turnFeedbackColor;
+
+  /// Smoothed microphone energy used by the reactive face.
+  float _recordingVoiceLevel = 0.0f;
+
+  /// Reactive face horizontal gaze target.
+  float _eyeLookX = 0.0f;
+
+  /// Reactive face vertical gaze target.
+  float _eyeLookY = 0.0f;
+
+  /// Reactive face emotion state.
+  int _faceEmotion = 0;
+
+  /// Reactive face eye spacing.
+  float _faceEyeSpacing = 65.0f;
+
+  /// Reactive face animation speed.
+  float _faceAnimSpeed = 1.0f;
+
+  /// Reactive face perspective strength.
+  float _facePerspective = 3.0f;
 
   /// Whether the screen contents need a fresh render.
   bool _screenDirty = true;
@@ -221,8 +251,20 @@ private:
   /// Timestamp of the last display refresh allowed during playback.
   unsigned long _lastPlaybackRenderMs = 0;
 
+  /// Timestamp of the last low-frequency scene animation frame.
+  unsigned long _lastSceneFrameMs = 0;
+
+  /// Timestamp of the last high-frequency reactive face render.
+  unsigned long _lastFaceRenderMs = 0;
+
   /// Current animated wait-indicator frame.
   int _waitingIndicatorFrame = 0;
+
+  /// Current scene animation frame.
+  int _sceneFrame = 0;
+
+  /// Current scene kind: 0=little guy, 1=German flag.
+  int _sceneKind = 0;
 
   /// Buffered local audio captured before the press passes kRecordingCommitMs.
   int16_t _preCommitAudio[kCaptureChunkSamples * kPreCommitAudioChunks];
@@ -509,6 +551,9 @@ private:
   /// Handle buttons while a menu is open.
   void handleMenuButtons();
 
+  /// Handle buttons while a pixel-art scene is active.
+  void handleSceneButtons();
+
   /// Start a new push-to-talk recording turn.
   void startRecording();
 
@@ -526,6 +571,12 @@ private:
 
   /// Send one captured or buffered PCM chunk to the server.
   bool sendAudioChunk(const int16_t *data, size_t bytes);
+
+  /// Update face animation state from the most recent microphone capture.
+  void updateRecordingFaceFromCapture();
+
+  /// Update eye target from board tilt when available.
+  void updateReactiveFaceTilt();
 
   /// Capture and send microphone audio while recording.
   void processRecording();
@@ -559,6 +610,9 @@ private:
 
   /// Total number of body pages available for the current content.
   int currentBodyPageCount() const;
+
+  /// Current recording duration as a 0..1 progress value.
+  float recordingProgress() const;
 
   /// Open the menu overlay at a given menu screen.
   void openMenu(MenuState state = MenuState::Home);
@@ -632,11 +686,20 @@ private:
   /// Switch between the normal German assistant and Quiz Masters.
   void switchVoiceMode(const String &voiceMode);
 
+  /// Ensure scene mode uses a fresh Quiz Masters conversation.
+  void ensureQuizModeForScene();
+
+  /// Ask the assistant to start or continue the little scene quiz.
+  void promptSceneConversation();
+
   /// Send the initial German reading assistant prompt when needed.
   void maybeSendReadingAssistantIntro();
 
   /// Send the initial Quiz Masters prompt when needed.
   void maybeSendQuizIntro();
+
+  /// Open one of the pixel-art scenes.
+  void openScene(int sceneKind = 0);
 
   /// Human-readable current mode label.
   String voiceModeLabel() const;
