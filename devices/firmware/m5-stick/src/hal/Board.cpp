@@ -44,7 +44,13 @@ const char *sourceLabel(m5pm1_pwr_src_t source) {
 bool vinLooksConnected(uint16_t vinMv) { return vinMv >= kUsbPresentMv; }
 
 const char *sourceLabel(m5pm1_pwr_src_t source, uint16_t vinMv) {
-  if (source == M5PM1_PWR_SRC_UNKNOWN && vinLooksConnected(vinMv)) {
+  if (vinLooksConnected(vinMv)) {
+    if (source == M5PM1_PWR_SRC_BAT) {
+      return "BAT";
+    }
+    if (source == M5PM1_PWR_SRC_5VINOUT) {
+      return "5Vout";
+    }
     return "USB";
   }
   return sourceLabel(source);

@@ -27,6 +27,29 @@ const char *deepSleepWakeReasonName(DeepSleepWakeReason reason) {
     return "other";
   }
 }
+
+const char *appStateName(AppState state) {
+  switch (state) {
+  case AppState::Connecting:
+    return "Connecting";
+  case AppState::Ready:
+    return "Ready";
+  case AppState::Recording:
+    return "Recording";
+  case AppState::Thinking:
+    return "Thinking";
+  case AppState::Playing:
+    return "Playing";
+  case AppState::ConfirmReset:
+    return "ConfirmReset";
+  case AppState::Error:
+    return "Error";
+  case AppState::Alarm:
+    return "Alarm";
+  default:
+    return "?";
+  }
+}
 } // namespace
 
 void AppController::setup() {
@@ -87,6 +110,10 @@ void AppController::setup() {
   }
 
   _audio.setVolume(_settings.volume());
+  Log::client("Audio", "startup volume=%d speaker=%s gain=%d",
+              _settings.volume(),
+              _settings.useExternalSpeaker() ? "external" : "internal",
+              _settings.externalSpeakerGain());
   if (!_settings.chatId().isEmpty()) {
     _settings.clearChatId();
   }
@@ -133,7 +160,14 @@ void AppController::setup() {
   callbacks.onTurnComplete = [this]() {
     // Ignore turnComplete signals that arrive before any audio for the current
     // turn — they're stale from a prior turn that the user interrupted.
-    _turn.noteTurnComplete();
+    const bool accepted = _turn.noteTurnComplete();
+    Log::client("Playback",
+                "turn complete accepted=%d state=%s has_audio=%d "
+                "has_content=%d buffered=%d",
+                accepted ? 1 : 0, appStateName(_appState),
+                _turn.hasAudio() ? 1 : 0,
+                _turn.hasResponseContent() ? 1 : 0,
+                _audio.bufferedPlaybackBytes());
   };
   callbacks.onDropAudio = [this]() {
     // Gemini detected a user interrupt mid-response. Flush any queued tail of
@@ -239,8 +273,13 @@ void AppController::setup() {
   callbacks.onAudio = [this](const uint8_t *data, size_t len) {
     if (_appState != AppState::Recording) {
       clearDebugText();
-      _audio.queuePlayback(data, len);
+      const bool queued = _audio.queuePlayback(data, len);
       _turn.noteAudioReceived();
+      Log::client("Playback",
+                  "audio len=%u state=%s queued=%d buffered=%d volume=%d",
+                  static_cast<unsigned>(len), appStateName(_appState),
+                  queued ? 1 : 0, _audio.bufferedPlaybackBytes(),
+                  _settings.volume());
     }
   };
   callbacks.onBrightness = [this](int level) {
@@ -252,6 +291,8 @@ void AppController::setup() {
   callbacks.onVolume = [this](int level) {
     _audio.setVolume(level);
     _settings.setVolume(level);
+    Log::client("Audio", "volume set by tool=%d stored=%d", level,
+                _settings.volume());
   };
   callbacks.onSetSpeaker = [this](const String &mode) {
     if (!Board::capabilities().externalSpeakerSwitch) {
@@ -473,6 +514,7 @@ void AppController::setNetworkEnabled(bool enabled) {
 void AppController::setAppState(AppState state, const String &status,
                                 const String &error) {
   const unsigned long now = millis();
+  const AppState previous = _appState;
   _appState = state;
   _connectingSinceMs = state == AppState::Connecting ? now : 0;
   if (state != AppState::Connecting) {
@@ -492,6 +534,12 @@ void AppController::setAppState(AppState state, const String &status,
     _statusText = status;
   }
   _errorText = error;
+  if (previous != state || !status.isEmpty() || !error.isEmpty()) {
+    Log::client("State", "%s -> %s status=%s error=%s",
+                appStateName(previous), appStateName(state),
+                status.isEmpty() ? "-" : status.c_str(),
+                error.isEmpty() ? "-" : error.c_str());
+  }
   resetBodyPage();
   _screenDirty = true;
 }
@@ -2185,10 +2233,21 @@ void AppController::processPlayback() {
   const bool hasCompleteShortReply = _turn.complete() && buffered > 0;
   if (!_audio.playbackStarted() &&
       (hasEnoughBuffered || hasCompleteShortReply)) {
+    Log::client("Playback",
+                "start buffered=%d complete=%d has_audio=%d volume=%d",
+                buffered, _turn.complete() ? 1 : 0,
+                _turn.hasAudio() ? 1 : 0, _settings.volume());
     _audio.markPlaybackStarted();
     if (_appState != AppState::Playing) {
       setAppState(AppState::Playing, "Speaking...");
     }
+  }
+
+  if (_appState == AppState::Playing && _audio.advancePlayback()) {
+    Log::client("Playback", "advanced buffered=%d busy=%d",
+                _audio.bufferedPlaybackBytes(),
+                _audio.speakerBusy() ? 1 : 0);
+    _screenDirty = true;
   }
 
   // Only exit to Ready from Playing — a turnComplete that arrives while we're
@@ -2196,6 +2255,7 @@ void AppController::processPlayback() {
   // not short-circuit waiting for the new response's audio.
   if (_appState == AppState::Thinking && _turn.complete() &&
       !_turn.hasAudio()) {
+    Log::client("Playback", "complete without audio; returning ready");
     _turn.clearResponse();
     _audio.stopPlayback();
     setAppState(AppState::Ready, "Ready");
@@ -2204,6 +2264,7 @@ void AppController::processPlayback() {
 
   if (_appState == AppState::Playing && _turn.complete() &&
       _audio.playbackIdle()) {
+    Log::client("Playback", "complete idle; returning ready");
     _turn.clearResponse();
     _audio.stopPlayback();
     setAppState(AppState::Ready, "Ready");
