@@ -72,8 +72,6 @@ constexpr int IMAGE_TARGET_WIDTH = 232;
 constexpr int IMAGE_TARGET_HEIGHT = 112;
 constexpr int DEFAULT_BRIGHTNESS = 80;  // lower = longer battery; plenty readable indoors
 constexpr int DEFAULT_VOLUME = 255;
-// Gentler charging can reduce heat/whine on tiny 250mAh cells. Unsupported PMICs ignore this.
-constexpr int CHARGE_CURRENT_MA = 100;
 constexpr bool SHOW_BOOT_LOG_ON_DISPLAY = false;
 constexpr bool SHOW_DEBUG_TEXT_ON_DISPLAY = false;
 
